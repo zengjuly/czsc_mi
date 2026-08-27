@@ -52,7 +52,10 @@ cd /home/ai/ai_runner/stock/czsc_mi && pytest -q
 ## 阶段
 
 - P0 骨架（models / 包结构 / 空 Adapter 接口）✅
-- P1 规则迁入 + 金标（关闭缠论，score 与 stock_analyzer 差 ≤ 1）
+- P1 规则迁入 + 金标（关闭缠论，score 与 stock_analyzer 差 ≤ 1）✅
+  - core 规则全量迁入（mystery_rules/indicators/resonance/platform/patterns）
+  - 多源行情：DB(未过期) → ths_official(MarketDB→fuyao) → tdx_local
+  - sh600519 / sz000001 / sh600150 三只金标 0 分差（fixtures/gold_*.json）
 - P2 CzscAdapter 只展示（ChanStructure 进 AnalysisResult，不进评分）
 - P3 入口收口（CLI / daily / scan / verify_unified_analysis）
 - P4 小权重缠论分（需用户确认）

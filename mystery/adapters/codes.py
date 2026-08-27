@@ -44,6 +44,12 @@ def to_tdx_local(symbol: str) -> str:
     return f"{exch.lower()}{digits}"
 
 
+def db_code_of(symbol: str) -> str:
+    """内部代码 600519.SH → 本地库格式 sh.600519。"""
+    digits, exch = normalize_symbol(symbol).split('.')
+    return f"{exch.lower()}.{digits}"
+
+
 def exchange_of(symbol: str) -> str:
     return normalize_symbol(symbol).split(".")[1]
 

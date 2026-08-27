@@ -5,21 +5,27 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
-from .models import AnalysisResult, ChanStructure, MysteryBreakdown
+from .models import ChanStructure, MysteryBreakdown
 
 
-def combine(breakdown: MysteryBreakdown, chan: Optional[Dict[str, ChanStructure]],
+def combine(breakdown: MysteryBreakdown,
+            chan: Optional[Dict[str, ChanStructure]] = None,
             chan_enabled: bool = False) -> Tuple[Optional[float], str, bool]:
     """综合评分 + 操作建议 + 真三振。
 
     :return: (score, advice, true_resonance)
     """
+    signal = breakdown.signal or {}
     if not chan_enabled:
-        signal = breakdown.resonance.get("signal", {})
-        score = signal.get("综合评分")
-        advice = signal.get("操作建议", "")
-        true_res = bool(breakdown.resonance.get("真三振", False))
+        score = signal.get('综合评分')
+        advice = signal.get('操作建议', '')
+        true_res = bool(signal.get('真三振', False))
         return score, advice, true_res
-    raise NotImplementedError("P4: 小权重缠论分")
+    # P4: S = 0.55*S_mystery + 0.25*S_resonance + 0.20*S_chan
+    s_mystery = float(signal.get('综合评分') or 0)
+    s_resonance = float(signal.get('共振评分') or 0)
+    s_chan = 50.0
+    score = round(0.55 * s_mystery + 0.25 * s_resonance + 0.20 * s_chan, 1)
+    return score, signal.get('操作建议', ''), bool(signal.get('真三振', False))

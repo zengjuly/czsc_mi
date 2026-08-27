@@ -60,6 +60,8 @@ class Bar:
     close: float
     volume: float = 0.0
     amount: float = 0.0
+    turnover: float = 0.0       # 换手率(%)
+    pct_chg: float = 0.0        # 涨跌幅(%)
 
     def to_dict(self) -> Dict[str, Any]:
         return _todict(self)
@@ -141,12 +143,13 @@ class MarketContext:
 @dataclass
 class MysteryBreakdown:
     """Mystery 规则明细（dict 结构对齐 stock_analyzer 旧报告键）。"""
+    signal: Dict[str, Any] = field(default_factory=dict)      # 综合信号（含 综合评分/操作建议）
     resonance: Dict[str, Any] = field(default_factory=dict)   # 三振共振
     main_wave: Dict[str, Any] = field(default_factory=dict)   # 主升浪
     platform: Dict[str, Any] = field(default_factory=dict)    # 平台突破
     vap_atr: Dict[str, Any] = field(default_factory=dict)     # 自适应 VAP-ATR 平台
     patterns: Dict[str, Any] = field(default_factory=dict)    # 形态识别
-    checklist8: List[Dict[str, Any]] = field(default_factory=list)  # 主升浪8项
+    checklist8: Dict[str, Any] = field(default_factory=dict)  # 主升浪8项
 
     def to_dict(self) -> Dict[str, Any]:
         return _todict(self)
