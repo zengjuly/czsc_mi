@@ -199,7 +199,7 @@ class ThsClient:
                 with open(cache_path, encoding='utf-8') as f:
                     data = json.load(f)
                 if isinstance(data, list) and len(data) >= 1000:
-                    return [{'code': str(x.get('thscode', '')).replace('.', ''),
+                    return [{'code': self._to_prefixed(x.get('thscode', '')),
                              'name': str(x.get('name', ''))} for x in data]
         except Exception as e:
             logger.debug(f"证券列表缓存读取失败: {e}")
@@ -217,10 +217,19 @@ class ThsClient:
                             json.dump(raw, f, ensure_ascii=False)
                     except Exception as e:
                         logger.debug(f"证券列表缓存写入失败: {e}")
-                    return [{'code': str(x.get('thscode', '')).replace('.', ''),
+                    return [{'code': self._to_prefixed(x.get('thscode', '')),
                              'name': str(x.get('name', ''))} for x in raw]
                 last_err = '空结果'
             except Exception as e:
                 last_err = str(e)[:80]
         logger.warning(f"⚠️ fuyao tickers-list 全部失败: {last_err}")
         return []
+
+    @staticmethod
+    def _to_prefixed(thscode: str) -> str:
+        """600519.SH → sh600519（扫描/分析统一输入格式）。"""
+        s = str(thscode)
+        if '.' in s:
+            digits, mkt = s.split('.')
+            return f"{mkt.lower()}{digits}"
+        return s

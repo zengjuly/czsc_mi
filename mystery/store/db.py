@@ -53,11 +53,93 @@ class MysteryDB:
         return conn
 
     def _init_db(self) -> None:
-        """确保新增表存在（chan_cache）；核心表来自现网库 schema。"""
+        """确保表存在（schema 与现网 mystery_cache.db 一致；生产库不受影响）。"""
         with self._lock:
             conn = self._connect()
             try:
                 conn.executescript("""
+                CREATE TABLE IF NOT EXISTS stock_industry_info (
+                    code        TEXT PRIMARY KEY,
+                    code_name   TEXT,
+                    ipo_date    TEXT,
+                    out_date    TEXT,
+                    type        TEXT,
+                    status      TEXT,
+                    industry    TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS stock_kline_data (
+                    code      TEXT NOT NULL,
+                    date      TEXT NOT NULL,
+                    period    TEXT NOT NULL,
+                    open      REAL, high REAL, low REAL, close REAL,
+                    preclose  REAL, volume REAL, amount REAL,
+                    adjustflag REAL, turn REAL, tradestatus REAL,
+                    pctChg    REAL, isST REAL,
+                    PRIMARY KEY (code, date, period)
+                );
+                CREATE INDEX IF NOT EXISTS idx_kline_fast_query
+                    ON stock_kline_data (code, period, date);
+
+                CREATE TABLE IF NOT EXISTS stock_financial_data (
+                    code         TEXT NOT NULL,
+                    report_date  TEXT NOT NULL,
+                    roe REAL, roe_avg REAL, np_margin REAL, gp_margin REAL,
+                    net_profit REAL, eps_ttm REAL, PB REAL, PE REAL,
+                    divid_cash REAL,
+                    PRIMARY KEY (code, report_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_financial_query
+                    ON stock_financial_data (code, report_date DESC);
+
+                CREATE TABLE IF NOT EXISTS mystery_analysis_cache (
+                    stock_code      TEXT NOT NULL,
+                    period          TEXT NOT NULL,
+                    last_trade_date TEXT NOT NULL,
+                    report_json     TEXT NOT NULL,
+                    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (stock_code, period, last_trade_date)
+                );
+
+                CREATE TABLE IF NOT EXISTS sector_kline (
+                    sector_code TEXT NOT NULL,
+                    sector_name TEXT NOT NULL,
+                    trade_date  TEXT NOT NULL,
+                    open REAL NOT NULL, high REAL NOT NULL,
+                    low REAL NOT NULL, close REAL NOT NULL,
+                    volume INTEGER NOT NULL, amount REAL NOT NULL,
+                    source_type TEXT DEFAULT 'ths',
+                    update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (sector_code, trade_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_sector_kline_date
+                    ON sector_kline (trade_date, sector_code);
+                CREATE INDEX IF NOT EXISTS idx_sector_kline_code_date
+                    ON sector_kline (sector_code, trade_date DESC);
+
+                CREATE TABLE IF NOT EXISTS sector_meta (
+                    sector_code TEXT PRIMARY KEY,
+                    sector_name TEXT NOT NULL,
+                    parent_type TEXT,
+                    base_code TEXT,
+                    is_active INTEGER DEFAULT 1,
+                    last_sync_date TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS stock_sector_rel (
+                    stock_code  TEXT NOT NULL,
+                    sector_code TEXT NOT NULL,
+                    is_primary  INTEGER DEFAULT 0,
+                    PRIMARY KEY (stock_code, sector_code)
+                );
+
+                CREATE TABLE IF NOT EXISTS sector_constituents (
+                    sector_code TEXT NOT NULL,
+                    stock_code  TEXT NOT NULL,
+                    stock_name  TEXT,
+                    PRIMARY KEY (sector_code, stock_code)
+                );
+
                 CREATE TABLE IF NOT EXISTS chan_cache (
                   symbol TEXT, freq TEXT, trade_date TEXT, czsc_ver TEXT,
                   payload_json TEXT,
@@ -94,7 +176,11 @@ class MysteryDB:
 
     def upsert_kline(self, df: pd.DataFrame, code: str, period: str,
                      max_rows: Optional[int] = None) -> None:
-        """写行情（df 为中文列或英文列均可）。"""
+        """写行情（df 为中文列或英文列均可）。
+
+        换手率用 COALESCE：新值为 None 时保留库内旧值（ths 数据无换手率，
+        避免覆盖 baostock 同步的历史 turn —— 2026-08-27 教训）。
+        """
         rows = to_cn_columns(df) if 'date' in df.columns else df.copy()
         if max_rows and len(rows) > max_rows:
             rows = rows.tail(max_rows)
@@ -103,9 +189,15 @@ class MysteryDB:
             try:
                 for _, r in rows.iterrows():
                     conn.execute(
-                        "INSERT OR REPLACE INTO stock_kline_data "
+                        "INSERT INTO stock_kline_data "
                         "(code, date, period, open, high, low, close, volume, "
-                        "amount, turn, pctChg) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        "amount, turn, pctChg) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                        "ON CONFLICT(code, date, period) DO UPDATE SET "
+                        "open=excluded.open, high=excluded.high, low=excluded.low, "
+                        "close=excluded.close, volume=excluded.volume, "
+                        "amount=excluded.amount, "
+                        "turn=COALESCE(excluded.turn, turn), "
+                        "pctChg=COALESCE(excluded.pctChg, pctChg)",
                         (code, str(r.get('日期')), period,
                          _f(r.get('开盘价')), _f(r.get('最高价')), _f(r.get('最低价')),
                          _f(r.get('收盘价')), _f(r.get('成交量')), _f(r.get('成交额')),
