@@ -1,6 +1,6 @@
 """mystery.apps.web.app — Streamlit 前端（P3：只调 Service，session 只存结果 dict）。
 
-三视图：个股分析 / 全市场扫描 / 板块钻取 —— 底层同一 analyze_one_stock，同股同分。
+三视图：个股分析（支持代码/名称搜索 + 自选股）/ 全市场扫描 / 板块钻取。
 渲染与计算分离：结果存 session_state，按钮后 fall-through 到展示区（不用 st.stop）。
 运行：streamlit run mystery/apps/web/app.py
 """
@@ -16,8 +16,10 @@ import streamlit as st  # noqa: E402
 
 st.set_page_config(page_title="Mistery 趋势交易分析", layout="wide")
 
+from mystery.adapters.codes import normalize_symbol  # noqa: E402
 from mystery.services.analyze import AnalysisService  # noqa: E402
 from mystery.services.scan import scan_market  # noqa: E402
+from mystery.services import watchlist as _wl  # noqa: E402
 
 
 @st.cache_resource
@@ -32,6 +34,22 @@ def _fmt(v, nd=2):
         return f"{float(v):.{nd}f}"
     except Exception:
         return str(v)
+
+
+def _resolve_code(text: str):
+    """输入代码或名称 → (code, name) 或 None。"""
+    t = text.strip()
+    if not t:
+        return None
+    try:
+        return normalize_symbol(t), ""
+    except Exception:
+        pass
+    hits = _wl.search_stock(t, limit=8)
+    if hits:
+        h = hits[0]
+        return h['code'], h['name']
+    return None
 
 
 # ================= 展示函数（模块级，先定义后调用） =================
@@ -49,7 +67,7 @@ def render_stock(d: dict):
     # 缠论卡（只读 chan）
     chan = d.get('chan', {}) or {}
     if chan:
-        with st.expander("缠论结构（czsc，仅展示不进评分）", expanded=True):
+        with st.expander("缠论结构（czsc，仅展示）", expanded=True):
             for freq, cs in chan.items():
                 bis = cs.get('bis', [])
                 zss = cs.get('zss', [])
@@ -76,7 +94,7 @@ def render_stock(d: dict):
     plat = m.get('platform', {}).get('平台范围') or {}
     c3.metric("平台箱体", f"{_fmt(plat.get('下沿'))}~{_fmt(plat.get('上沿'))}"
               if plat else "-")
-    c4.metric("筹码集中度", m.get('checklist8', {}).get('满足数量', '-'))
+    c4.metric("主升浪8项满足", m.get('checklist8', {}).get('满足数量', '-'))
 
     with st.expander("主升浪 8 项指标", expanded=False):
         cl = m.get('checklist8', {})
@@ -101,20 +119,83 @@ def render_stock(d: dict):
         c4.metric("报告期", str(fin.get('report_date', '-')))
 
 
+# ================= 侧栏自选股 =================
+def render_watchlist_sidebar():
+    st.sidebar.subheader("自选股")
+    codes = _wl.load_watchlist()
+    if codes:
+        names = {}
+        for s in _wl.search_stock('', limit=0) or []:
+            pass
+        try:
+            svc = _service()
+            stock_map = {}
+            for s in svc.market.fetch_stock_list():
+                stock_map[s['code']] = s['name']
+        except Exception:
+            stock_map = {}
+        labels = {c: f"{c} {stock_map.get(c, '')}".strip() for c in codes}
+        sel = st.sidebar.multiselect("自选列表（可多选分析）",
+                                     options=codes, default=codes[-1:],
+                                     format_func=lambda c: labels.get(c, c))
+        c1, c2 = st.sidebar.columns(2)
+        if c1.button("分析所选", type="primary", use_container_width=True):
+            with st.spinner("分析自选股..."):
+                rows = scan_market(watchlist=sel, include_detail=False)
+                st.session_state['scan_results'] = rows
+                st.session_state['_wl_analyzed'] = True
+        if c2.button("全部移除", use_container_width=True):
+            _wl.save_watchlist([])
+            st.rerun()
+    else:
+        st.sidebar.caption("自选股为空，可在个股页加入")
+
+
 # ================= 视图 =================
 def view_stock():
-    st.header("个股分析")
-    code = st.text_input("股票代码", "sh600519").strip()
-    if st.button("开始分析", type="primary"):
-        with st.spinner("分析中..."):
-            try:
-                r = _service().analyze_one_stock(code)
-                st.session_state['stock_analysis'] = r.to_dict()
-            except Exception as e:
-                st.error(f"分析失败: {e}")
-                st.session_state.pop('stock_analysis', None)
-    if 'stock_analysis' in st.session_state:
-        render_stock(st.session_state['stock_analysis'])
+    st.header("个股分析（支持代码或股票名搜索）")
+    c1, c2 = st.columns([3, 1])
+    text = c1.text_input("输入代码或名称", "sh600519").strip()
+    do_analyze = c2.button("分析", type="primary")
+    # 名称搜索提示（输入非代码时展示匹配候选）
+    candidates = None
+    if text:
+        try:
+            normalize_symbol(text)
+        except Exception:
+            candidates = _wl.search_stock(text, limit=6)
+            if candidates:
+                opts = {f"{h['name']}（{h['code']}）": h['code'] for h in candidates}
+                pick = st.radio("匹配到以下股票，选择后点分析：",
+                                list(opts.keys()), horizontal=True)
+                text = opts[pick]
+    if do_analyze:
+        resolved = _resolve_code(text)
+        if resolved is None:
+            st.error(f"未找到股票：{text}")
+        else:
+            code, _ = resolved
+            with st.spinner("分析中..."):
+                try:
+                    r = _service().analyze_one_stock(code)
+                    st.session_state['stock_analysis'] = r.to_dict()
+                    st.session_state['stock_analysis']['_input'] = text
+                except Exception as e:
+                    st.error(f"分析失败: {e}")
+                    st.session_state.pop('stock_analysis', None)
+    d = st.session_state.get('stock_analysis')
+    if d:
+        render_stock(d)
+        cur = d.get('symbol', '')
+        wl = _wl.load_watchlist()
+        if cur in wl:
+            if st.button("从自选股移除", use_container_width=True):
+                _wl.remove_from_watchlist(cur)
+                st.rerun()
+        else:
+            if st.button("加入自选股", use_container_width=True):
+                _wl.add_to_watchlist(cur)
+                st.rerun()
 
 
 def view_scan():
@@ -165,7 +246,9 @@ def view_sector():
 def main():
     page = st.sidebar.radio("导航", ["个股分析", "全市场扫描", "板块钻取"])
     st.sidebar.caption("唯一计算入口：mystery.services.analyze.analyze_one_stock")
-    st.sidebar.caption(f"chan 开关: {'开' if os.environ.get('MYSTERY_CHAN_ENABLED', '0') not in ('0', 'false') else '关'}")
+    st.sidebar.caption(
+        f"chan 开关: {'开' if os.environ.get('MYSTERY_CHAN_ENABLED', '0') not in ('0', 'false') else '关'}")
+    render_watchlist_sidebar()
     if page == "个股分析":
         view_stock()
     elif page == "全市场扫描":

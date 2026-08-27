@@ -25,9 +25,16 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def _cmd_daily(args: argparse.Namespace) -> int:
+    from ..services import watchlist as _wl
     from ..services.scan import scan_market
 
-    results = scan_market(limit=args.limit, include_detail=False,
+    codes = _wl.load_watchlist()
+    if args.symbols:
+        codes = list(args.symbols)
+    if not codes:
+        print("自选股为空（data/watchlist.json），可用 --symbols 指定")
+        return 1
+    results = scan_market(watchlist=codes, include_detail=False,
                           min_score=args.min_score)
     for r in results:
         print(f"{r.get('symbol')} {r.get('name', ''):　<6} "
@@ -66,8 +73,8 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--quick", action="store_true", help="跳过明细（扫描模式）")
     p.set_defaults(func=_cmd_analyze)
 
-    p = sub.add_parser("daily", help="日报（默认自选股/全列表前N）")
-    p.add_argument("--limit", type=int, default=50, help="最多分析只数")
+    p = sub.add_parser("daily", help="自选股日报（data/watchlist.json）")
+    p.add_argument("--symbols", nargs="*", default=None, help="临时指定代码，覆盖自选股")
     p.add_argument("--min-score", type=float, default=None)
     p.set_defaults(func=_cmd_daily)
 
