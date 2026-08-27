@@ -2,6 +2,8 @@
 
 P1：给定合成 K 线，主升浪/平台/共振有确定输出。
 """
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 
