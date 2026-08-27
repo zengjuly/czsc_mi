@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mystery"
+version = "0.1.0"
+description = "Mistery趋势交易论自动化分析：czsc 缠论内核 + mystery 规则 + 多源行情"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "czsc>=1.0.1,<2.0",
+    "pandas>=2.0",
+    "pyyaml",
+    "openpyxl",
+]
+
+[project.optional-dependencies]
+web = ["streamlit"]
+
+[project.scripts]
+czsc-mi = "mystery.apps.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mystery*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
