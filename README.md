@@ -61,4 +61,6 @@ cd /home/ai/ai_runner/stock/czsc_mi && pytest -q
 - P3 入口收口（CLI / daily / scan / verify_unified_analysis）✅
   - czsc-mi analyze/daily/scan/sync + Web 三视图（个股/扫描/板块钻取，只调 Service）
   - verify_unified_analysis.py：三路径 score 差 ≤ 1 + 金标对比（PASS）
-- P4 小权重缠论分（需用户确认）
+- P4 小权重缠论分 ✅（2026-08-28 用户确认开启）
+  - S = 0.55×Mystery + 0.25×共振 + 0.20×缠论；年线滤网未过 → 混合分强制 0
+  - 20 只样本漂移验证：Top5 排序不变，up 笔股票分小幅上移

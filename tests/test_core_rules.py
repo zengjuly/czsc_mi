@@ -96,3 +96,59 @@ def test_core_no_czsc_import():
             "mystery.core.patterns, mystery.core.indicators")
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
+
+
+# ---------------- P4 缠论混合评分 ----------------
+def _mk_breakdown(score=49.0, resonance=55.0, vetoed=False) -> MysteryBreakdown:
+    from mystery.core.models import MysteryBreakdown
+
+    signal = {'综合评分': score, '共振评分': resonance, '操作建议': '可关注',
+              '真三振': False, '年线滤网': not vetoed}
+    return MysteryBreakdown(signal=signal)
+
+
+def _mk_chan(last_bi_dir='up', in_zs=False):
+    from mystery.core.models import ChanBi, ChanStructure
+
+    return {'1d': ChanStructure(freq='1d', bis=[ChanBi('up', '2026-01-01',
+                                                       '2026-02-01', 10, 9)],
+                                last_bi_dir=last_bi_dir, in_zs=in_zs,
+                                engine='czsc', engine_ver='1.0.1')}
+
+
+def test_chan_score_defaults():
+    from mystery.core.scorer import chan_score
+
+    assert chan_score(None) == 50.0
+    assert chan_score({}) == 50.0
+    assert chan_score(_mk_chan('up')) == 60.0
+    assert chan_score(_mk_chan('up', in_zs=True)) == 65.0
+    assert chan_score(_mk_chan('down')) == 40.0
+
+
+def test_combine_p4_blend():
+    """P4：0.55*49 + 0.25*55 + 0.20*60 = 43.95 → 44.0。"""
+    from mystery.core.scorer import combine
+
+    bd = _mk_breakdown()
+    score, advice, true_res = combine(bd, _mk_chan('up'), chan_enabled=True)
+    assert score == round(0.55 * 49 + 0.25 * 55 + 0.20 * 60, 1)
+    assert advice == '可关注'
+
+
+def test_combine_p4_veto():
+    """年线滤网失败 → 混合分强制 0（一票否决不被 0.2*S_chan 拉正）。"""
+    from mystery.core.scorer import combine
+
+    bd = _mk_breakdown(vetoed=True)
+    score, _, _ = combine(bd, _mk_chan('up'), chan_enabled=True)
+    assert score == 0.0
+
+
+def test_combine_chan_off_unchanged():
+    """chan 关闭时恒为 Mystery 原分（金标兼容）。"""
+    from mystery.core.scorer import combine
+
+    bd = _mk_breakdown()
+    score, _, _ = combine(bd, _mk_chan('up'), chan_enabled=False)
+    assert score == 49.0

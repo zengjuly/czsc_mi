@@ -90,8 +90,10 @@ analyze_one_stock(symbol):
   low/close/**vol**/amount）→ `CZSC(bars, min_bi_len)` → `bi_list/zs_list/fx_list`。
 - BI：`direction`（中文"向上/向下"）、sdt/edt（datetime）、high/low；
   ZS：zg/zd/gg/dd/sdt/edt/is_valid/bis；`c.finished_bis` 判最后一笔是否确认。
-- 只进 `AnalysisResult.chan`（freq→ChanStructure），**不进评分**（P2 规范；
-  P4 混合公式 0.55/0.25/0.20 已注释在 scorer.py）。
+- 只进 `AnalysisResult.chan`（freq→ChanStructure），**P4 起参与评分**：
+  `S = 0.55*S_mystery + 0.25*S_resonance + 0.20*S_chan`；S_chan 缺省 50，
+  有 1d 结构时按最新笔方向 ±10、中枢内 +5；**年线滤网未通过 → 混合分强制 0**
+  （一票否决语义）。
 - chan_cache：`store.chan_cache` 表（symbol/freq/trade_date/czsc_ver PK），
   行情日或 czsc 版本变化才失效。
 
@@ -121,7 +123,10 @@ analyze_one_stock(symbol):
 | P1 | 规则迁入+金标（chan 关，分差≤1） | ✅ 0.2.0 |
 | P2 | CzscAdapter 只展示（不进评分） | ✅ 0.2.0 |
 | P3 | CLI/scan/sync/verify/Web 收口 | ✅ 0.3.0 |
-| P4 | 小权重缠论分（0.55/0.25/0.20） | ⏸ 待用户确认 |
+| P4 | 小权重缠论分（0.55/0.25/0.20，年线滤网否决保护） | ✅ 0.4.0 |
+
+P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
+仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。
 
 ## 10. 运行环境
 
