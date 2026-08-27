@@ -43,6 +43,24 @@ class SectorClient:
             logger.debug(f"get_industry({symbol}) 失败: {str(e)[:80]}")
         return out
 
+    def get_sector(self, sector_code: str) -> Dict:
+        """板块直查：{code, name, score, up}（ths_886109 等板块代码）。"""
+        out = {'code': str(sector_code), 'name': '', 'score': None, 'up': None}
+        try:
+            kline = self.db.get_sector_kline(sector_code)
+            if kline is not None and not kline.empty:
+                score = _res.calculate_industry_score_from_sector(kline)
+                out['score'] = float(score)
+                out['up'] = bool(score > 12.5)
+            meta = self.db.get_sector_meta(active_only=False)
+            for m in meta:
+                if str(m[0]) == str(sector_code):
+                    out['name'] = m[1] or ''
+                    break
+        except Exception as e:
+            logger.debug(f"get_sector({sector_code}) 失败: {str(e)[:80]}")
+        return out
+
     def get_sector_kline(self, sector_code: str) -> Optional[pd.DataFrame]:
         """板块指数 K 线（升序，收盘价/成交额…），ths_ 前缀自动归一。"""
         return self.db.get_sector_kline(sector_code)

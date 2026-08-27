@@ -291,6 +291,27 @@ class MysteryDB:
             finally:
                 conn.close()
 
+    def get_sector_stocks(self, sector_code: str) -> List[str]:
+        """板块成分股代码（sh600519 格式），优先 rel 表，constituents 兜底。"""
+        code = str(sector_code)
+        if not code.startswith('ths_'):
+            code = f'ths_{code.split(".")[0]}'
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT stock_code FROM stock_sector_rel WHERE sector_code=? "
+                    "ORDER BY is_primary DESC", (code,)).fetchall()
+                codes = [r[0] for r in rows]
+                if not codes:
+                    rows = conn.execute(
+                        "SELECT stock_code FROM sector_constituents "
+                        "WHERE sector_code=?", (code,)).fetchall()
+                    codes = [r[0] for r in rows]
+                return [c.replace('.', '') for c in codes]
+            finally:
+                conn.close()
+
     # ---------------- 财务 ----------------
     def get_financial(self, code: str) -> Dict[str, Any]:
         """最新财报快照 {pe, pb, roe, roe_avg, eps_ttm, dividend, report_date...}。"""

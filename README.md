@@ -58,5 +58,7 @@ cd /home/ai/ai_runner/stock/czsc_mi && pytest -q
   - sh600519 / sz000001 / sh600150 三只金标 0 分差（fixtures/gold_*.json）
 - P2 CzscAdapter 只展示（ChanStructure 进 AnalysisResult，不进评分）✅
   - czsc 1.0.1：日/周双周期笔+中枢抽取，chan_cache 缓存，NaN 拒绝
-- P3 入口收口（CLI / daily / scan / verify_unified_analysis）
+- P3 入口收口（CLI / daily / scan / verify_unified_analysis）✅
+  - czsc-mi analyze/daily/scan/sync + Web 三视图（个股/扫描/板块钻取，只调 Service）
+  - verify_unified_analysis.py：三路径 score 差 ≤ 1 + 金标对比（PASS）
 - P4 小权重缠论分（需用户确认）
