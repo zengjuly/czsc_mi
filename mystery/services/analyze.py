@@ -14,7 +14,6 @@ import pandas as pd
 
 from ..adapters import market as _market
 from ..adapters import sector as _sector
-from ..adapters.czsc_adapter import CzscAdapter
 from ..core.indicators import enrich_indicators
 from ..core.models import AnalysisResult, BarSeries, ChanStructure, MarketContext, MysteryBreakdown
 from ..core.mystery_rules import MysteryLogic
@@ -110,6 +109,33 @@ class AnalysisService:
                            '平台范围': None, '详情': []}
         return bd
 
+    def _analyze_chan(self, daily: BarSeries) -> Dict[str, ChanStructure]:
+        """缠论多周期分析（带 chan_cache：行情日/版本变化才失效）。"""
+        from ..adapters.czsc_adapter import CzscAdapter, chan_from_dict, czsc_version
+        import json as _json
+
+        ver = czsc_version()
+        trade_date = str(daily.bars[-1].dt)[:10] if daily.bars else ''
+        adapter = CzscAdapter()
+        out: Dict[str, ChanStructure] = {}
+        try:
+            cached_raw = self.market.db.get_chan_cache(daily.symbol, '1d',
+                                                       trade_date, ver)
+            if cached_raw:
+                out['1d'] = chan_from_dict(_json.loads(cached_raw))
+            else:
+                s = adapter.analyze(daily)
+                out['1d'] = s
+                self.market.db.set_chan_cache(daily.symbol, '1d', trade_date, ver,
+                                              _json.dumps(s.to_dict(), ensure_ascii=False))
+            weekly = self.market.fetch_bars(daily.symbol, '1w')
+            if weekly.bars:
+                cw = adapter.analyze(weekly)
+                out['1w'] = cw
+        except Exception as e:
+            logger.warning(f"缠论分析失败({daily.symbol}): {str(e)[:100]}")
+        return out
+
     def analyze_one_stock(self, symbol: str,
                           include_detail: bool = True) -> AnalysisResult:
         """单票完整分析（CLAUDE.md §7.4 伪代码）。"""
@@ -127,10 +153,10 @@ class AnalysisService:
 
         ctx = self.build_market_context(internal, daily)
 
-        # 缠论（P2 实现；一期关闭时 Service 不调用 Adapter）
+        # 缠论（P2：只展示不进评分；MYSTERY_CHAN_ENABLED=0 时 Service 不调用 Adapter）
         chan: Dict[str, ChanStructure] = {}
         if chan_enabled():
-            chan = CzscAdapter().analyze_multi(daily, ['1d', '1w'])
+            chan = self._analyze_chan(daily)
 
         bd = self.run_rules(daily_df, weekly_df, monthly_df, ctx,
                             chan.get('1d'), include_detail)
@@ -138,6 +164,10 @@ class AnalysisService:
                                                   chan_enabled=chan_enabled())
         last = daily.bars[-1]
         name = self.market.db.get_stock_name(internal) or ''
+        czsc_ver = ''
+        if chan:
+            from ..adapters.czsc_adapter import czsc_version
+            czsc_ver = czsc_version()
         result = AnalysisResult(
             symbol=internal,
             name=name,
@@ -152,7 +182,7 @@ class AnalysisService:
                     '行业趋势': ctx.industry_up},
             financial=ctx.financial,
             rule_ver='mystery-1.22.30-compat',
-            czsc_ver='',
+            czsc_ver=czsc_ver,
         )
         return result
 

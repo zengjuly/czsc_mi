@@ -56,6 +56,7 @@ cd /home/ai/ai_runner/stock/czsc_mi && pytest -q
   - core 规则全量迁入（mystery_rules/indicators/resonance/platform/patterns）
   - 多源行情：DB(未过期) → ths_official(MarketDB→fuyao) → tdx_local
   - sh600519 / sz000001 / sh600150 三只金标 0 分差（fixtures/gold_*.json）
-- P2 CzscAdapter 只展示（ChanStructure 进 AnalysisResult，不进评分）
+- P2 CzscAdapter 只展示（ChanStructure 进 AnalysisResult，不进评分）✅
+  - czsc 1.0.1：日/周双周期笔+中枢抽取，chan_cache 缓存，NaN 拒绝
 - P3 入口收口（CLI / daily / scan / verify_unified_analysis）
 - P4 小权重缠论分（需用户确认）
