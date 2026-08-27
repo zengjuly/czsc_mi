@@ -336,18 +336,19 @@ def calculate_volume_price_relation(data: pd.DataFrame) -> pd.DataFrame:
         return result
     price_change = result['收盘价'].diff()
     volume_change = result['成交量'].diff()
-    result['量价配合度'] = 0
+    result['量价配合度'] = 0.0
     for i in range(1, len(result)):
         if pd.notna(price_change.iloc[i]) and pd.notna(volume_change.iloc[i]):
             if price_change.iloc[i] > 0 and volume_change.iloc[i] > 0:
-                result.loc[i, '量价配合度'] = 1
+                result.loc[i, '量价配合度'] = 1.0
             elif price_change.iloc[i] > 0 and volume_change.iloc[i] <= 0:
-                result.loc[i, '量价配合度'] = -1
+                result.loc[i, '量价配合度'] = -1.0
             elif price_change.iloc[i] <= 0 and volume_change.iloc[i] > 0:
-                result.loc[i, '量价配合度'] = -1
+                result.loc[i, '量价配合度'] = -1.0
             else:
-                result.loc[i, '量价配合度'] = 0
-    result['OBV'] = 0
+                result.loc[i, '量价配合度'] = 0.0
+    # OBV 用 float 初始化（成交量多为 float，pandas 3.0 int64 赋值 float 会抛 TypeError）
+    result['OBV'] = 0.0
     for i in range(1, len(result)):
         if pd.notna(price_change.iloc[i]):
             if price_change.iloc[i] > 0:
@@ -357,7 +358,7 @@ def calculate_volume_price_relation(data: pd.DataFrame) -> pd.DataFrame:
             else:
                 result.loc[i, 'OBV'] = result.loc[i - 1, 'OBV']
     result['OBV_MA'] = result['OBV'].rolling(window=20).mean()
-    result['OBV信号'] = 0
+    result['OBV信号'] = 0.0
     for i in range(1, len(result)):
         if (pd.notna(result.iloc[i - 1]['OBV_MA']) and pd.notna(result.iloc[i]['OBV_MA'])
                 and pd.notna(result.iloc[i - 1]['OBV']) and pd.notna(result.iloc[i]['OBV'])):
