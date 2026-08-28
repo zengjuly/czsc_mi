@@ -4,7 +4,7 @@ db_path: ${MYSTERY_DB_PATH}
 
 data_source:
   primary: ths_official
-  fallback: [tdx_api, tdx_local]
+  fallback: [tdx_local]        # 与 adapters/market.py 降级顺序一致（db→ths→tdx_local）
   adjust: qfq
   resample_engine: mystery
 

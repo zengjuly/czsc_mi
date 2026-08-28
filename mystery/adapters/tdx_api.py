@@ -1,4 +1,8 @@
-"""mystery.adapters.tdx_api — 通达信 HTTP API（代码带交易所前缀 SH600519）。"""
+"""mystery.adapters.tdx_api — 通达信 HTTP API（代码带交易所前缀 SH600519）。
+
+unused in default fallback：代码主路径为 db → ths_official → tdx_local，
+本模块仅为接口占位（config fallback 已与代码对齐为 [tdx_local]）。
+"""
 from __future__ import annotations
 
 from typing import Dict, Optional

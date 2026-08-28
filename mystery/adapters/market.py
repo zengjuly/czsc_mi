@@ -75,21 +75,23 @@ class MarketDataClient:
             ref = self._freshness_ref(internal)
             if not (ref and db_last < ref):
                 return to_cn_columns(df), 'db'
-            logger.info(f"[db] {internal} 本地库过期({db_last}<最新{ref})，走在线源")
+            logger.warning(f"[db→降级] {internal} 本地库过期({db_last}<最新{ref})，切 ths_official")
         # 2. ths_official（MarketDB 本地秒读 → fuyao 兜底）
         try:
             raw = self.ths.get_daily(internal, start, end)
             if raw is not None and not raw.empty:
                 return raw, 'ths_official'
+            logger.warning(f"[ths_official→降级] {internal} 返回空，切 tdx_local")
         except Exception as e:
-            logger.debug(f"[ths] {internal} 失败: {str(e)[:60]}")
+            logger.warning(f"[ths_official→降级] {internal} 异常 {type(e).__name__}: {str(e)[:60]}，切 tdx_local")
         # 3. tdx_local
         try:
             raw = self.tdx_local.get_daily(internal, start, end)
             if raw is not None and not raw.empty:
                 return raw, 'tdx_local'
+            logger.warning(f"[tdx_local→降级] {internal} 返回空")
         except Exception as e:
-            logger.debug(f"[tdx_local] {internal} 失败: {str(e)[:60]}")
+            logger.warning(f"[tdx_local→降级] {internal} 异常 {type(e).__name__}: {str(e)[:60]}")
         return None, ''
 
     def _freshness_ref(self, internal: str) -> Optional[str]:
