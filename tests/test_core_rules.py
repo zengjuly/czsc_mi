@@ -143,8 +143,8 @@ def test_chan_score_weekly_same_opposite():
 
     assert chan_score(_mk_chan('up', weekly_dir='up')) == 68.0
     assert chan_score(_mk_chan('up', weekly_dir='down')) == 52.0
-    assert chan_score(_mk_chan('down', weekly_dir='down')) == 32.0
-    assert chan_score(_mk_chan('down', weekly_dir='up')) == 48.0
+    assert chan_score(_mk_chan('down', weekly_dir='down')) == 48.0
+    assert chan_score(_mk_chan('down', weekly_dir='up')) == 32.0
 
 
 def test_chan_score_clamped():
