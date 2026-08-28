@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 web = ["streamlit"]
+dev = ["pytest"]
 
 [project.scripts]
 czsc-mi = "mystery.apps.cli:main"

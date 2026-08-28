@@ -1,7 +1,7 @@
-"""test_unified_score — chan 关闭时与 gold fixture 分差 ≤ 1（P1 验收）。
+"""test_unified_score — W2.2 集成金标（需原机数据，默认可 skip）。
 
-fixtures/gold_*.json 由旧系统 unified_stock_analysis 生成（见 scripts/verify_unified_analysis.py）。
-数据源不可用（无 MarketDB/网络）时自动 skip，不阻塞离线 CI。
+离线金标见 test_score_offline.py（fixture 固化，零 IO）。
+本文件标注 @pytest.mark.integration：pytest 默认不跑，pytest -m integration 才跑。
 """
 import json
 import os
@@ -14,6 +14,8 @@ from mystery.services.analyze import analyze_one_stock
 FIXTURES = Path(__file__).parent / "fixtures"
 _STOCKS = ["sh600519", "sz000001", "sh600150"]
 
+pytestmark = pytest.mark.integration
+
 
 def _load_gold(sym: str) -> dict:
     with open(FIXTURES / f"gold_{sym}.json", encoding="utf-8") as f:
@@ -23,8 +25,8 @@ def _load_gold(sym: str) -> dict:
 @pytest.mark.parametrize("sym", _STOCKS)
 def test_score_within_1_of_gold(sym):
     gold = _load_gold(sym)
-    if not (FIXTURES / f"gold_{sym}.json").exists():
-        pytest.skip("缺金标 fixture")
+    if not os.environ.get("MYSTERY_DB_PATH"):
+        pytest.skip("未设置 MYSTERY_DB_PATH（集成测需原机数据）")
     try:
         r = analyze_one_stock(sym, include_detail=False)
     except Exception as e:
@@ -38,6 +40,8 @@ def test_score_within_1_of_gold(sym):
 def test_gold_price_matches(sym):
     """最新价与金标一致（同一数据源同一天）。"""
     gold = _load_gold(sym)
+    if not os.environ.get("MYSTERY_DB_PATH"):
+        pytest.skip("未设置 MYSTERY_DB_PATH（集成测需原机数据）")
     try:
         r = analyze_one_stock(sym, include_detail=False)
     except Exception as e:
