@@ -91,6 +91,10 @@ class AnalysisService:
             else:
                 s = adapter.analyze(daily)
                 out['1d'] = s
+                if s.engine_ver == "unavailable":
+                    logger.error(
+                        f"MYSTERY_CHAN_ENABLED=1 但 czsc 未安装："
+                        f"pip install -e '.[chan]' 后重启（{daily.symbol}）")
                 self.market.db.set_chan_cache(daily.symbol, '1d', trade_date, ver,
                                               _json.dumps(s.to_dict(), ensure_ascii=False))
             weekly = self.market.fetch_bars(daily.symbol, '1w')

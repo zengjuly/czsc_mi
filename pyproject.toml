@@ -4,19 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mystery"
-version = "0.1.0"
+version = "0.4.0"
 description = "Mistery趋势交易论自动化分析：czsc 缠论内核 + mystery 规则 + 多源行情"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "czsc>=1.0.1,<2.0",
     "pandas>=2.0",
     "pyyaml",
     "openpyxl",
 ]
 
 [project.optional-dependencies]
+# 缠论可选：无 czsc 也能装能跑（chan 关闭时完全不 import czsc）
+chan = ["czsc>=1.0.1,<2.0"]
 web = ["streamlit"]
 dev = ["pytest"]
 

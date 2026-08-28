@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import logging
 import os
 from typing import Dict, List, Optional
 
 import pandas as pd
 
 from ..core.models import Bar, BarSeries, ChanBi, ChanStructure, ChanZs
+
+logger = logging.getLogger(__name__)
 
 _CZSC_MIN_BI_LEN = int(os.environ.get("CZSC_MIN_BI_LEN", "7"))
 _FREQ_MAP = {"1d": "D", "1w": "W", "1M": "M"}
@@ -40,9 +43,16 @@ class CzscAdapter:
         self.min_bi_len = min_bi_len or _CZSC_MIN_BI_LEN
 
     def analyze(self, series: BarSeries) -> ChanStructure:
-        """单周期分析：BarSeries → ChanStructure（czsc 唯一入口）。"""
-        from czsc import CZSC, Freq, format_standard_kline
+        """单周期分析：BarSeries → ChanStructure（czsc 唯一入口）。
 
+        czsc 未安装时返回空结构 + engine_ver='unavailable'（不抛到顶层）。
+        """
+        try:
+            from czsc import CZSC, Freq, format_standard_kline
+        except ImportError:
+            logger.warning("czsc 未安装（pip install -e '.[chan]'），缠论结构不可用")
+            return ChanStructure(freq=series.freq, engine="czsc",
+                                 engine_ver="unavailable")
         if not series.bars:
             return ChanStructure(freq=series.freq, engine="czsc",
                                  engine_ver=czsc_version())

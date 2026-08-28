@@ -12,7 +12,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PY="${CZSC_MI_WEB_PY:-/home/ai/ai_runner/venv/bin/python}"
+# 解释器：默认当前 shell 的 python（venv 激活后即 venv），可用 CZSC_MI_WEB_PY 覆盖
+PY="${CZSC_MI_WEB_PY:-python}"
 PORT="${CZSC_MI_WEB_PORT:-18501}"
 PIDFILE="${CZSC_MI_WEB_PIDFILE:-/tmp/czsc_mi_web.pid}"
 LOG="${CZSC_MI_WEB_LOG:-/tmp/czsc_mi_web.log}"
