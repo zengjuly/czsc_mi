@@ -22,17 +22,22 @@ apps (CLI/Web/cron)
 ## 安装
 
 ```bash
-source /home/ai/ai_runner/venv/bin/activate
-pip install -e /home/ai/ai_runner/stock/czsc   # 或 pip install "czsc>=1.0.1,<2.0"
-pip install -e "/home/ai/ai_runner/stock/czsc_mi[web]"
+python -m venv .venv && source .venv/bin/activate   # 或复用已有 venv
+pip install -e ".[web]"          # 无缠论场景（chan 关闭）只装基础
+pip install -e ".[chan]"         # 需要缠论展示时补装 czsc
+pip install -e ".[dev]"          # 开发（pytest）
 ```
 
 环境变量（只读，不入库）：
 
 ```bash
-export MYSTERY_DB_PATH=/home/ai/ai_runner/stock/data/db/mystery_cache.db  # 复用现网生产库
-export MYSTERY_CHAN_ENABLED=0                                             # 一期默认关
+export MYSTERY_DB_PATH=/path/to/mystery_cache.db   # 默认 <repo>/data/mystery_cache.db
+export MYSTERY_CHAN_ENABLED=0                       # 缠论分默认关
+export HITHINK_FINANCE_API_KEY=...                  # 扶摇在线源（可选，本地 MarketDB 不需要）
 ```
+
+无 DB / 无 TDX / 无网络时：core 离线单测可跑（`pytest -m "not integration"`），
+`analyze/scan` 会失败或走 skip（集成测打标 @integration）。
 
 ## 使用
 
@@ -46,7 +51,8 @@ czsc-mi sync --period daily --days 365
 ## 测试
 
 ```bash
-cd /home/ai/ai_runner/stock/czsc_mi && pytest -q
+cd czsc_mi && pytest                    # 离线（默认排除 integration）
+pytest -m integration                   # 原机集成（需 MYSTERY_DB_PATH + THS/TDX）
 ```
 
 ## 阶段

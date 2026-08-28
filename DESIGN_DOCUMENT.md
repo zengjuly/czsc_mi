@@ -131,10 +131,19 @@ P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序�
 ## 10. 运行环境
 
 ```bash
-source /home/ai/ai_runner/venv/bin/activate
+source /home/ai/ai_runner/venv/bin/activate   # 原机示例；任意 venv 均可
 export MYSTERY_DB_PATH=/home/ai/ai_runner/stock/data/db/mystery_cache.db
-export MYSTERY_CHAN_ENABLED=0        # 1=开启缠论展示（不进评分）
+export MYSTERY_CHAN_ENABLED=0        # 1=开启缠论混合分（默认关）
 export HITHINK_FINANCE_API_KEY=...   # 环境已有；不入库
 cd /home/ai/ai_runner/stock/czsc_mi
 czsc-mi analyze --stock sh600519
 ```
+
+## 11. 已知缺口（W1 记录，2026-08-28）
+
+- 金标集成测依赖原机实盘数据（THS/TDX/生产 DB），已拆双层：离线 fixture 锁分（test_score_offline），
+  集成测打标 @integration 默认跳过。
+- `schema.sql` 已自举（幂等建表）；改列/迁移策略未实现（migrations/ 仅说明）。
+- 缠论分仍较浅（末笔方向/中枢/日周同向，±10/±5/±8），非完整买卖点/背驰体系；默认关闭。
+- 无 CI 之外的发布管道（无 wheel 构建/发布配置）。
+- 在线源仅 ths_official + tdx_local 活跃；tdx_api 为接口占位（unused in default fallback）。
