@@ -109,13 +109,20 @@ def _mk_breakdown(score=49.0, resonance=55.0, vetoed=False) -> MysteryBreakdown:
     return MysteryBreakdown(signal=signal)
 
 
-def _mk_chan(last_bi_dir='up', in_zs=False):
+def _mk_chan(last_bi_dir='up', in_zs=False, confirmed=True, weekly_dir=None):
     from mystery.core.models import ChanBi, ChanStructure
 
-    return {'1d': ChanStructure(freq='1d', bis=[ChanBi('up', '2026-01-01',
+    chan = {'1d': ChanStructure(freq='1d', bis=[ChanBi('up', '2026-01-01',
                                                        '2026-02-01', 10, 9)],
-                                last_bi_dir=last_bi_dir, in_zs=in_zs,
+                                last_bi_dir=last_bi_dir,
+                                last_bi_confirmed=confirmed, in_zs=in_zs,
                                 engine='czsc', engine_ver='1.0.1')}
+    if weekly_dir:
+        chan['1w'] = ChanStructure(
+            freq='1w', bis=[ChanBi(weekly_dir, '2026-01-01', '2026-02-01', 10, 9)],
+            last_bi_dir=weekly_dir, last_bi_confirmed=True,
+            engine='czsc', engine_ver='1.0.1')
+    return chan
 
 
 def test_chan_score_defaults():
@@ -126,6 +133,25 @@ def test_chan_score_defaults():
     assert chan_score(_mk_chan('up')) == 60.0
     assert chan_score(_mk_chan('up', in_zs=True)) == 65.0
     assert chan_score(_mk_chan('down')) == 40.0
+    # 未确认笔不给方向分
+    assert chan_score(_mk_chan('up', confirmed=False)) == 50.0
+
+
+def test_chan_score_weekly_same_opposite():
+    """W6：日周同向 +8 / 反向 -8。"""
+    from mystery.core.scorer import chan_score
+
+    assert chan_score(_mk_chan('up', weekly_dir='up')) == 68.0
+    assert chan_score(_mk_chan('up', weekly_dir='down')) == 52.0
+    assert chan_score(_mk_chan('down', weekly_dir='down')) == 32.0
+    assert chan_score(_mk_chan('down', weekly_dir='up')) == 48.0
+
+
+def test_chan_score_clamped():
+    from mystery.core.scorer import chan_score
+
+    # up + 中枢 + 同向 = 50+10+5+8 = 73；夹紧上界
+    assert chan_score(_mk_chan('up', in_zs=True, weekly_dir='up')) == 73.0
 
 
 def test_combine_p4_blend():

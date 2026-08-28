@@ -12,17 +12,30 @@ from .models import ChanStructure, MysteryBreakdown
 
 
 def chan_score(chan: Optional[Dict[str, ChanStructure]]) -> float:
-    """缠论分：缺省 50；有 1d 结构时按最新笔方向 ±10、中枢内 +5。"""
+    """缠论分（可解释规则，权重 0.20，仅用 ChanStructure，core 不碰 czsc 对象）：
+
+    - 无日线结构：50
+    - 日线末笔 up 且已确认：+10；down 且已确认：-10
+    - 日线当前在中枢内：+5
+    - 有周线且周线末笔与日线同向：+8；反向：-8
+    - 分数夹紧 [0, 100]
+    """
     if not chan or '1d' not in chan:
         return 50.0
-    c = chan['1d']
+    c1 = chan['1d']
     s = 50.0
-    if c.last_bi_dir == 'up':
+    if c1.last_bi_dir == 'up' and c1.last_bi_confirmed:
         s += 10
-    elif c.last_bi_dir == 'down':
+    elif c1.last_bi_dir == 'down' and c1.last_bi_confirmed:
         s -= 10
-    if c.in_zs:
+    if c1.in_zs:
         s += 5
+    w = chan.get('1w')
+    if w and c1.last_bi_dir and w.last_bi_dir:
+        if w.last_bi_dir == c1.last_bi_dir:
+            s += 8
+        else:
+            s -= 8
     return min(100.0, max(0.0, s))
 
 
