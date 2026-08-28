@@ -10,15 +10,11 @@ import logging
 import os
 from typing import Dict, Optional
 
-import pandas as pd
-
 from ..adapters import market as _market
 from ..adapters import sector as _sector
-from ..core.indicators import enrich_indicators
 from ..core.models import AnalysisResult, BarSeries, ChanStructure, MarketContext, MysteryBreakdown
 from ..core.mystery_rules import MysteryLogic
 from ..core.patterns import PatternRecognition
-from ..core.platform import analyze_adaptive_platform
 from ..core import scorer as _scorer
 
 logger = logging.getLogger(__name__)
@@ -68,46 +64,15 @@ class AnalysisService:
             logger.debug(f"财务获取失败: {str(e)[:60]}")
         return ctx
 
-    # ---------------- 规则明细 ----------------
-    def run_rules(self, daily: pd.DataFrame, weekly: Optional[pd.DataFrame],
-                  monthly: Optional[pd.DataFrame], ctx: MarketContext,
-                  chan_1d: Optional[ChanStructure],
+    # ---------------- 规则明细（收口到 core.pipeline 纯计算） ----------------
+    def run_rules(self, daily: BarSeries, weekly: Optional[BarSeries],
+                  monthly: Optional[BarSeries], ctx: MarketContext,
                   include_detail: bool) -> MysteryBreakdown:
-        """规则明细（与 stock_pipeline.analyze_one_stock 同构）。"""
-        code = str(daily['代码'].iloc[-1]) if '代码' in daily.columns else ''
-        market_data = None
-        if ctx.index_bars is not None:
-            market_data = {'上证指数': self.market.to_df(ctx.index_bars)}
-        ind_trend = ctx.industry_up
+        from ..core import pipeline as _pipe
 
-        bd = MysteryBreakdown()
-        bd.signal = self.logic.comprehensive_signal_analysis(
-            daily, weekly_data=weekly, market_data=market_data,
-            industry_data=None, industry_trend=ind_trend)
-        bd.resonance = self.logic.three_resonance_analysis(
-            daily, market_data=market_data, industry_trend=ind_trend,
-            industry_data=None)
-        bd.main_wave = self.logic.main_bull_wave_analysis(daily)
-        bd.checklist8 = self.logic.main_bull_wave_checklist(daily, industry_trend=ind_trend)
-        if include_detail:
-            try:
-                bd.platform = self.logic.platform_breakthrough_analysis(
-                    daily, stock_code=code, weekly_data=weekly, monthly_data=monthly)
-            except Exception as e:
-                logger.debug(f"platform: {str(e)[:60]}")
-            try:
-                bd.vap_atr = analyze_adaptive_platform(daily, stock_code=code,
-                                                       latest_only=True)
-            except Exception as e:
-                logger.debug(f"vap_atr: {str(e)[:60]}")
-            try:
-                bd.patterns = self.patterns.recognize_all_patterns(daily)
-            except Exception as e:
-                logger.debug(f"patterns: {str(e)[:60]}")
-        else:
-            bd.platform = {'平台状态': '未知', '突破信号': False, '买横信号': False,
-                           '平台范围': None, '详情': []}
-        return bd
+        return _pipe.run_mystery(daily, weekly, monthly, ctx,
+                                 include_detail=include_detail, logic=self.logic,
+                                 patterns=self.patterns)
 
     def _analyze_chan(self, daily: BarSeries) -> Dict[str, ChanStructure]:
         """缠论多周期分析（带 chan_cache：行情日/版本变化才失效）。"""
@@ -145,12 +110,7 @@ class AnalysisService:
         weekly = self.market.fetch_bars(symbol, '1w')
         monthly = self.market.fetch_bars(symbol, '1M')
 
-        daily_df = enrich_indicators(self.market.to_df(daily))
         internal = daily.symbol
-        daily_df['代码'] = internal
-        weekly_df = self.market.to_df(weekly) if weekly.bars else None
-        monthly_df = self.market.to_df(monthly) if monthly.bars else None
-
         ctx = self.build_market_context(internal, daily)
 
         # 缠论（P2：只展示不进评分；MYSTERY_CHAN_ENABLED=0 时 Service 不调用 Adapter）
@@ -158,8 +118,7 @@ class AnalysisService:
         if chan_enabled():
             chan = self._analyze_chan(daily)
 
-        bd = self.run_rules(daily_df, weekly_df, monthly_df, ctx,
-                            chan.get('1d'), include_detail)
+        bd = self.run_rules(daily, weekly, monthly, ctx, include_detail)
         score, advice, true_res = _scorer.combine(bd, chan,
                                                   chan_enabled=chan_enabled())
         last = daily.bars[-1]
