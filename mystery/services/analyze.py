@@ -2,7 +2,8 @@
 
 对外只暴露 analyze_one_stock() → AnalysisResult。
 Web / CLI / scan / 板块钻取全部走这里，保证同股同分（误差 ≤ 1）。
-一期 MYSTERY_CHAN_ENABLED=0：评分与 stock_analyzer 1.22.30 完全兼容。
+MYSTERY_CHAN_ENABLED 缺省 1（结构默认展示）；MYSTERY_CHAN_SCORE 缺省 0（混合分默认关），
+评分仍与 stock_analyzer 1.22.30 完全兼容。
 """
 from __future__ import annotations
 
@@ -55,6 +56,14 @@ def _avg_turnover_20(daily: BarSeries) -> Optional[float]:
     return round(sum(vals) / len(vals), 4)
 
 
+def _high_120(daily: BarSeries) -> Optional[float]:
+    """近 120 根日 K 最高价（chip_low 低位门闩判据）；无有效值则 None。"""
+    vals = [float(b.high) for b in daily.bars[-120:] if b.high]
+    if not vals:
+        return None
+    return round(max(vals), 4)
+
+
 class AnalysisService:
     """分析服务（持有客户端与规则实例，线程安全可复用）。"""
 
@@ -100,38 +109,40 @@ class AnalysisService:
                                  patterns=self.patterns)
 
     def _analyze_chan(self, daily: BarSeries) -> Dict[str, ChanStructure]:
-        """缠论多周期分析（带 chan_cache：行情日/版本变化才失效）。"""
+        """缠论多周期分析（按配置 freqs，默认 1d/1w；日/周都走 chan_cache）。
+
+        004.md：只算 config.chan.freqs（不无配置就算 1M）；行情日/版本变化才失效。
+        """
         from ..adapters.czsc_adapter import CzscAdapter, chan_from_dict, czsc_version
         import json as _json
 
         ver = czsc_version()
         trade_date = str(daily.bars[-1].dt)[:10] if daily.bars else ''
+        freqs = list((self.cfg.get('chan') or {}).get('freqs', ['1d', '1w']))
         adapter = CzscAdapter()
         out: Dict[str, ChanStructure] = {}
-        try:
-            cached_raw = self.market.db.get_chan_cache(daily.symbol, '1d',
-                                                       trade_date, ver)
-            if cached_raw:
-                out['1d'] = chan_from_dict(_json.loads(cached_raw))
-            else:
-                s = adapter.analyze(daily)
-                out['1d'] = s
+        for freq in freqs:
+            try:
+                series = daily if freq == daily.freq else self.market.fetch_bars(
+                    daily.symbol, freq)
+                if not series.bars:
+                    continue
+                cached_raw = self.market.db.get_chan_cache(
+                    daily.symbol, freq, trade_date, ver)
+                if cached_raw:
+                    out[freq] = chan_from_dict(_json.loads(cached_raw))
+                    continue
+                s = adapter.analyze(series)
+                out[freq] = s
                 if s.engine_ver == "unavailable":
                     logger.error(
                         f"MYSTERY_CHAN_ENABLED=1 但 czsc 未安装："
                         f"pip install -e '.[chan]' 后重启（{daily.symbol}）")
-                self.market.db.set_chan_cache(daily.symbol, '1d', trade_date, ver,
-                                              _json.dumps(s.to_dict(), ensure_ascii=False))
-            weekly = self.market.fetch_bars(daily.symbol, '1w')
-            if weekly.bars:
-                cw = adapter.analyze(weekly)
-                out['1w'] = cw
-            monthly = self.market.fetch_bars(daily.symbol, '1M')
-            if monthly.bars:
-                cm = adapter.analyze(monthly)
-                out['1M'] = cm
-        except Exception as e:
-            logger.warning(f"缠论分析失败({daily.symbol}): {str(e)[:100]}")
+                self.market.db.set_chan_cache(
+                    daily.symbol, freq, trade_date, ver,
+                    _json.dumps(s.to_dict(), ensure_ascii=False))
+            except Exception as e:
+                logger.warning(f"缠论 {freq} 分析失败({daily.symbol}): {str(e)[:100]}")
         return out
 
     def analyze_one_stock(self, symbol: str,
@@ -159,6 +170,7 @@ class AnalysisService:
         last = daily.bars[-1]
         name = self.market.db.get_stock_name(internal) or ''
         turnover_20 = _avg_turnover_20(daily)
+        high_120 = _high_120(daily)
         czsc_ver = ''
         if chan:
             from ..adapters.czsc_adapter import czsc_version
@@ -172,6 +184,7 @@ class AnalysisService:
             advice=advice,
             true_resonance=true_res,
             turnover_20=turnover_20,
+            high_120=high_120,
             mystery=bd,
             chan=chan,
             sector={'行业名称': ctx.industry_name, '行业趋势分': ctx.industry_score,

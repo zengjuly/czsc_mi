@@ -75,22 +75,39 @@ def _cmd_daily(args: argparse.Namespace) -> int:
 
 def _cmd_scan(args: argparse.Namespace) -> int:
     from ..core.scan_signals import filter_by_signal
+    from ..services import watchlist as _wl
     from ..services.scan import scan_market
 
+    watchlist = _wl.load_watchlist() if args.watchlist else None
     results = scan_market(limit=args.limit, include_detail=True,
                           min_score=args.min_score, cfg=args.cfg,
-                          no_persist=args.no_persist)
+                          no_persist=args.no_persist,
+                          watchlist=watchlist)
     if args.signal:
         results = filter_by_signal(results, args.signal)
     for r in results:
+        if r.get("chip_low"):
+            chip_s = "是"
+        elif r.get("chip_low_unknown"):
+            chip_s = "未知"
+        elif r.get("chip_quiet"):
+            chip_s = "缩量高位"
+        else:
+            chip_s = "否"
+        trn = r.get("turnover_20")
+        trn_s = f"{float(trn):.2f}%" if trn is not None else "-"
+        pos = r.get("price_pos")
+        pos_s = f"{float(pos) * 100:.1f}%" if pos is not None else "-"
         print(f"{r.get('symbol')} {(r.get('name') or '未知'):　<6} "
-              f"score={r.get('score')} {r.get('advice', '')}")
+              f"score={r.get('score')} chip_low={chip_s} "
+              f"20日换手={trn_s} 回撤={pos_s} {r.get('advice', '')}")
     n_tr = sum(1 for r in results if r.get('true_resonance'))
     n_vap = sum(1 for r in results if r.get('vap_atr_break'))
     n_chip = sum(1 for r in results if r.get('chip_low'))
     n_unknown = sum(1 for r in results if r.get('chip_low_unknown'))
+    n_quiet = sum(1 for r in results if r.get('chip_quiet'))
     print(f"\n共 {len(results)} 只 | 真三振 {n_tr} | VAP-ATR突破 {n_vap} | "
-          f"筹码低位 {n_chip}（换手未知 {n_unknown}）")
+          f"筹码低位 {n_chip}（换手未知 {n_unknown} / 高位缩量 {n_quiet}）")
     return 0
 
 
@@ -135,6 +152,8 @@ def main(argv: Optional[list] = None) -> int:
     p.set_defaults(func=_cmd_daily)
 
     p = sub.add_parser("scan", help="全市场扫描（写 scan_jobs/scan_results）")
+    p.add_argument("--watchlist", action="store_true",
+                   help="只扫自选股（避免全市场，daily 流程默认）")
     p.add_argument("--limit", type=int, default=100)
     p.add_argument("--min-score", type=float, default=None)
     p.add_argument("--signal", default=None,

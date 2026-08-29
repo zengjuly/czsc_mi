@@ -21,8 +21,8 @@ export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-/home/ai/ai_runner/stock/Financial-
 echo "[daily_pipeline] 1/3 同步行情（日线 365 天）..."
 czsc-mi sync --period daily --days 365
 
-echo "[daily_pipeline] 2/3 全市场扫描（写 scan_jobs/scan_results）..."
-czsc-mi scan
+echo "[daily_pipeline] 2/3 扫描自选股（写 scan_jobs/scan_results，避免全 A）..."
+czsc-mi scan --watchlist
 
 echo "[daily_pipeline] 3/3 生成日报（Excel/HTML）..."
 czsc-mi daily --watchlist

@@ -296,34 +296,7 @@ def render_stock(d: dict):
 
 
 # ================= 侧栏自选股 =================
-def render_watchlist_sidebar():
-    st.sidebar.subheader("自选股")
-    items = _wl.load_watchlist_items()
-    if items:
-        codes = [it['symbol'] for it in items]
-        labels = {it['symbol']: (it['name'] or it['symbol']) for it in items}
-        sel = st.sidebar.multiselect("自选列表（可多选分析）",
-                                     options=codes, default=codes[-1:],
-                                     format_func=lambda c: labels.get(c, c))
-        c1, c2 = st.sidebar.columns(2)
-        if c1.button("分析所选", type="primary", use_container_width=True):
-            with st.spinner("分析自选股..."):
-                rows = scan_market(watchlist=sel, include_detail=False)
-                st.session_state['scan_results'] = rows
-                st.session_state['_wl_analyzed'] = True
-        if c2.button("全部移除", use_container_width=True):
-            _wl.save_watchlist([])
-            st.rerun()
-        if st.sidebar.button("管理自选", use_container_width=True):
-            st.session_state['subview'] = 'watchlist'
-            st.rerun()
-    else:
-        st.sidebar.caption("自选股为空，可在个股页加入")
-        if st.sidebar.button("管理自选", use_container_width=True):
-            st.session_state['subview'] = 'watchlist'
-            st.rerun()
-
-
+# 004.md：自选只留子页（subview=watchlist），侧栏不再渲染自选列表。
 def _add_watchlist_widget(rows: list, key: str = "wl"):
     """扫描/真三振/板块钻取表下方：选一只加入自选（source=scan）。"""
     if not rows:
@@ -387,7 +360,7 @@ def view_watchlist_subpage():
         c1, c2, c3, c4, c5 = st.columns([1.1, 1.4, 1.4, 0.7, 0.7])
         c1.markdown(f"`{sym}`")
         c2.write(name)
-        c3.write(_wl.source_label(it['source']))
+        c3.write(_wl.source_label(it['source'], it.get('source_file') or ''))
         if c4.button("分析", key=f"an_{sym}"):
             st.session_state['_pending_symbol'] = sym
             st.session_state['subview'] = None
@@ -438,7 +411,7 @@ def view_stock():
         items = _wl.load_watchlist_items()
         cur_item = next((it for it in items if it['symbol'] == cur), None)
         if cur_item:
-            st.caption(f"自选来源：{_wl.source_label(cur_item['source'])}")
+            st.caption(f"自选来源：{_wl.source_label(cur_item['source'], cur_item.get('source_file') or '')}")
             if st.button("从自选股移除", use_container_width=True):
                 _wl.remove_from_watchlist(cur)
                 st.rerun()
@@ -467,6 +440,11 @@ def view_scan():
         st.caption(f"共 {len(rows)} 只（按分降序）")
         st.dataframe([{'代码': r['symbol'], '名称': r.get('name') or '未知',
                        '评分': r.get('score'), '建议': r.get('advice', ''),
+                       '筹码低位': '是' if r.get('chip_low') else '否',
+                       '换手未知': '未知' if r.get('chip_low_unknown') else '',
+                       '20日换手': r.get('turnover_20'),
+                       '回撤%': (None if r.get('price_pos') is None
+                                 else round(float(r['price_pos']) * 100, 1)),
                        '日期': r.get('trade_date', '')} for r in rows],
                      use_container_width=True, hide_index=True)
         _add_watchlist_widget(rows, key="scan")
@@ -645,7 +623,6 @@ def main():
     st.sidebar.caption(
         f"chan 开关: {'开' if chan_enabled() else '关'} | "
         f"混合分: {'开' if chan_score_enabled() else '关（默认）'}")
-    render_watchlist_sidebar()
     # 自选管理是子视图，不进主导航
     if st.session_state.get('subview') == 'watchlist':
         view_watchlist_subpage()

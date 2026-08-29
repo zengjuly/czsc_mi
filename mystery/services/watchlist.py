@@ -149,7 +149,10 @@ def remove_from_watchlist(code: str) -> List[Dict]:
     return items
 
 
-def source_label(source: str) -> str:
+def source_label(source: str, source_file: str = "") -> str:
+    """来源文案：tdx_local → 通达信（文件名）；manual → 手工；scan → 扫描加入。"""
+    if source == "tdx_local":
+        return f"通达信（{source_file or 'zxg.blk'}）"
     return SOURCE_LABELS.get(source, "手工")
 
 
