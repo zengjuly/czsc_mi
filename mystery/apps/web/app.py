@@ -442,6 +442,7 @@ def view_scan():
                        '评分': r.get('score'), '建议': r.get('advice', ''),
                        '筹码低位': '是' if r.get('chip_low') else '否',
                        '换手未知': '未知' if r.get('chip_low_unknown') else '',
+                       '高位缩量': '是' if r.get('chip_quiet') else '否',
                        '20日换手': r.get('turnover_20'),
                        '回撤%': (None if r.get('price_pos') is None
                                  else round(float(r['price_pos']) * 100, 1)),
@@ -516,27 +517,21 @@ def _sector_strength_table() -> list:
 
 
 def view_true_resonance():
-    st.header("真三振池（最近一次扫描结果）")
+    st.header("真三振池（最近一次全市场扫描结果）")
     job = latest_scan_job(load_config())
-    if job:
-        rows = scan_results_of(job, signal="true_resonance")
-        st.caption(f"来自 scan job #{job}，共 {len(rows)} 只真三振")
-        if rows:
-            st.dataframe([{'代码': r['symbol'], '名称': r.get('name') or '未知',
-                           '评分': r.get('score'), '建议': r.get('advice', ''),
-                           '日期': r.get('trade_date', '')} for r in rows],
-                         use_container_width=True, hide_index=True)
-            _add_watchlist_widget(rows, key="resonance")
-        else:
-            st.info("最近一次扫描无真三振标的")
-    c1, c2 = st.columns([2, 1])
-    limit = c1.number_input("扫描只数", 1, 5000, 100)
-    if c2.button("用自选/limit 扫描并更新", type="primary"):
-        with st.spinner("扫描中（单票失败自动跳过）..."):
-            rows = scan_market(limit=int(limit), include_detail=True,
-                               cfg=load_config())
-            st.session_state['scan_results'] = rows
-            st.rerun()
+    if not job:
+        st.info("暂无全市场扫描记录。请运行 `czsc-mi scan --limit 100` 生成真三振池。")
+        return
+    rows = scan_results_of(job, signal="true_resonance")
+    st.caption(f"来自 scan job #{job}，共 {len(rows)} 只真三振")
+    if rows:
+        st.dataframe([{'代码': r['symbol'], '名称': r.get('name') or '未知',
+                       '评分': r.get('score'), '建议': r.get('advice', ''),
+                       '日期': r.get('trade_date', '')} for r in rows],
+                     use_container_width=True, hide_index=True)
+        _add_watchlist_widget(rows, key="resonance")
+    else:
+        st.info("最近一次扫描无真三振标的")
 
 
 def view_system():

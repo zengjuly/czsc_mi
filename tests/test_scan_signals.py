@@ -68,10 +68,22 @@ def test_chip_quiet_high_shrink():
 
 
 def test_chip_low_platform_only():
-    """平台内缩量：无 high_120，但平台状态含「平台内」→ chip_low True。"""
-    out = classify(_fake(avg_turnover=1.5, platform_status="平台内"))
+    """平台内缩量：无 high_120，但平台状态含「买横机会」（源码真实低位句）→ chip_low True。"""
+    out = classify(_fake(avg_turnover=1.5, platform_status="买横机会"))
     assert out["chip_low"] is True
     assert out["chip_low_unknown"] is False
+
+
+def test_chip_zero_turnover_not_unknown():
+    """换手 0 ≠ 缺失：turnover_20=0 → chip_low_unknown=False，再按低位门判定 low/quiet。"""
+    out = classify(_fake(avg_turnover=0, price=95, high_120=100,
+                         platform_status="已远离"))
+    assert out["chip_low_unknown"] is False
+    assert out["chip_low"] is False
+    assert out["chip_quiet"] is True   # 0% 缩量但高位 → quiet
+    out2 = classify(_fake(avg_turnover=0, price=80, high_120=100))
+    assert out2["chip_low_unknown"] is False
+    assert out2["chip_low"] is True    # 0% 缩量且回撤≥15% → chip_low
 
 
 def test_horizontal_platform_not_low_gate():

@@ -49,8 +49,16 @@ def chan_score_enabled() -> bool:
 
 
 def _avg_turnover_20(daily: BarSeries) -> Optional[float]:
-    """近 20 根日 K 换手率均值(%)；换手率为 0 视为缺失，不足则 None。"""
-    vals = [float(b.turnover) for b in daily.bars[-20:] if b.turnover]
+    """近 20 根日 K 换手率均值(%)；换手率 0 计入均值，20 根全无效值才返回 None。"""
+    vals = []
+    for b in daily.bars[-20:]:
+        t = b.turnover
+        if t is None:
+            continue
+        try:
+            vals.append(float(t))
+        except (TypeError, ValueError):
+            continue
     if not vals:
         return None
     return round(sum(vals) / len(vals), 4)

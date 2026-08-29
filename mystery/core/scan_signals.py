@@ -16,13 +16,14 @@ from typing import Any, Dict
 CHIP_LOW_TURNOVER = 2.0   # 近20日均换手 < 2% 视为缩量
 CHIP_LOW_RETRACE = 0.15   # 现价相对近120日最高回撤 ≥15% 视为低位（回撤门闩）
 
-_PLATFORM_LOW_HINTS = ('平台内', '未远离', '未突破', '离场')
+_PLATFORM_LOW_HINTS = ('买横机会',)
 
 
 def _platform_low(plat_status: Any) -> bool:
-    """平台状态含「平台内/横盘/未远离/未突破/离场」→ 平台低位门过。
+    """平台状态含「买横机会」（源码真实写入的低位语义句）→ 平台低位门过。
 
-    004.md：对不上就当这门未过（只用回撤门闩）。
+    005.md：只收代码真实写入的状态句，删过宽的「离场」「未突破」；
+    对不上真实句就当这门未过（只用回撤门闩）。
     """
     s = str(plat_status or '')
     return any(k in s for k in _PLATFORM_LOW_HINTS)
