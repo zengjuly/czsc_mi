@@ -105,3 +105,18 @@ CREATE TABLE IF NOT EXISTS chan_cache (
   payload_json TEXT,
   PRIMARY KEY(symbol, freq, trade_date, czsc_ver)
 );
+
+-- 10. 扫描任务（002.md W1-B：同日重复扫描默认新 job，不覆盖历史）
+CREATE TABLE IF NOT EXISTS scan_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_date TEXT, started_at TEXT, finished_at TEXT, n_ok INTEGER, n_fail INTEGER
+);
+
+-- 11. 扫描结果（三类信号 + 完整 payload）
+CREATE TABLE IF NOT EXISTS scan_results (
+  job_id INTEGER, symbol TEXT, trade_date TEXT,
+  score REAL, true_resonance INTEGER,
+  vap_atr_break INTEGER, chip_low INTEGER,
+  payload_json TEXT,
+  PRIMARY KEY (job_id, symbol)
+);

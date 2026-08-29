@@ -1,66 +1,107 @@
 #!/usr/bin/env python3
-"""mystery.apps.cli — czsc-mi 命令入口（P3 收口）。
+"""mystery.apps.cli — czsc-mi 命令入口（P3 收口 + 002.md W1-W2）。
 
 用法：
   czsc-mi analyze --stock sh600519
-  czsc-mi daily --limit 50
-  czsc-mi scan --limit 100 --min-score 60
-  czsc-mi sync --period daily --days 365 [--symbols sh600519 sz000001]
+  czsc-mi daily --watchlist --limit 3
+  czsc-mi scan --limit 100 --signal true_resonance
+  czsc-mi sync --period daily --period weekly --days 365
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import datetime
 from typing import Optional
+
+from ..config import load_config, output_dir
 
 
 def _cmd_analyze(args: argparse.Namespace) -> int:
-    import json as _json
-
     from ..services.analyze import analyze_one_stock
 
-    result = analyze_one_stock(args.stock, include_detail=not args.quick)
-    print(_json.dumps(result.to_dict(), ensure_ascii=False))
+    result = analyze_one_stock(args.stock, include_detail=not args.quick,
+                               cfg=args.cfg)
+    print(json.dumps(result.to_dict(), ensure_ascii=False))
     return 0
 
 
 def _cmd_daily(args: argparse.Namespace) -> int:
+    from ..apps.reports.excel_report import write_excel
+    from ..apps.reports.html_report import write_html
     from ..services import watchlist as _wl
-    from ..services.scan import scan_market
+    from ..services.analyze import analyze_one_stock
 
-    codes = _wl.load_watchlist()
-    if args.symbols:
+    if args.watchlist:
+        codes = _wl.load_watchlist()
+    elif args.symbols:
         codes = list(args.symbols)
+    else:
+        codes = _wl.load_watchlist()
+    if args.limit:
+        codes = codes[:args.limit]
     if not codes:
-        print("自选股为空（data/watchlist.json），可用 --symbols 指定")
+        print("标的为空（--watchlist 读 data/watchlist.json，或用 --symbols 指定）")
         return 1
-    results = scan_market(watchlist=codes, include_detail=False,
-                          min_score=args.min_score)
-    for r in results:
-        print(f"{r.get('symbol')} {r.get('name', ''):　<6} "
-              f"score={r.get('score')} {r.get('advice', '')}")
-    print(f"\n共 {len(results)} 只")
+    results = []
+    failed = 0
+    for code in codes:
+        try:
+            r = analyze_one_stock(code, include_detail=True, cfg=args.cfg)
+            d = r.to_dict()
+            if args.min_score is None or (d.get('score') is not None
+                                          and float(d['score']) >= args.min_score):
+                results.append(d)
+        except Exception as e:
+            failed += 1
+            print(f"[daily] {code} 分析失败跳过: {str(e)[:80]}", file=sys.stderr)
+    if not results:
+        print("全部失败或低于最低分，未生成报告")
+        return 1
+    results.sort(key=lambda x: (x.get('score') is not None,
+                                float(x.get('score') or -1)), reverse=True)
+    out = output_dir(args.cfg)
+    date_str = datetime.now().strftime("%Y%m%d")
+    xlsx = f"{out}/每日股票分析报告_{date_str}.xlsx"
+    html = f"{out}/每日股票分析报告_{date_str}.html"
+    write_excel(results, xlsx)
+    write_html(results, html)
+    print(f"共 {len(results)} 只（失败 {failed}）")
+    print(xlsx)
+    print(html)
     return 0
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
+    from ..core.scan_signals import filter_by_signal
     from ..services.scan import scan_market
 
-    results = scan_market(limit=args.limit, include_detail=False,
-                          min_score=args.min_score)
+    results = scan_market(limit=args.limit, include_detail=True,
+                          min_score=args.min_score, cfg=args.cfg,
+                          no_persist=args.no_persist)
+    if args.signal:
+        results = filter_by_signal(results, args.signal)
     for r in results:
         print(f"{r.get('symbol')} {r.get('name', ''):　<6} "
               f"score={r.get('score')} {r.get('advice', '')}")
-    print(f"\n共 {len(results)} 只")
+    n_tr = sum(1 for r in results if r.get('true_resonance'))
+    n_vap = sum(1 for r in results if r.get('vap_atr_break'))
+    n_chip = sum(1 for r in results if r.get('chip_low'))
+    n_unknown = sum(1 for r in results if r.get('chip_low_unknown'))
+    print(f"\n共 {len(results)} 只 | 真三振 {n_tr} | VAP-ATR突破 {n_vap} | "
+          f"筹码低位 {n_chip}（换手未知 {n_unknown}）")
     return 0
 
 
 def _cmd_sync(args: argparse.Namespace) -> int:
     from ..services.sync import sync_market
 
-    out = sync_market(period=args.period, days=args.days, force=args.force,
-                      symbols=args.symbols, limit=args.limit)
-    print(out)
+    periods = list(dict.fromkeys(args.period or ['daily']))
+    out = sync_market(days=args.days, force=args.force,
+                      symbols=args.symbols, limit=args.limit,
+                      cfg=args.cfg, periods=periods)
+    print(json.dumps(out, ensure_ascii=False))
     return 0
 
 
@@ -73,18 +114,27 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--quick", action="store_true", help="跳过明细（扫描模式）")
     p.set_defaults(func=_cmd_analyze)
 
-    p = sub.add_parser("daily", help="自选股日报（data/watchlist.json）")
-    p.add_argument("--symbols", nargs="*", default=None, help="临时指定代码，覆盖自选股")
+    p = sub.add_parser("daily", help="日报：AnalysisResult → Excel/HTML 落盘")
+    p.add_argument("--watchlist", action="store_true",
+                   help="读自选股 data/watchlist.json（默认）")
+    p.add_argument("--symbols", nargs="*", default=None, help="临时指定代码")
+    p.add_argument("--limit", type=int, default=None)
     p.add_argument("--min-score", type=float, default=None)
     p.set_defaults(func=_cmd_daily)
 
-    p = sub.add_parser("scan", help="全市场扫描")
+    p = sub.add_parser("scan", help="全市场扫描（写 scan_jobs/scan_results）")
     p.add_argument("--limit", type=int, default=100)
     p.add_argument("--min-score", type=float, default=None)
+    p.add_argument("--signal", default=None,
+                   choices=["vap_atr", "chip_low", "true_resonance"],
+                   help="只保留该信号的结果")
+    p.add_argument("--no-persist", action="store_true", help="只打印不写库")
     p.set_defaults(func=_cmd_scan)
 
-    p = sub.add_parser("sync", help="行情同步")
-    p.add_argument("--period", default="daily", choices=["daily", "weekly", "monthly"])
+    p = sub.add_parser("sync", help="行情同步（断点续跑，支持多周期）")
+    p.add_argument("--period", action="append",
+                   choices=["daily", "weekly", "monthly"],
+                   help="可重复：--period daily --period weekly")
     p.add_argument("--days", type=int, default=365)
     p.add_argument("--force", action="store_true", help="强制全量（勿轻易使用）")
     p.add_argument("--symbols", nargs="*", default=None)
@@ -92,6 +142,7 @@ def main(argv: Optional[list] = None) -> int:
     p.set_defaults(func=_cmd_sync)
 
     args = parser.parse_args(argv)
+    args.cfg = load_config()
     try:
         return args.func(args)
     except NotImplementedError as e:
