@@ -754,7 +754,7 @@ class MysteryLogic:
             if '换手率' in data.columns:
                 recent_20_days = data.tail(20)
                 avg_turnover = recent_20_days['换手率'].mean()
-                if pd.notna(avg_turnover):
+                if pd.notna(avg_turnover) and avg_turnover > 0:
                     result['筹码集中度数值'] = round(float(avg_turnover), 2)
                     if avg_turnover < 2:
                         result['筹码集中度'] = '高度集中'
@@ -772,7 +772,13 @@ class MysteryLogic:
                         result['筹码集中度'] = '高度分散'
                         result['详情'].append(
                             f'筹码高度分散（近20日平均换手率{avg_turnover:.2f}%>10%）')
-                if len(recent_20_days) >= 10:
+                else:
+                    # 换手率缺失（ths/tdx 常为 None → 0.0）：不伪造"高度集中"
+                    result['筹码集中度'] = '数据缺失'
+                    result['筹码集中度数值'] = None
+                    result['详情'].append('换手率数据缺失，筹码集中度无法判定（不伪造）')
+                if (pd.notna(avg_turnover) and avg_turnover > 0
+                        and len(recent_20_days) >= 10):
                     recent_10_turnover = recent_20_days.tail(10)['换手率'].mean()
                     early_10_turnover = recent_20_days.head(10)['换手率'].mean()
                     if (pd.notna(recent_10_turnover) and pd.notna(early_10_turnover)):
@@ -786,6 +792,8 @@ class MysteryLogic:
                             result['详情'].append(
                                 f'筹码呈分散趋势（近10日换手{recent_10_turnover:.2f}%'
                                 f'>=前10日{early_10_turnover:.2f}%）')
+                elif pd.notna(avg_turnover) and avg_turnover <= 0:
+                    result['筹码趋势'] = '未知（数据缺失）'
             return result
         except Exception as e:
             self.logger.error(f'❌ 技术细节捕捉异常: {e}')

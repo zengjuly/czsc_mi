@@ -87,6 +87,117 @@ def _plot_cache(symbol: str, freq: str):
 
 
 # ================= 展示函数（模块级，先定义后调用） =================
+def _sig_text(v) -> str:
+    """±1/0 信号 → 文本（1=金叉/突破，-1=死叉/破位，0=无）。"""
+    try:
+        n = int(v)
+    except Exception:
+        return str(v)
+    return {1: '✅ 金叉/突破', -1: '❌ 死叉/破位', 0: '—'}.get(n, str(v))
+
+
+def _vp_text(v) -> str:
+    """量价配合度 1/-1/0 → 文本。"""
+    try:
+        n = int(v)
+    except Exception:
+        return str(v)
+    return {1: '✅ 量升价升', -1: '⚠️ 量价背离', 0: '—'}.get(n, str(v))
+
+
+def _render_technical(tech: dict):
+    """分析明细：均线排列 / 破五反五 / 量价 / 筹码 / 换手率 / 多周期。"""
+    ma = tech.get('ma', {}) or {}
+    if ma:
+        st.markdown("**均线排列分析**")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("排列状态", ma.get('排列状态', '-'))
+        c2.metric("多头排列强度", f"{_fmt(ma.get('多头排列强度'))}/3")
+        c3.metric("MA5斜率", _fmt(ma.get('MA5斜率')))
+        c4.metric("均线信号", _sig_text(ma.get('均线信号')))
+        st.markdown(
+            f"- MA5 {_fmt(ma.get('MA5'))} | MA10 {_fmt(ma.get('MA10'))} | "
+            f"MA20 {_fmt(ma.get('MA20'))} | MA60 {_fmt(ma.get('MA60'))} | "
+            f"MA250 {_fmt(ma.get('MA250'))}"
+            f"（最新交易日 {tech.get('latest_date', '')}）")
+        if ma.get('突破信号'):
+            st.markdown(f"- 突破MA20信号: {_sig_text(ma.get('突破信号'))}")
+
+    po5 = tech.get('po5', {}) or {}
+    if po5:
+        st.markdown("**破五反五**")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("状态", "✅ 成立" if po5.get('破五反五') else "❌ 未成立")
+        c2.metric("破五天数", _fmt(po5.get('破五天数'), 0))
+        c3.metric("MA20斜率", _fmt(po5.get('MA20斜率')))
+        if po5.get('原因'):
+            st.markdown(f"- {po5['原因']}")
+
+    vp = tech.get('volume_price', {}) or {}
+    if vp:
+        st.markdown("**量价分析**")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("量比", _fmt(vp.get('量比')))
+        c2.metric("量价配合度", _vp_text(vp.get('量价配合度')))
+        c3.metric("OBV信号", _sig_text(vp.get('OBV信号')))
+        c4.metric("动能状态", vp.get('动能状态', '-'))
+        st.markdown(
+            f"- 成交量信号 {_sig_text(vp.get('成交量信号'))} | "
+            f"成交量突破 {_sig_text(vp.get('成交量突破信号'))} | "
+            f"5日涨跌 {_fmt(vp.get('价格变化率5日'))}% | "
+            f"20日涨跌 {_fmt(vp.get('价格变化率20日'))}%")
+
+    chip = tech.get('chip', {}) or {}
+    if chip:
+        st.markdown("**筹码分析**")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("筹码集中度", chip.get('筹码集中度', '-'))
+        c2.metric("集中度数值(近20日换手%)", _fmt(chip.get('筹码集中度数值')))
+        c3.metric("筹码趋势", chip.get('筹码趋势', '-'))
+        for line in chip.get('详情', []):
+            st.markdown(f"- {line}")
+
+    trn = tech.get('turnover', {}) or {}
+    if trn:
+        st.markdown("**换手率**")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("最新换手率%", _fmt(trn.get('换手率')))
+        c2.metric("区域", trn.get('换手率区域', '-'))
+        c3.metric("换手率MA5", _fmt(trn.get('换手率MA5')))
+        c4.metric("换手率MA20", _fmt(trn.get('换手率MA20')))
+        st.markdown(
+            f"- 相对20日位置: {_fmt(trn.get('换手率相对位置'))}%"
+            f"（>0 放量 / <0 缩量）")
+        if float(trn.get('换手率') or 0) == 0:
+            st.caption("⚠️ 换手率全为 0：数据源未提供换手率（ths/tdx 常缺 turn），"
+                       "上方区域判定不可信，建议先 sync 补换手率")
+
+    mp = tech.get('multi_period', {}) or {}
+    if mp:
+        st.markdown("**多周期分析**")
+        w, mo = mp.get('周线', {}) or {}, mp.get('月线', {}) or {}
+        if w:
+            st.markdown(
+                f"- 周线: **{w.get('趋势', '-')}**（最新 {_fmt(w.get('最新价'))}，"
+                f"MA20 {_fmt(w.get('MA20'))}）")
+        if mo:
+            st.markdown(
+                f"- 月线: **{mo.get('趋势', '-')}**（最新 {_fmt(mo.get('最新价'))}，"
+                f"MA10 {_fmt(mo.get('MA10'))}）")
+        wa = mp.get('周线锚定', {}) or {}
+        if wa:
+            st.markdown(
+                f"- 周线锚定: {'✅ 锚定' if wa.get('锚定') else '❌ 未锚定'}"
+                f"（{wa.get('原因', '')}）")
+        for key, name in [('周线箱体', '周线箱体'), ('月线箱体', '月线箱体')]:
+            box = mp.get(key) or {}
+            if box and box.get('状态'):
+                st.markdown(
+                    f"- {name}: {box.get('状态', '-')}（当前 "
+                    f"{_fmt(box.get('当前价'))}，区间 "
+                    f"{_fmt(box.get('下沿'))}~{_fmt(box.get('上沿'))}）")
+
+
 def render_stock(d: dict):
     """个股页：指标卡 + 缠论卡 + 明细（只读 result dict，不再计算）。"""
     st.subheader(f"{d.get('name', '')} {d.get('symbol', '')}  "
@@ -153,13 +264,25 @@ def render_stock(d: dict):
         for line in m.get('resonance', {}).get('详情', []):
             st.markdown(f"- {line}")
 
+    # ---------- W5 技术面明细（仅展示，数据来自 mystery.technical 快照） ----------
+    tech = m.get('technical', {}) or {}
+    if tech:
+        with st.expander("分析明细（均线/破五反五/量价/筹码/换手率/多周期）",
+                         expanded=False):
+            _render_technical(tech)
+
     fin = d.get('financial', {}) or {}
     if fin:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("PE", _fmt(fin.get('PE')))
         c2.metric("PB", _fmt(fin.get('PB')))
         c3.metric("ROE", _fmt(fin.get('roe')))
-        c4.metric("报告期", str(fin.get('report_date', '-')))
+        c4.metric("报告期", str(fin.get('report_date', '-') or '-'))
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("EPS(TTM)", _fmt(fin.get('eps_ttm')))
+        c2.metric("股息率%", _fmt(fin.get('divid_cash')))
+        c3.metric("净利率%", _fmt(fin.get('np_margin')))
+        c4.metric("毛利率%", _fmt(fin.get('gp_margin')))
 
 
 # ================= 侧栏自选股 =================

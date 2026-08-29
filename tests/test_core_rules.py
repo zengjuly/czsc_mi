@@ -180,3 +180,68 @@ def test_combine_chan_off_unchanged():
     bd = _mk_breakdown()
     score, _, _ = combine(bd, _mk_chan('up'), chan_enabled=False)
     assert score == 49.0
+
+
+def test_technical_snapshot_structure():
+    """W5：technical 快照含均线排列/破五反五/量价/筹码/换手率/多周期，JSON 可序列化。"""
+    from mystery.core.models import Bar, BarSeries, MarketContext
+    from mystery.core.pipeline import run_mystery
+
+    df = _synthetic_daily(n=600, seed=7)
+
+    def _series(freq, fdf):
+        bars = [Bar(dt=str(r.日期), open=float(r.开盘价), high=float(r.最高价),
+                    low=float(r.最低价), close=float(r.收盘价),
+                    volume=float(r.成交量), amount=float(r.成交额),
+                    turnover=float(r.换手率)) for r in fdf.itertuples()]
+        return BarSeries(symbol="600519.SH", freq=freq, adjust="qfq",
+                         bars=bars, source="test")
+
+    daily = _series("1d", df)
+    d2 = df.copy()
+    d2['日期'] = pd.to_datetime(d2['日期'])
+    agg = {'开盘价': 'first', '最高价': 'max', '最低价': 'min',
+           '收盘价': 'last', '成交量': 'sum', '成交额': 'sum', '换手率': 'sum'}
+    out = {}
+    for freq, rule in [("1w", "W-FRI"), ("1M", "ME")]:
+        w = d2.set_index('日期').resample(rule).agg(agg).dropna(
+            subset=['收盘价']).reset_index()
+        w['日期'] = w['日期'].dt.strftime('%Y-%m-%d')
+        out[freq] = _series(freq, w)
+    weekly, monthly = out["1w"], out["1M"]
+
+    bd = run_mystery(daily, weekly, monthly, MarketContext(),
+                     include_detail=True)
+    t = bd.technical
+    assert t['ma']['排列状态'] in ('多头排列', '空头排列', '混合整理', '未知')
+    assert {'MA5', 'MA10', 'MA20', 'MA60', 'MA250'} <= set(t['ma'])
+    assert {'破五反五', '破五天数', 'MA20斜率', '原因'} <= set(t['po5'])
+    assert {'筹码集中度', '筹码集中度数值', '筹码趋势'} <= set(t['chip'])
+    assert {'量比', '量价配合度', 'OBV信号'} <= set(t['volume_price'])
+    assert {'换手率', '换手率区域', '换手率MA5', '换手率MA20'} <= set(t['turnover'])
+    assert t['multi_period']['周线']['趋势'] in (
+        '多头排列', '空头排列', '震荡整理', '数据不足')
+    assert t['multi_period']['月线']['趋势'] in (
+        '多头排列', '空头排列', '震荡整理', '数据不足')
+    assert '周线锚定' in t['multi_period']
+    # 整包 JSON 可序列化（technical 无 numpy/NaN 泄漏）
+    import json
+    s = json.dumps(bd.to_dict(), ensure_ascii=False)
+    assert 'technical' in s
+
+
+def test_technical_snapshot_tiny_series():
+    """极小数据（5 根）不崩溃；technical 正常返回。"""
+    from mystery.core.models import Bar, BarSeries, MarketContext
+    from mystery.core.pipeline import run_mystery
+    df = _synthetic_daily(n=5, seed=1)
+    bars = [Bar(dt=str(r.日期), open=float(r.开盘价), high=float(r.最高价),
+                low=float(r.最低价), close=float(r.收盘价),
+                volume=float(r.成交量), amount=float(r.成交额),
+                turnover=float(r.换手率)) for r in df.itertuples()]
+    daily = BarSeries(symbol="600519.SH", freq="1d", adjust="qfq",
+                      bars=bars, source="test")
+    bd = run_mystery(daily, None, None, MarketContext(), include_detail=True)
+    assert isinstance(bd.technical, dict)
+    assert 'ma' in bd.technical and 'po5' in bd.technical
+    assert bd.technical['po5']['原因']  # 数据不足原因说明

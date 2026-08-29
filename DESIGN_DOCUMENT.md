@@ -118,14 +118,15 @@ analyze_one_stock(symbol):
 - Web：`streamlit run mystery/apps/web/app.py`（六视图：个股/扫描/板块钻取/
   真三振池/系统状态/板块强度表，只调 Service；session 只存结果 dict；
   渲染与计算分离，不用 st.stop()；个股页 chan 开启时 plotly 自绘缠论图，
-  支持 日线/周线/月线 切换，`st.plotly_chart` 原生渲染）。
+  支持 日线/周线/月线 切换，`st.plotly_chart` 原生渲染；W5 起「分析明细」
+  展示 均线排列/破五反五/量价/筹码/换手率/多周期，财务补 EPS/股息/利润率）。
 - verify：`python scripts/verify_unified_analysis.py` —— 个股/扫描/CLI 三路径
   score 差 ≤ 1 + 金标对比。
 
 ## 8. 测试与验收
 
-- `pytest -q -m "not integration"`：56 passed（models/core 合成 OHLC/czsc adapter
-  mock K 线/金标 ≤ 1/scan_signals 三类信号/缠论图 plot_figure）。
+- `pytest -q -m "not integration"`：58 passed（models/core 合成 OHLC/czsc adapter
+  mock K 线/金标 ≤ 1/scan_signals 三类信号/缠论图 plot_figure/technical 快照）。
 - 金标 fixtures：`tests/fixtures/gold_{sh600519,sz000001,sh600150}.json`
   （由旧系统 `unified_stock_analysis` 生成，2026-08-27）。
 - 三只票 score：0.0 / 49.0 / 0.0，与旧系统 0 分差（价格/日期/行业分全一致）。
@@ -145,6 +146,7 @@ analyze_one_stock(symbol):
 | W3 | plot_czsc 嵌入个股页 + Excel 缠论列 + daily_pipeline.sh + 去绝对路径 | ✅ 0.5.0 |
 | W3-perf | indicators 逐行索引→numpy 向量化（712x，新旧 57 列逐元素一致）；web 名称搜索/侧栏列表加缓存；个股分析 66s→5s | ✅ 0.5.0 |
 | W4 | 个股页缠论图增强：plotly 自绘（K线+MA 5/10/20/55/233/610+分型/笔+中枢矩形+量+MACD）；日/周/月切换；chan 摘要补月线 | ✅ 0.6.0 |
+| W5 | 个股页补齐技术面明细：均线排列/破五反五/量价/筹码/换手率/多周期（technical 快照，仅展示）；财务补 EPS/股息/利润率；换手率缺失不伪造 | ✅ 0.7.0 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。

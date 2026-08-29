@@ -150,6 +150,7 @@ class MysteryBreakdown:
     vap_atr: Dict[str, Any] = field(default_factory=dict)     # 自适应 VAP-ATR 平台
     patterns: Dict[str, Any] = field(default_factory=dict)    # 形态识别
     checklist8: Dict[str, Any] = field(default_factory=dict)  # 主升浪8项
+    technical: Dict[str, Any] = field(default_factory=dict)   # W5 技术面明细快照（均线排列/破五反五/量价/筹码/换手率/多周期，仅展示）
 
     def to_dict(self) -> Dict[str, Any]:
         return _todict(self)
