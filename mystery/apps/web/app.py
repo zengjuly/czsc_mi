@@ -48,11 +48,27 @@ def _resolve_code(text: str):
         return normalize_symbol(t), ""
     except Exception:
         pass
-    hits = _wl.search_stock(t, limit=8)
+    hits = _search_cached(t)
     if hits:
         h = hits[0]
         return h['code'], h['name']
     return None
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _search_cached(keyword: str) -> list:
+    """名称搜索（缓存 10 分钟，避免每次 rerun 在线拉全市场列表）。"""
+    return _wl.search_stock(keyword, limit=8)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _name_map_cached() -> dict:
+    """全市场 {code: name} 映射（缓存 10 分钟，侧栏自选股展示用）。"""
+    try:
+        svc = _service()
+        return {s['code']: s['name'] for s in svc.market.fetch_stock_list()}
+    except Exception:
+        return {}
 
 
 @st.cache_data(show_spinner=False)
@@ -142,16 +158,7 @@ def render_watchlist_sidebar():
     st.sidebar.subheader("自选股")
     codes = _wl.load_watchlist()
     if codes:
-        names = {}
-        for s in _wl.search_stock('', limit=0) or []:
-            pass
-        try:
-            svc = _service()
-            stock_map = {}
-            for s in svc.market.fetch_stock_list():
-                stock_map[s['code']] = s['name']
-        except Exception:
-            stock_map = {}
+        stock_map = _name_map_cached()
         labels = {c: f"{c} {stock_map.get(c, '')}".strip() for c in codes}
         sel = st.sidebar.multiselect("自选列表（可多选分析）",
                                      options=codes, default=codes[-1:],
@@ -181,7 +188,7 @@ def view_stock():
         try:
             normalize_symbol(text)
         except Exception:
-            candidates = _wl.search_stock(text, limit=6)
+            candidates = _search_cached(text)
             if candidates:
                 opts = {f"{h['name']}（{h['code']}）": h['code'] for h in candidates}
                 pick = st.radio("匹配到以下股票，选择后点分析：",
