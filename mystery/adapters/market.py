@@ -1,6 +1,6 @@
 """mystery.adapters.market — 多源行情 + 缓存（统一出口 BarSeries）。
 
-取数顺序：本地库未过期 → ths_official(MarketDB本地+fuyao) → tdx_local。
+取数顺序：本地库未过期 → ths_official(MarketDB本地+fuyao) → tdx_api → tdx_local。
 指数：DB 优先（允许 3 天滞后，通达信本地未同步属正常）→ ths → tdx_local。
 周/月：日 K 重采样（resample_engine: mystery，口径与旧仓 kline_resampler 一致）。
 """
@@ -81,10 +81,18 @@ class MarketDataClient:
             raw = self.ths.get_daily(internal, start, end)
             if raw is not None and not raw.empty:
                 return raw, 'ths_official'
-            logger.warning(f"[ths_official→降级] {internal} 返回空，切 tdx_local")
+            logger.warning(f"[ths_official→降级] {internal} 返回空，切 tdx_api")
         except Exception as e:
-            logger.warning(f"[ths_official→降级] {internal} 异常 {type(e).__name__}: {str(e)[:60]}，切 tdx_local")
-        # 3. tdx_local
+            logger.warning(f"[ths_official→降级] {internal} 异常 {type(e).__name__}: {str(e)[:60]}，切 tdx_api")
+        # 3. tdx_api（W2-A：本地 tdx-api 容器，带交易所前缀、价格×1000 还原）
+        try:
+            raw = self.tdx_api.get_daily(internal, start, end)
+            if raw is not None and not raw.empty:
+                return raw, 'tdx_api'
+            logger.warning(f"[tdx_api→降级] {internal} 返回空，切 tdx_local")
+        except Exception as e:
+            logger.warning(f"[tdx_api→降级] {internal} 异常 {type(e).__name__}: {str(e)[:60]}，切 tdx_local")
+        # 4. tdx_local
         try:
             raw = self.tdx_local.get_daily(internal, start, end)
             if raw is not None and not raw.empty:

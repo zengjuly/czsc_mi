@@ -13,18 +13,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import streamlit as st  # noqa: E402
+import streamlit.components.v1 as stc  # noqa: E402
 
 st.set_page_config(page_title="Mistery 趋势交易分析", layout="wide")
 
 from mystery.adapters.codes import normalize_symbol  # noqa: E402
-from mystery.services.analyze import AnalysisService  # noqa: E402
-from mystery.services.scan import scan_market  # noqa: E402
+from mystery.config import load_config, output_dir  # noqa: E402
+from mystery.services.analyze import AnalysisService, chan_enabled  # noqa: E402
+from mystery.services.scan import (scan_market, latest_scan_job,  # noqa: E402
+                                   scan_results_of)
 from mystery.services import watchlist as _wl  # noqa: E402
 
 
 @st.cache_resource
 def _service():
-    return AnalysisService({})
+    return AnalysisService(load_config())
 
 
 def _fmt(v, nd=2):
@@ -52,6 +55,18 @@ def _resolve_code(text: str):
     return None
 
 
+@st.cache_data(show_spinner=False)
+def _plot_cache(symbol: str, trade_date: str) -> str:
+    """缠论图 HTML（czsc 已装且 chan 开启时可用；失败/未装 → ''）。"""
+    try:
+        from mystery.adapters.czsc_adapter import CzscAdapter
+        series = _service().market.fetch_bars(symbol, '1d')
+        return CzscAdapter().plot_html(series)
+    except Exception as e:  # noqa: BLE001
+        st.warning(f"缠论图生成失败，降级文本展示: {str(e)[:80]}")
+        return ""
+
+
 # ================= 展示函数（模块级，先定义后调用） =================
 def render_stock(d: dict):
     """个股页：指标卡 + 缠论卡 + 明细（只读 result dict，不再计算）。"""
@@ -64,10 +79,13 @@ def render_stock(d: dict):
     c4.metric("真三振", "✅" if d.get('true_resonance') else "❌")
     c5.metric("行业", d.get('sector', {}).get('行业名称', '-'))
 
-    # 缠论卡（只读 chan）
+    # 缠论卡（只读 chan；W3-A：czsc 已装且 chan 非空 → 嵌入 plot_czsc HTML）
     chan = d.get('chan', {}) or {}
     if chan:
         with st.expander("缠论结构（czsc，仅展示）", expanded=True):
+            plot_html = st.session_state.get('stock_plot', '')
+            if plot_html:
+                stc.html(plot_html, height=640, scrolling=True)
             for freq, cs in chan.items():
                 bis = cs.get('bis', [])
                 zss = cs.get('zss', [])
@@ -178,11 +196,17 @@ def view_stock():
             with st.spinner("分析中..."):
                 try:
                     r = _service().analyze_one_stock(code)
-                    st.session_state['stock_analysis'] = r.to_dict()
+                    d = r.to_dict()
+                    st.session_state['stock_analysis'] = d
                     st.session_state['stock_analysis']['_input'] = text
+                    # 缠论图（W3-A）：仅 chan 非空且 czsc 已装时生成
+                    st.session_state['stock_plot'] = \
+                        _plot_cache(d['symbol'], d.get('trade_date', '')) \
+                        if d.get('chan') else ''
                 except Exception as e:
                     st.error(f"分析失败: {e}")
                     st.session_state.pop('stock_analysis', None)
+                    st.session_state.pop('stock_plot', None)
     d = st.session_state.get('stock_analysis')
     if d:
         render_stock(d)
@@ -229,7 +253,7 @@ def view_sector():
     s_code = pick.split("（")[-1][:-1]
     ind = svc.sector.get_sector(s_code)
     st.metric("行业强度分（0~25）", _fmt(ind.get('score')),
-              delta="向上" if ind.get('up') else "向下")
+              delta="向上" if ind.get("up") else "向下")
     if st.button("分析板块成分股 Top10", type="primary"):
         stocks = svc.market.db.get_sector_stocks(s_code)[:10]
         with st.spinner(f"分析 {len(stocks)} 只成分股..."):
@@ -243,8 +267,142 @@ def view_sector():
                       for r in rows], use_container_width=True, hide_index=True)
 
 
+# ================= W2-B 新视图 =================
+def _sector_change_pct(kline_df, days: int):
+    """板块指数近 N 日涨跌 %（从 sector_kline 真实指数算，禁止成分股抽样）。"""
+    if kline_df is None or len(kline_df) < 2:
+        return None
+    df = kline_df.tail(days + 1)
+    if len(df) < 2:
+        return None
+    try:
+        c0 = float(df['收盘价'].iloc[0])
+        c1 = float(df['收盘价'].iloc[-1])
+        return round((c1 / c0 - 1) * 100, 2) if c0 else None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _sector_strength_table() -> list:
+    """板块强度表：板块名/代码/得分/近5/10/20日涨跌（只读 sector_kline）。"""
+    svc = _service()
+    meta = svc.market.db.get_sector_meta(active_only=True)
+    rows = []
+    for code, name, parent in meta:
+        if not name:
+            continue
+        kline = svc.market.db.get_sector_kline(code)
+        ind = svc.sector.get_sector(code)
+        rows.append({
+            '板块': name, '代码': code,
+            '强度分': ind.get('score'),
+            '近5日%': _sector_change_pct(kline, 5),
+            '近10日%': _sector_change_pct(kline, 10),
+            '近20日%': _sector_change_pct(kline, 20),
+        })
+    rows.sort(key=lambda r: (r['强度分'] is not None, float(r['强度分'] or -1)),
+              reverse=True)
+    return rows
+
+
+def view_true_resonance():
+    st.header("真三振池（最近一次扫描结果）")
+    job = latest_scan_job(load_config())
+    if job:
+        rows = scan_results_of(job, signal="true_resonance")
+        st.caption(f"来自 scan job #{job}，共 {len(rows)} 只真三振")
+        if rows:
+            st.dataframe([{'代码': r['symbol'], '名称': r.get('name', ''),
+                           '评分': r.get('score'), '建议': r.get('advice', ''),
+                           '日期': r.get('trade_date', '')} for r in rows],
+                         use_container_width=True, hide_index=True)
+        else:
+            st.info("最近一次扫描无真三振标的")
+    c1, c2 = st.columns([2, 1])
+    limit = c1.number_input("扫描只数", 1, 5000, 100)
+    if c2.button("用自选/limit 扫描并更新", type="primary"):
+        with st.spinner("扫描中（单票失败自动跳过）..."):
+            rows = scan_market(limit=int(limit), include_detail=True,
+                               cfg=load_config())
+            st.session_state['scan_results'] = rows
+            st.rerun()
+
+
+def view_system():
+    st.header("系统状态（只读）")
+    cfg = load_config()
+    svc = _service()
+    db = svc.market.db
+    try:
+        import importlib.util
+        czsc_ok = importlib.util.find_spec("czsc") is not None
+        czsc_ver = ""
+        if czsc_ok:
+            from mystery.adapters.czsc_adapter import czsc_version
+            czsc_ver = czsc_version()
+    except Exception:
+        czsc_ok, czsc_ver = False, ""
+    kline_latest = None
+    try:
+        conn = db._connect()
+        row = conn.execute(
+            "SELECT MAX(date) FROM stock_kline_data").fetchone()
+        kline_latest = row[0] if row else None
+        conn.close()
+    except Exception:
+        pass
+    st.json({
+        "MYSTERY_DB_PATH": db.db_path,
+        "报表输出目录": output_dir(cfg),
+        "chan 开关": "开" if chan_enabled() else "关（默认）",
+        "czsc 可导入": "✅" if czsc_ok else "❌（pip install -e '.[chan]'）",
+        "czsc 版本": czsc_ver or "-",
+        "rule_ver": "mystery-1.22.30-compat",
+        "库内 kline 最新日": kline_latest or "空",
+        "data_source.primary": (cfg.get("data_source") or {}).get("primary", "-"),
+        "data_source.fallback": (cfg.get("data_source") or {}).get("fallback", []),
+        "行情降级顺序": "db → ths_official → tdx_api → tdx_local",
+    }, expanded=True)
+    st.subheader("最近扫描任务")
+    try:
+        conn = db._connect()
+        rows = conn.execute(
+            "SELECT id, trade_date, started_at, n_ok, n_fail "
+            "FROM scan_jobs ORDER BY id DESC LIMIT 5").fetchall()
+        conn.close()
+        if rows:
+            st.dataframe([{'job_id': r[0], 'trade_date': r[1],
+                           'started_at': r[2], '成功': r[3], '失败': r[4]}
+                          for r in rows], use_container_width=True,
+                         hide_index=True)
+        else:
+            st.caption("尚无扫描记录（czsc-mi scan 后出现）")
+    except Exception as e:
+        st.caption(f"读取失败: {str(e)[:60]}")
+
+
+def view_sector_strength():
+    st.header("板块强度表（真实指数，非成分股抽样）")
+    rows = _sector_strength_table()
+    if not rows:
+        st.info("板块数据为空（先执行板块同步）")
+        return
+    st.caption(f"共 {len(rows)} 个板块，按强度分降序")
+    st.dataframe(rows, use_container_width=True, hide_index=True,
+                 column_config={"强度分": st.column_config.NumberColumn(
+                     format="%.2f")})
+    names = sorted({f"{r['板块']}（{r['代码']}）" for r in rows})
+    pick = st.selectbox("点击板块 → 钻取成分股（走 analyze_one_stock）", names)
+    if pick:
+        st.session_state['jump_sector'] = pick.split("（")[-1][:-1]
+        if st.button("进入板块钻取", type="primary"):
+            st.rerun()
+
+
 def main():
-    page = st.sidebar.radio("导航", ["个股分析", "全市场扫描", "板块钻取"])
+    page = st.sidebar.radio("导航", ["个股分析", "全市场扫描", "板块钻取",
+                                    "真三振池", "系统状态", "板块强度表"])
     st.sidebar.caption("唯一计算入口：mystery.services.analyze.analyze_one_stock")
     st.sidebar.caption(
         f"chan 开关: {'开' if os.environ.get('MYSTERY_CHAN_ENABLED', '0') not in ('0', 'false') else '关'}")
@@ -253,7 +411,17 @@ def main():
         view_stock()
     elif page == "全市场扫描":
         view_scan()
+    elif page == "真三振池":
+        view_true_resonance()
+    elif page == "系统状态":
+        view_system()
+    elif page == "板块强度表":
+        view_sector_strength()
     else:
+        # 板块钻取：支持从强度表跳转（预置所选板块）
+        jump = st.session_state.pop('jump_sector', None)
+        if jump:
+            st.session_state['sector_pick'] = f"{jump}"
         view_sector()
 
 
