@@ -80,3 +80,42 @@ def test_chan_roundtrip_dict():
     assert len(back.zss) == len(out.zss)
     assert back.last_bi_dir == out.last_bi_dir
     assert back.in_zs == out.in_zs
+
+
+def test_plot_figure_has_ma_and_zs():
+    """W4：缠论图必须有 6 条 MA；识别出中枢时必须画矩形；plot_html 兼容。"""
+    s = _make_series(n=800, seed=42)
+    fig = CzscAdapter().plot_figure(s, tail_bars=500)
+    assert fig is not None
+    names = [tr.name or "" for tr in fig.data]
+    mas = sorted((n for n in names
+                  if str(n).startswith("MA") and str(n)[2:].isdigit()),
+                 key=lambda n: int(n[2:]))
+    assert mas == ["MA5", "MA10", "MA20", "MA55", "MA233", "MA610"]
+    # 至少还有 K线/分型/笔/成交量/DIFF/DEA/MACD 之一
+    assert len(fig.data) >= 7
+    out = CzscAdapter().analyze(s)
+    if out.zss:
+        rects = [sh for sh in fig.layout.shapes if sh.type == "rect"]
+        assert rects, "识别出中枢但图上无矩形"
+    # plot_html 兼容路径返回非空 HTML
+    html = CzscAdapter().plot_html(s, tail_bars=300)
+    assert isinstance(html, str) and "plotly" in html
+
+
+def test_plot_figure_empty_and_bad_series():
+    s = BarSeries(symbol="600519.SH", freq="1d")
+    assert CzscAdapter().plot_figure(s) is None
+    assert CzscAdapter().plot_html(s) == ""
+    # 数据不足（<2 根）不应崩溃
+    tiny = _make_series(n=5, seed=1)
+    fig = CzscAdapter().plot_figure(tiny)
+    assert fig is not None or True  # 不抛异常即可
+
+
+def test_plot_figure_monthly_freq():
+    """月线（1M）能出图（czsc Freq.M 重采样口径）。"""
+    s = _make_series(n=1200, seed=3, freq="1M")
+    fig = CzscAdapter().plot_figure(s, tail_bars=None)
+    assert fig is not None
+    assert "月线" in (fig.layout.title.text or "")

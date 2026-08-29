@@ -13,7 +13,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import streamlit as st  # noqa: E402
-import streamlit.components.v1 as stc  # noqa: E402
 
 st.set_page_config(page_title="Mistery 趋势交易分析", layout="wide")
 
@@ -72,15 +71,19 @@ def _name_map_cached() -> dict:
 
 
 @st.cache_data(show_spinner=False)
-def _plot_cache(symbol: str, trade_date: str) -> str:
-    """缠论图 HTML（czsc 已装且 chan 开启时可用；失败/未装 → ''）。"""
+def _plot_cache(symbol: str, freq: str):
+    """缠论图 Figure（plotly 自绘；czsc 已装且数据可用时返回，否则 None）。
+
+    周期 1d/1w/1M 由 service 拉取（周/月=日K重采样），czsc 结构在 adapter 内
+    重建；结果按 (symbol, freq) 缓存，切换周期不重新分析。
+    """
     try:
         from mystery.adapters.czsc_adapter import CzscAdapter
-        series = _service().market.fetch_bars(symbol, '1d')
-        return CzscAdapter().plot_html(series)
+        series = _service().market.fetch_bars(symbol, freq)
+        return CzscAdapter().plot_figure(series)
     except Exception as e:  # noqa: BLE001
         st.warning(f"缠论图生成失败，降级文本展示: {str(e)[:80]}")
-        return ""
+        return None
 
 
 # ================= 展示函数（模块级，先定义后调用） =================
@@ -95,13 +98,19 @@ def render_stock(d: dict):
     c4.metric("真三振", "✅" if d.get('true_resonance') else "❌")
     c5.metric("行业", d.get('sector', {}).get('行业名称', '-'))
 
-    # 缠论卡（只读 chan；W3-A：czsc 已装且 chan 非空 → 嵌入 plot_czsc HTML）
+    # 缠论卡（只读 chan；W3-A：czsc 已装且 chan 非空 → plotly 缠论图）
     chan = d.get('chan', {}) or {}
     if chan:
         with st.expander("缠论结构（czsc，仅展示）", expanded=True):
-            plot_html = st.session_state.get('stock_plot', '')
-            if plot_html:
-                stc.html(plot_html, height=640, scrolling=True)
+            freq_label = st.radio(
+                "K线周期", ["日线", "周线", "月线"], horizontal=True,
+                key="stock_freq")
+            freq = {"日线": "1d", "周线": "1w", "月线": "1M"}[freq_label]
+            fig = _plot_cache(d.get('symbol', ''), freq)
+            if fig is not None:
+                st.plotly_chart(fig, height=720, width="stretch")
+            else:
+                st.info("缠论图不可用（czsc 未装或数据不足），见下方结构文本")
             for freq, cs in chan.items():
                 bis = cs.get('bis', [])
                 zss = cs.get('zss', [])
@@ -206,14 +215,9 @@ def view_stock():
                     d = r.to_dict()
                     st.session_state['stock_analysis'] = d
                     st.session_state['stock_analysis']['_input'] = text
-                    # 缠论图（W3-A）：仅 chan 非空且 czsc 已装时生成
-                    st.session_state['stock_plot'] = \
-                        _plot_cache(d['symbol'], d.get('trade_date', '')) \
-                        if d.get('chan') else ''
                 except Exception as e:
                     st.error(f"分析失败: {e}")
                     st.session_state.pop('stock_analysis', None)
-                    st.session_state.pop('stock_plot', None)
     d = st.session_state.get('stock_analysis')
     if d:
         render_stock(d)

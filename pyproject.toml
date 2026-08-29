@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mystery"
-version = "0.5.0"
+version = "0.6.0"
 description = "Mistery趋势交易论自动化分析：czsc 缠论内核 + mystery 规则 + 多源行情"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,7 +18,8 @@ dependencies = [
 [project.optional-dependencies]
 # 缠论可选：无 czsc 也能装能跑（chan 关闭时完全不 import czsc）
 chan = ["czsc>=1.0.1,<2.0"]
-web = ["streamlit"]
+# web 额外依赖 plotly（缠论图自绘；streamlit 本身也依赖 plotly）
+web = ["streamlit", "plotly"]
 dev = ["pytest"]
 
 [project.scripts]

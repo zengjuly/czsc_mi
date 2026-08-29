@@ -96,6 +96,13 @@ analyze_one_stock(symbol):
   （一票否决语义）。
 - chan_cache：`store.chan_cache` 表（symbol/freq/trade_date/czsc_ver PK），
   行情日或 czsc 版本变化才失效。
+- **缠论图 W4 起 plotly 自绘**：`CzscAdapter.plot_figure(series)` → plotly Figure
+  （K线 + MA 5/10/20/55/233/610 + 分型虚线/笔实线 + 中枢矩形 ZG-ZD/GG-DD +
+  成交量 + MACD(12,26,9,×2，czsc 首值种子 EMA 口径)）。弃用
+  `czsc.utils.plotting.lightweight.plot_czsc`（其 MainPane 只画 SMA5/20 且不画
+  中枢区间，无法满足展示需求）。MA/MACD 在全集 K 线上计算再截尾窗（长周期
+  均线有暖机值）；涨红跌绿，配色沿用 czsc 历史主题。`plot_html` 保留为
+  `plot_figure(...).to_html(include_plotlyjs="cdn")` 的兼容壳。
 
 ## 7. 入口（P3 + 002.md W1-W2）
 
@@ -110,14 +117,15 @@ analyze_one_stock(symbol):
   周/月由日K重采样写入；证券列表为空报错退出）
 - Web：`streamlit run mystery/apps/web/app.py`（六视图：个股/扫描/板块钻取/
   真三振池/系统状态/板块强度表，只调 Service；session 只存结果 dict；
-  渲染与计算分离，不用 st.stop()；个股页 chan 开启时嵌入 plot_czsc HTML）。
+  渲染与计算分离，不用 st.stop()；个股页 chan 开启时 plotly 自绘缠论图，
+  支持 日线/周线/月线 切换，`st.plotly_chart` 原生渲染）。
 - verify：`python scripts/verify_unified_analysis.py` —— 个股/扫描/CLI 三路径
   score 差 ≤ 1 + 金标对比。
 
 ## 8. 测试与验收
 
-- `pytest -q -m "not integration"`：53 passed（models/core 合成 OHLC/czsc adapter
-  mock K 线/金标 ≤ 1/scan_signals 三类信号）。
+- `pytest -q -m "not integration"`：56 passed（models/core 合成 OHLC/czsc adapter
+  mock K 线/金标 ≤ 1/scan_signals 三类信号/缠论图 plot_figure）。
 - 金标 fixtures：`tests/fixtures/gold_{sh600519,sz000001,sh600150}.json`
   （由旧系统 `unified_stock_analysis` 生成，2026-08-27）。
 - 三只票 score：0.0 / 49.0 / 0.0，与旧系统 0 分差（价格/日期/行业分全一致）。
@@ -136,6 +144,7 @@ analyze_one_stock(symbol):
 | W2 | sync 断点/多周期 + tdx_api 接入 + Web 真三振池/系统状态/板块强度表 | ✅ 0.5.0 |
 | W3 | plot_czsc 嵌入个股页 + Excel 缠论列 + daily_pipeline.sh + 去绝对路径 | ✅ 0.5.0 |
 | W3-perf | indicators 逐行索引→numpy 向量化（712x，新旧 57 列逐元素一致）；web 名称搜索/侧栏列表加缓存；个股分析 66s→5s | ✅ 0.5.0 |
+| W4 | 个股页缠论图增强：plotly 自绘（K线+MA 5/10/20/55/233/610+分型/笔+中枢矩形+量+MACD）；日/周/月切换；chan 摘要补月线 | ✅ 0.6.0 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。

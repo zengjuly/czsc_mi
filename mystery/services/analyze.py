@@ -101,6 +101,10 @@ class AnalysisService:
             if weekly.bars:
                 cw = adapter.analyze(weekly)
                 out['1w'] = cw
+            monthly = self.market.fetch_bars(daily.symbol, '1M')
+            if monthly.bars:
+                cm = adapter.analyze(monthly)
+                out['1M'] = cm
         except Exception as e:
             logger.warning(f"缠论分析失败({daily.symbol}): {str(e)[:100]}")
         return out
