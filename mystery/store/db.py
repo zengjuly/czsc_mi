@@ -214,10 +214,16 @@ class MysteryDB:
                 conn.close()
 
     def get_sector_stocks(self, sector_code: str) -> List[str]:
-        """板块成分股代码（sh600519 格式），优先 rel 表，constituents 兜底。"""
-        code = str(sector_code)
-        if not code.startswith('ths_'):
-            code = f'ths_{code.split(".")[0]}'
+        """板块成分股代码（sh600519 格式），优先 rel 表，constituents 兜底。
+
+        rel 表 sector_code 存「881101.TI」格式（无 ths_ 前缀）；入参
+        ths_881101 / 881101.TI / 881101 统一归一为 881101.TI 再查。
+        """
+        code = str(sector_code).strip()
+        if code.startswith('ths_'):
+            code = code[4:]
+        if '.' not in code:
+            code = f'{code}.TI'
         with self._lock:
             conn = self._connect()
             try:

@@ -67,7 +67,8 @@ def scan_market(limit: Optional[int] = None,
     svc = AnalysisService(cfg)
     if watchlist:
         codes = list(watchlist)
-    elif universe:
+    elif universe is not None:
+        # 显式传入空股票池：不落回全市场（避免误扫全 A 卡死）
         codes = list(universe)
     else:
         codes = [s['code'] for s in svc.market.fetch_stock_list()]

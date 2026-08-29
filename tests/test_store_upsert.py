@@ -69,3 +69,31 @@ def test_upsert_overwrite_values():
     finally:
         conn.close()
     assert close == 11.0 and turn == 3.0
+
+
+def test_get_sector_stocks_code_normalize():
+    """板块成分查询归一：ths_881101 / 881101.TI / 881101 三种入参都命中 rel 表。
+
+    rel 表 sector_code 存「881101.TI」（无 ths_ 前缀）；005.md 后不允许
+    把 ths_881101 直接当 key 查（会 0 行，进而空 universe 落回全 A）。
+    """
+    db = _fresh_db()
+    conn = db._connect()
+    try:
+        conn.execute("INSERT INTO sector_meta (sector_code, sector_name) "
+                     "VALUES ('881101.TI', '种植业与林业')")
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO stock_sector_rel (stock_code, sector_code, is_primary) "
+                "VALUES (?, '881101.TI', 1)",
+                (f"sh.60051{i}",))
+        conn.commit()
+    finally:
+        conn.close()
+    for code in ["881101.TI", "ths_881101", "881101"]:
+        out = db.get_sector_stocks(code)
+        assert len(out) == 3, f"{code} -> {out}"
+        assert all("." not in c for c in out)
+    # 无关板块 / 空：返回空列表
+    assert db.get_sector_stocks("ths_885863") == []
+

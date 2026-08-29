@@ -311,11 +311,16 @@ def _add_watchlist_widget(rows: list, key: str = "wl"):
 
 
 def view_watchlist_subpage():
-    """自选管理子页（不进主导航；禁止对全部自选跑分析）。"""
+    """自选管理页（主导航「自选股」直达；个股页「管理自选」作为子视图进入）。
+
+    禁止对全部自选跑分析：只提供单只「分析」按钮。
+    """
     st.header("自选管理")
-    if st.button("← 返回"):
-        st.session_state['subview'] = None
-        st.rerun()
+    if st.session_state.get('subview') == 'watchlist':
+        # 经个股页「管理自选」进入（子视图）：显示返回；主导航直达不显示。
+        if st.button("← 返回"):
+            st.session_state['subview'] = None
+            st.rerun()
 
     c_imp, c_imp_btn = st.columns([3, 1])
     c_imp.caption("通达信自选：本地 T0002/blocknew/zxg.blk（只读导入，合并不覆盖）")
@@ -465,9 +470,13 @@ def view_sector():
               delta="向上" if ind.get("up") else "向下")
     if st.button("分析板块成分股 Top10", type="primary"):
         stocks = svc.market.db.get_sector_stocks(s_code)[:10]
-        with st.spinner(f"分析 {len(stocks)} 只成分股..."):
-            rows = scan_market(universe=stocks, include_detail=False)
-            st.session_state['sector_results'] = rows
+        if not stocks:
+            st.warning("该板块暂无成分股数据（stock_sector_rel 未同步该板块）。"
+                       "可先执行板块成分同步，或改用板块强度表/全市场扫描。")
+        else:
+            with st.spinner(f"分析 {len(stocks)} 只成分股..."):
+                rows = scan_market(universe=stocks, include_detail=False)
+                st.session_state['sector_results'] = rows
     rows = st.session_state.get('sector_results')
     if rows:
         st.dataframe([{'代码': r['symbol'], '名称': r.get('name') or '未知',
@@ -611,19 +620,21 @@ def _clear_subview():
 
 
 def main():
-    page = st.sidebar.radio("导航", ["个股分析", "全市场扫描", "板块钻取",
+    page = st.sidebar.radio("导航", ["个股分析", "自选股", "全市场扫描", "板块钻取",
                                     "真三振池", "系统状态", "板块强度表"],
                             on_change=_clear_subview)
     st.sidebar.caption("唯一计算入口：mystery.services.analyze.analyze_one_stock")
     st.sidebar.caption(
         f"chan 开关: {'开' if chan_enabled() else '关'} | "
         f"混合分: {'开' if chan_score_enabled() else '关（默认）'}")
-    # 自选管理是子视图，不进主导航
+    # 个股页「管理自选」进入的子视图优先
     if st.session_state.get('subview') == 'watchlist':
         view_watchlist_subpage()
         return
     if page == "个股分析":
         view_stock()
+    elif page == "自选股":
+        view_watchlist_subpage()
     elif page == "全市场扫描":
         view_scan()
     elif page == "真三振池":
