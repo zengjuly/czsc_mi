@@ -24,19 +24,16 @@ STANDARD_COLS = ['日期', '代码', '开盘价', '最高价', '最低价', '收
 
 
 def resolve_kline_dirs() -> List[str]:
-    """行情目录优先级：TDX_HOME/vipdoc → TDX_VIPDOC_DIR → 默认 tdx_vipdoc。"""
+    """行情目录优先级：TDX_HOME/vipdoc → TDX_VIPDOC_DIR（本机路径由环境变量注入）。"""
     dirs: List[str] = []
     home = os.environ.get('TDX_HOME')
     if home:
         vip = os.path.join(home, 'vipdoc')
         if os.path.isdir(vip) and _has_lday(vip):
             dirs.append(vip)
-    extra = os.environ.get('TDX_VIPDOC_DIR',
-                           '/home/ai/ai_runner/stock/data/tdx_vipdoc')
+    extra = os.environ.get('TDX_VIPDOC_DIR', '')
     if extra and os.path.isdir(extra) and _has_lday(extra) and extra not in dirs:
         dirs.append(extra)
-    if not dirs:
-        dirs = ['/home/ai/ai_runner/stock/data/tdx_vipdoc']
     return dirs
 
 

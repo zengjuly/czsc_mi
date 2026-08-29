@@ -65,6 +65,33 @@ class CzscAdapter:
         c = CZSC(bars, min_bi_len=self.min_bi_len)
         return self._extract(c, series.freq)
 
+    def plot_html(self, series: BarSeries, tail_bars: Optional[int] = 400,
+                  theme: str = "light") -> str:
+        """CZSC 对象 → lightweight-charts 自包含 HTML（Web 嵌入用）。
+
+        002.md W3-A：画图所需 RawBar 只留在 adapter 内，不把 CZSC 对象
+        塞进 session / 报表。czsc 未装或数据不足 → 返回空串（调用方降级文本）。
+        """
+        try:
+            from czsc import CZSC, Freq, format_standard_kline
+            from czsc.utils.plotting.lightweight import plot_czsc
+        except ImportError:
+            logger.warning("czsc 未安装，plot_czsc 不可用（pip install -e '.[chan]'）")
+            return ""
+        if not series.bars:
+            return ""
+        df = _to_df(series)
+        freq_name = _FREQ_MAP.get(series.freq, "D")
+        try:
+            bars = format_standard_kline(df, freq=getattr(Freq, freq_name))
+            c = CZSC(bars, min_bi_len=self.min_bi_len)
+            html = plot_czsc(c, output="html", theme=theme, tail_bars=tail_bars,
+                             title=f"{series.symbol} 缠论结构（{series.freq}）")
+            return html or ""
+        except Exception as e:
+            logger.warning(f"plot_czsc 失败({series.symbol}): {str(e)[:100]}")
+            return ""
+
     def analyze_multi(self, daily: BarSeries,
                       freqs: List[str]) -> Dict[str, ChanStructure]:
         """多周期分析：{freq: ChanStructure}。非日线用日K重采样（统一口径）。"""

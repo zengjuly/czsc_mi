@@ -28,13 +28,14 @@ class ThsClient:
     def __init__(self, cfg: Optional[Dict] = None):
         cfg = cfg or {}
         self.cfg = cfg.get('data_source', {}).get('ths_config', {}) or {}
-        self.script_path = self.cfg.get(
-            'script_path',
-            '/home/ai/ai_runner/stock/Financial-API/python/toolkit/'
-            'fuyao/scripts/fuyao.py')
+        # 本机路径一律环境变量注入（scripts/ 导出）；业务代码不写绝对路径
+        self.script_path = (self.cfg.get('script_path')
+                            or os.environ.get('THS_FUYAO_SCRIPT')
+                            or '')
         self.adjust = self.cfg.get('adjust', 'forward')
-        md_dir = self.cfg.get('marketdb_dir') or \
-            '/home/ai/ai_runner/stock/Financial-API/data'
+        md_dir = (self.cfg.get('marketdb_dir')
+                  or os.environ.get('THS_MARKETDB_DIR')
+                  or '')
         self.marketdb_path = os.environ.get('MARKETDB_DB_PATH') or (
             os.path.join(md_dir, 'market.duckdb')
             if md_dir and os.path.isdir(md_dir) else md_dir)

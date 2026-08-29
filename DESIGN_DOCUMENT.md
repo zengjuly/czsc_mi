@@ -60,7 +60,7 @@ analyze_one_stock(symbol):
 
 ## 5. 数据源与新鲜度（adapters/market.py）
 
-优先级：**本地库(SQLite) 未过期 → ths_official → tdx_local**（tdx_api 预留）。
+优先级：**本地库(SQLite) 未过期 → ths_official → tdx_api → tdx_local**（W2-A 接入 tdx-api 容器）。
 
 - 新鲜度参照：在线交易日历（akshare，TTL 600s，盘中 15:30 前回退昨日）
   → 本地 MarketDB 最新日 → .day 文件最新日。
@@ -97,19 +97,27 @@ analyze_one_stock(symbol):
 - chan_cache：`store.chan_cache` 表（symbol/freq/trade_date/czsc_ver PK），
   行情日或 czsc 版本变化才失效。
 
-## 7. 入口（P3）
+## 7. 入口（P3 + 002.md W1-W2）
 
 - CLI：`czsc-mi analyze --stock sh600519 [--quick]`（输出 JSON）/
-  `daily --limit 50 [--min-score]` / `scan --limit 100 [--min-score]` /
-  `sync --period daily --days 365 [--symbols ...] [--limit]`
-- Web：`streamlit run mystery/apps/web/app.py`（个股/扫描/板块钻取三视图，
-  只调 Service；session 只存结果 dict；渲染与计算分离，不用 st.stop()）。
+  `daily --watchlist [--symbols ...] [--limit] [--min-score]`（写
+  `{OUTPUT_DIR}/每日股票分析报告_{YYYYMMDD}.xlsx/.html`，Excel 评分=analyze score）/
+  `scan --limit 100 [--min-score] [--signal vap_atr|chip_low|true_resonance] [--no-persist]`
+  （逐票 `analyze_one_stock(include_detail=True)` + `core.scan_signals.classify` 三类信号，
+  写 `scan_jobs`/`scan_results`，同日重复扫描默认新 job）/
+  `sync --period daily [--period weekly] --days 365 [--symbols ...] [--limit] [--force]`
+  （断点 `data/sync_checkpoint.json`，参数变化丢弃旧断点，中断再跑跳过已完成；
+  周/月由日K重采样写入；证券列表为空报错退出）
+- Web：`streamlit run mystery/apps/web/app.py`（六视图：个股/扫描/板块钻取/
+  真三振池/系统状态/板块强度表，只调 Service；session 只存结果 dict；
+  渲染与计算分离，不用 st.stop()；个股页 chan 开启时嵌入 plot_czsc HTML）。
 - verify：`python scripts/verify_unified_analysis.py` —— 个股/扫描/CLI 三路径
   score 差 ≤ 1 + 金标对比。
 
 ## 8. 测试与验收
 
-- `pytest -q`：20 passed（models/core 合成 OHLC/czsc adapter mock K 线/金标 ≤ 1）。
+- `pytest -q -m "not integration"`：53 passed（models/core 合成 OHLC/czsc adapter
+  mock K 线/金标 ≤ 1/scan_signals 三类信号）。
 - 金标 fixtures：`tests/fixtures/gold_{sh600519,sz000001,sh600150}.json`
   （由旧系统 `unified_stock_analysis` 生成，2026-08-27）。
 - 三只票 score：0.0 / 49.0 / 0.0，与旧系统 0 分差（价格/日期/行业分全一致）。
@@ -124,6 +132,9 @@ analyze_one_stock(symbol):
 | P2 | CzscAdapter 只展示（不进评分） | ✅ 0.2.0 |
 | P3 | CLI/scan/sync/verify/Web 收口 | ✅ 0.3.0 |
 | P4 | 小权重缠论分（0.55/0.25/0.20，年线滤网否决保护） | ✅ 0.4.0 |
+| W1 | 报表（Excel/HTML，daily 落盘）+ 扫描三类信号写库 | ✅ 0.5.0 |
+| W2 | sync 断点/多周期 + tdx_api 接入 + Web 真三振池/系统状态/板块强度表 | ✅ 0.5.0 |
+| W3 | plot_czsc 嵌入个股页 + Excel 缠论列 + daily_pipeline.sh + 去绝对路径 | ✅ 0.5.0 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。
@@ -135,15 +146,23 @@ source /home/ai/ai_runner/venv/bin/activate   # 原机示例；任意 venv 均�
 export MYSTERY_DB_PATH=/home/ai/ai_runner/stock/data/db/mystery_cache.db
 export MYSTERY_CHAN_ENABLED=0        # 1=开启缠论混合分（默认关）
 export HITHINK_FINANCE_API_KEY=...   # 环境已有；不入库
+export THS_FUYAO_SCRIPT=/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py
+export THS_MARKETDB_DIR=/home/ai/ai_runner/stock/Financial-API/data
 cd /home/ai/ai_runner/stock/czsc_mi
 czsc-mi analyze --stock sh600519
 ```
 
-## 11. 已知缺口（W1 记录，2026-08-28）
+本机路径约定全部收敛在 `scripts/start_web.sh` 与 `scripts/daily_pipeline.sh`
+（脚本内允许默认值）；`mystery/` 与 `config/` 业务文件零绝对路径（验收：`rg -n "/home/ai/ai_runner" mystery config` 为空）。
+
+## 11. 已知缺口
 
 - 金标集成测依赖原机实盘数据（THS/TDX/生产 DB），已拆双层：离线 fixture 锁分（test_score_offline），
   集成测打标 @integration 默认跳过。
 - `schema.sql` 已自举（幂等建表）；改列/迁移策略未实现（migrations/ 仅说明）。
 - 缠论分仍较浅（末笔方向/中枢/日周同向，±10/±5/±8），非完整买卖点/背驰体系；默认关闭。
 - 无 CI 之外的发布管道（无 wheel 构建/发布配置）。
-- 在线源仅 ths_official + tdx_local 活跃；tdx_api 为接口占位（unused in default fallback）。
+- scan 三类信号中 `chip_low` 依赖近20日均换手：ths/tdx 数据换手率常缺 → 大多标
+  `chip_low_unknown`（不伪造）；tdx 数据按 SQLite 日期补齐后可恢复。
+- tdx_api（tdx-api 容器）已实现并挂进 fallback，但容器未运行时会快速失败降级，
+  不影响主链（db → ths_official 正常时不会触达）。
