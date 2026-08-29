@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -18,7 +17,8 @@ st.set_page_config(page_title="Mistery 趋势交易分析", layout="wide")
 
 from mystery.adapters.codes import normalize_symbol  # noqa: E402
 from mystery.config import load_config, output_dir  # noqa: E402
-from mystery.services.analyze import AnalysisService, chan_enabled  # noqa: E402
+from mystery.services.analyze import (AnalysisService, chan_enabled,  # noqa: E402
+                                      chan_score_enabled)
 from mystery.services.scan import (scan_market, latest_scan_job,  # noqa: E402
                                    scan_results_of)
 from mystery.services import watchlist as _wl  # noqa: E402
@@ -60,16 +60,6 @@ def _search_cached(keyword: str) -> list:
     return _wl.search_stock(keyword, limit=8)
 
 
-@st.cache_data(ttl=600, show_spinner=False)
-def _name_map_cached() -> dict:
-    """全市场 {code: name} 映射（缓存 10 分钟，侧栏自选股展示用）。"""
-    try:
-        svc = _service()
-        return {s['code']: s['name'] for s in svc.market.fetch_stock_list()}
-    except Exception:
-        return {}
-
-
 @st.cache_data(show_spinner=False)
 def _plot_cache(symbol: str, freq: str):
     """缠论图 Figure（plotly 自绘；czsc 已装且数据可用时返回，否则 None）。
@@ -84,6 +74,20 @@ def _plot_cache(symbol: str, freq: str):
     except Exception as e:  # noqa: BLE001
         st.warning(f"缠论图生成失败，降级文本展示: {str(e)[:80]}")
         return None
+
+
+@st.cache_data(show_spinner=False)
+def _lightweight_cache(symbol: str, freq: str):
+    """官方 lightweight 校验图 HTML（plot_czsc(c, output='html')）；失败返回 ''。
+
+    仅作校验/降级对照，主图始终用 plotly 自绘中枢盒（_plot_cache）。
+    """
+    try:
+        from mystery.adapters.czsc_adapter import CzscAdapter
+        series = _service().market.fetch_bars(symbol, freq)
+        return CzscAdapter().plot_lightweight_html(series)
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 # ================= 展示函数（模块级，先定义后调用） =================
@@ -200,8 +204,8 @@ def _render_technical(tech: dict):
 
 def render_stock(d: dict):
     """个股页：指标卡 + 缠论卡 + 明细（只读 result dict，不再计算）。"""
-    st.subheader(f"{d.get('name', '')} {d.get('symbol', '')}  "
-                 f"({d.get('trade_date', '')})")
+    name = d.get('name') or '未知'
+    st.subheader(f"{name}（{d.get('symbol', '')}）  {d.get('trade_date', '')}")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("综合评分", _fmt(d.get('score')))
     c2.metric("操作建议", d.get('advice', '-'))
@@ -222,6 +226,12 @@ def render_stock(d: dict):
                 st.plotly_chart(fig, height=720, width="stretch")
             else:
                 st.info("缠论图不可用（czsc 未装或数据不足），见下方结构文本")
+            with st.expander("官方校验图（czsc lightweight，仅对照）", expanded=False):
+                lw_html = _lightweight_cache(d.get('symbol', ''), freq)
+                if lw_html:
+                    st.iframe(lw_html, height=640)
+                else:
+                    st.info("lightweight 校验图不可用（czsc 未装或数据不足）")
             for freq, cs in chan.items():
                 bis = cs.get('bis', [])
                 zss = cs.get('zss', [])
@@ -288,10 +298,10 @@ def render_stock(d: dict):
 # ================= 侧栏自选股 =================
 def render_watchlist_sidebar():
     st.sidebar.subheader("自选股")
-    codes = _wl.load_watchlist()
-    if codes:
-        stock_map = _name_map_cached()
-        labels = {c: f"{c} {stock_map.get(c, '')}".strip() for c in codes}
+    items = _wl.load_watchlist_items()
+    if items:
+        codes = [it['symbol'] for it in items]
+        labels = {it['symbol']: (it['name'] or it['symbol']) for it in items}
         sel = st.sidebar.multiselect("自选列表（可多选分析）",
                                      options=codes, default=codes[-1:],
                                      format_func=lambda c: labels.get(c, c))
@@ -304,16 +314,96 @@ def render_watchlist_sidebar():
         if c2.button("全部移除", use_container_width=True):
             _wl.save_watchlist([])
             st.rerun()
+        if st.sidebar.button("管理自选", use_container_width=True):
+            st.session_state['subview'] = 'watchlist'
+            st.rerun()
     else:
         st.sidebar.caption("自选股为空，可在个股页加入")
+        if st.sidebar.button("管理自选", use_container_width=True):
+            st.session_state['subview'] = 'watchlist'
+            st.rerun()
+
+
+def _add_watchlist_widget(rows: list, key: str = "wl"):
+    """扫描/真三振/板块钻取表下方：选一只加入自选（source=scan）。"""
+    if not rows:
+        return
+    opts = {f"{r.get('name') or '未知'}（{r['symbol']}）": r['symbol'] for r in rows}
+    pick = st.selectbox("选择加入自选", list(opts.keys()), key=f"{key}_wl_pick")
+    if st.button("加入自选", key=f"{key}_wl_add"):
+        sym = opts[pick]
+        nm = next((r.get('name') or '' for r in rows if r['symbol'] == sym), '')
+        _wl.add_to_watchlist(sym, name=nm, source='scan')
+        st.rerun()
+
+
+def view_watchlist_subpage():
+    """自选管理子页（不进主导航；禁止对全部自选跑分析）。"""
+    st.header("自选管理")
+    if st.button("← 返回"):
+        st.session_state['subview'] = None
+        st.rerun()
+
+    c_imp, c_imp_btn = st.columns([3, 1])
+    c_imp.caption("通达信自选：本地 T0002/blocknew/zxg.blk（只读导入，合并不覆盖）")
+    if c_imp_btn.button("从通达信导入"):
+        with st.spinner("从通达信导入中..."):
+            r = _wl.import_from_tdx(load_config())
+        if r.get('path'):
+            st.success(f"导入 {r['imported']} 只（已存在跳过 {r['skipped']}）"
+                       f" ← {r['path']}")
+            st.rerun()
+        else:
+            st.warning("未找到通达信自选文件 zxg.blk（请设置 TDX_VIPDOC_DIR / "
+                       "TDX_BLOCKNEW_DIR，默认查 /mnt/c/new_tdx、/mnt/new_tdx 的 "
+                       "T0002/blocknew）")
+
+    kw_col, add_col = st.columns([3, 1])
+    kw = kw_col.text_input("添加自选（代码或名称）", key="wl_add_input")
+    if add_col.button("添加", type="primary"):
+        add_text = kw.strip()
+        if add_text:
+            hits = _wl.search_stock(add_text, limit=8)
+            if hits:
+                h = hits[0]
+                _wl.add_to_watchlist(h['code'], name=h['name'], source='manual')
+                st.rerun()
+            else:
+                try:
+                    sym = normalize_symbol(add_text)
+                    _wl.add_to_watchlist(sym, name='', source='manual')
+                    st.rerun()
+                except Exception:
+                    st.error(f"未找到股票：{add_text}")
+
+    items = _wl.load_watchlist_items()
+    if not items:
+        st.info("自选股为空")
+        return
+    st.caption(f"共 {len(items)} 只")
+    for it in items:
+        sym = it['symbol']
+        name = it['name'] or '未知'
+        c1, c2, c3, c4, c5 = st.columns([1.1, 1.4, 1.4, 0.7, 0.7])
+        c1.markdown(f"`{sym}`")
+        c2.write(name)
+        c3.write(_wl.source_label(it['source']))
+        if c4.button("分析", key=f"an_{sym}"):
+            st.session_state['_pending_symbol'] = sym
+            st.session_state['subview'] = None
+            st.rerun()
+        if c5.button("删除", key=f"del_{sym}"):
+            _wl.remove_from_watchlist(sym)
+            st.rerun()
 
 
 # ================= 视图 =================
 def view_stock():
     st.header("个股分析（支持代码或股票名搜索）")
+    pending = st.session_state.pop('_pending_symbol', None)
     c1, c2 = st.columns([3, 1])
-    text = c1.text_input("输入代码或名称", "sh600519").strip()
-    do_analyze = c2.button("分析", type="primary")
+    text = c1.text_input("输入代码或名称", pending or "sh600519").strip()
+    do_analyze = c2.button("分析", type="primary") or bool(pending)
     # 名称搜索提示（输入非代码时展示匹配候选）
     candidates = None
     if text:
@@ -345,15 +435,20 @@ def view_stock():
     if d:
         render_stock(d)
         cur = d.get('symbol', '')
-        wl = _wl.load_watchlist()
-        if cur in wl:
+        items = _wl.load_watchlist_items()
+        cur_item = next((it for it in items if it['symbol'] == cur), None)
+        if cur_item:
+            st.caption(f"自选来源：{_wl.source_label(cur_item['source'])}")
             if st.button("从自选股移除", use_container_width=True):
                 _wl.remove_from_watchlist(cur)
                 st.rerun()
         else:
             if st.button("加入自选股", use_container_width=True):
-                _wl.add_to_watchlist(cur)
+                _wl.add_to_watchlist(cur, name=d.get('name') or '', source='manual')
                 st.rerun()
+        if st.button("管理自选", use_container_width=True):
+            st.session_state['subview'] = 'watchlist'
+            st.rerun()
 
 
 def view_scan():
@@ -370,10 +465,11 @@ def view_scan():
     rows = st.session_state.get('scan_results')
     if rows:
         st.caption(f"共 {len(rows)} 只（按分降序）")
-        st.dataframe([{'代码': r['symbol'], '名称': r.get('name', ''),
+        st.dataframe([{'代码': r['symbol'], '名称': r.get('name') or '未知',
                        '评分': r.get('score'), '建议': r.get('advice', ''),
                        '日期': r.get('trade_date', '')} for r in rows],
                      use_container_width=True, hide_index=True)
+        _add_watchlist_widget(rows, key="scan")
 
 
 def view_sector():
@@ -395,10 +491,11 @@ def view_sector():
             st.session_state['sector_results'] = rows
     rows = st.session_state.get('sector_results')
     if rows:
-        st.dataframe([{'代码': r['symbol'], '名称': r.get('name', ''),
+        st.dataframe([{'代码': r['symbol'], '名称': r.get('name') or '未知',
                        '评分': r.get('score'), '建议': r.get('advice', ''),
                        '行业': r.get('sector', {}).get('行业名称', '-')}
                       for r in rows], use_container_width=True, hide_index=True)
+        _add_watchlist_widget(rows, key="sector")
 
 
 # ================= W2-B 新视图 =================
@@ -447,10 +544,11 @@ def view_true_resonance():
         rows = scan_results_of(job, signal="true_resonance")
         st.caption(f"来自 scan job #{job}，共 {len(rows)} 只真三振")
         if rows:
-            st.dataframe([{'代码': r['symbol'], '名称': r.get('name', ''),
+            st.dataframe([{'代码': r['symbol'], '名称': r.get('name') or '未知',
                            '评分': r.get('score'), '建议': r.get('advice', ''),
                            '日期': r.get('trade_date', '')} for r in rows],
                          use_container_width=True, hide_index=True)
+            _add_watchlist_widget(rows, key="resonance")
         else:
             st.info("最近一次扫描无真三振标的")
     c1, c2 = st.columns([2, 1])
@@ -489,7 +587,8 @@ def view_system():
     st.json({
         "MYSTERY_DB_PATH": db.db_path,
         "报表输出目录": output_dir(cfg),
-        "chan 开关": "开" if chan_enabled() else "关（默认）",
+        "chan 开关": "开" if chan_enabled() else "关",
+        "混合分开关": "开" if chan_score_enabled() else "关（默认）",
         "czsc 可导入": "✅" if czsc_ok else "❌（pip install -e '.[chan]'）",
         "czsc 版本": czsc_ver or "-",
         "rule_ver": "mystery-1.22.30-compat",
@@ -534,13 +633,23 @@ def view_sector_strength():
             st.rerun()
 
 
+def _clear_subview():
+    st.session_state['subview'] = None
+
+
 def main():
     page = st.sidebar.radio("导航", ["个股分析", "全市场扫描", "板块钻取",
-                                    "真三振池", "系统状态", "板块强度表"])
+                                    "真三振池", "系统状态", "板块强度表"],
+                            on_change=_clear_subview)
     st.sidebar.caption("唯一计算入口：mystery.services.analyze.analyze_one_stock")
     st.sidebar.caption(
-        f"chan 开关: {'开' if os.environ.get('MYSTERY_CHAN_ENABLED', '0') not in ('0', 'false') else '关'}")
+        f"chan 开关: {'开' if chan_enabled() else '关'} | "
+        f"混合分: {'开' if chan_score_enabled() else '关（默认）'}")
     render_watchlist_sidebar()
+    # 自选管理是子视图，不进主导航
+    if st.session_state.get('subview') == 'watchlist':
+        view_watchlist_subpage()
+        return
     if page == "个股分析":
         view_stock()
     elif page == "全市场扫描":

@@ -143,7 +143,7 @@ def _stock_card(d: Dict[str, Any]) -> str:
 <div class="card {card_cls}">
   <div class="stock-head">
     <div>
-      <h3>{_esc(d.get('name', ''))} <span class="code">{_esc(d.get('symbol', ''))}
+      <h3>{_esc(d.get('name') or '未知')} <span class="code">{_esc(d.get('symbol', ''))}
         （{_esc(d.get('trade_date', ''))}）</span></h3>
       <div style="margin-top:6px">{tags}</div>
     </div>

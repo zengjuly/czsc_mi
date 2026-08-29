@@ -83,7 +83,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     if args.signal:
         results = filter_by_signal(results, args.signal)
     for r in results:
-        print(f"{r.get('symbol')} {r.get('name', ''):　<6} "
+        print(f"{r.get('symbol')} {(r.get('name') or '未知'):　<6} "
               f"score={r.get('score')} {r.get('advice', '')}")
     n_tr = sum(1 for r in results if r.get('true_resonance'))
     n_vap = sum(1 for r in results if r.get('vap_atr_break'))
@@ -102,6 +102,18 @@ def _cmd_sync(args: argparse.Namespace) -> int:
                       symbols=args.symbols, limit=args.limit,
                       cfg=args.cfg, periods=periods)
     print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
+def _cmd_watchlist_import_tdx(args: argparse.Namespace) -> int:
+    from ..services import watchlist as _wl
+
+    r = _wl.import_from_tdx(args.cfg)
+    if not r.get('path'):
+        print("未找到通达信自选文件 zxg.blk（设 TDX_VIPDOC_DIR / TDX_BLOCKNEW_DIR）",
+              file=sys.stderr)
+        return 1
+    print(json.dumps(r, ensure_ascii=False))
     return 0
 
 
@@ -140,6 +152,11 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--symbols", nargs="*", default=None)
     p.add_argument("--limit", type=int, default=None)
     p.set_defaults(func=_cmd_sync)
+
+    p = sub.add_parser("watchlist", help="自选股管理")
+    wsub = p.add_subparsers(dest="wl_cmd", required=True)
+    wp = wsub.add_parser("import-tdx", help="从通达信本地自选 zxg.blk 导入")
+    wp.set_defaults(func=_cmd_watchlist_import_tdx)
 
     args = parser.parse_args(argv)
     args.cfg = load_config()

@@ -46,7 +46,7 @@ def _flat(d: Dict[str, Any]) -> Dict[str, Any]:
     pr = vap.get("平台范围") or {}
     return {
         "symbol": d.get("symbol", ""),
-        "name": d.get("name", ""),
+        "name": d.get("name") or "未知",
         "score": d.get("score"),
         "advice": d.get("advice", ""),
         "true_resonance": "✅" if d.get("true_resonance") else "❌",
@@ -81,7 +81,7 @@ def _detail_rows(d: Dict[str, Any]) -> List[List[Any]]:
 
     sec_row("基础信息")
     rows.append(["股票代码", d.get("symbol", ""), ""])
-    rows.append(["股票名称", d.get("name", ""), ""])
+    rows.append(["股票名称", d.get("name") or "未知", ""])
     rows.append(["分析日期", d.get("trade_date", ""), ""])
     rows.append(["最新价", d.get("price"), ""])
     rows.append(["综合评分", d.get("score"), ""])

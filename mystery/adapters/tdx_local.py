@@ -52,6 +52,78 @@ def get_market(code6: str) -> str:
     return 'sh'
 
 
+# ---------------- 通达信自选/自定义板块（.blk，只读解析） ----------------
+def resolve_blocknew_dirs() -> List[str]:
+    """自选板块目录 {TDX}/T0002/blocknew（按序命中即停，只读不写通达信）。
+
+    优先级：TDX_VIPDOC_DIR 上一级 /T0002/blocknew → TDX_BLOCKNEW_DIR →
+    常见 /mnt/c/new_tdx、/mnt/new_tdx 同级 T0002/blocknew。
+    """
+    dirs: List[str] = []
+    vip = os.environ.get('TDX_VIPDOC_DIR', '')
+    if vip:
+        cand = os.path.join(os.path.dirname(vip.rstrip('/')), 'T0002', 'blocknew')
+        if os.path.isdir(cand):
+            dirs.append(cand)
+    extra = os.environ.get('TDX_BLOCKNEW_DIR', '')
+    if extra and os.path.isdir(extra) and extra not in dirs:
+        dirs.append(extra)
+    for base in ('/mnt/c/new_tdx', '/mnt/new_tdx', '/mnt/tdx', '/mnt/tdx2'):
+        cand = os.path.join(base, 'T0002', 'blocknew')
+        if os.path.isdir(cand) and cand not in dirs:
+            dirs.append(cand)
+    return dirs
+
+
+def find_blk_file(filename: str = 'zxg.blk') -> Optional[str]:
+    """在 blocknew 目录序列里找第一个存在的 .blk 文件。"""
+    for d in resolve_blocknew_dirs():
+        fp = os.path.join(d, filename)
+        if os.path.isfile(fp):
+            return fp
+    return None
+
+
+def parse_blk_file(path: str) -> List[str]:
+    """解析通达信 .blk 文件 → 内部代码列表（600519.SH / 000001.SZ / xxxxxx.BJ）。
+
+    每行 7 位：首位 1=上海 / 0=深圳 / 2=北交，后 6 位代码；兼容 6 位纯数字
+    （按 get_market 推断）。GBK / UTF-8 / latin-1 依次尝试。去重保序。
+    """
+    out: List[str] = []
+    try:
+        with open(path, 'rb') as f:
+            raw = f.read()
+    except OSError:
+        return out
+    text = None
+    for enc in ('gbk', 'utf-8', 'latin-1'):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        return out
+    for line in text.splitlines():
+        token = line.strip().strip('"').strip("'").strip()
+        if not token:
+            continue
+        digits = ''.join(ch for ch in token if ch.isdigit())
+        if len(digits) == 7 and digits[0] in ('0', '1', '2'):
+            exch = {'1': 'SH', '0': 'SZ', '2': 'BJ'}[digits[0]]
+            out.append(f'{digits[1:]}.{exch}')
+        elif len(digits) == 6:
+            out.append(f'{digits}.{get_market(digits).upper()}')
+    seen: set = set()
+    dedup: List[str] = []
+    for c in out:
+        if c not in seen:
+            seen.add(c)
+            dedup.append(c)
+    return dedup
+
+
 class TdxLocalClient:
     """通达信本地客户端。"""
 
