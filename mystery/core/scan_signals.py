@@ -31,11 +31,18 @@ def classify(d: Dict[str, Any]) -> Dict[str, Any]:
     if brk:
         out["labels"].append("VAP-ATR突破")
 
-    # 筹码低位：近20日均换手（自适应周期里已有，不重算）
+    # 筹码低位：近20日均换手（多路径读取，见 003.md：turnover_20 顶层优先，不再拉 K 线）
     avg_turnover = None
-    cyc = vap.get("自适应周期") or {}
-    if isinstance(cyc, dict):
-        avg_turnover = cyc.get("avg_turnover")
+    if d.get("turnover_20") is not None:
+        avg_turnover = d.get("turnover_20")
+    elif m.get("turnover_20") is not None:
+        avg_turnover = m.get("turnover_20")
+    else:
+        cyc = vap.get("自适应周期") or {}
+        if isinstance(cyc, dict) and cyc.get("avg_turnover") is not None:
+            avg_turnover = cyc.get("avg_turnover")
+        elif vap.get("avg_turnover") is not None:
+            avg_turnover = vap.get("avg_turnover")
     if avg_turnover is None:
         out["chip_low"] = False
         out["chip_low_unknown"] = True

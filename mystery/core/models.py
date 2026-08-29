@@ -166,6 +166,7 @@ class AnalysisResult:
     score: Optional[float] = None
     advice: str = ""
     true_resonance: bool = False
+    turnover_20: Optional[float] = None   # 近20日均换手率(%)，顶层扁平字段（chip_low 判据）
     mystery: MysteryBreakdown = field(default_factory=MysteryBreakdown)
     chan: Dict[str, ChanStructure] = field(default_factory=dict)  # freq -> ChanStructure
     sector: Dict[str, Any] = field(default_factory=dict)

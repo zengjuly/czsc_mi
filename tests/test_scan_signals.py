@@ -60,6 +60,43 @@ def test_chip_unknown_when_no_turnover():
     assert out["chip_low_unknown"] is True
 
 
+def test_chip_low_from_top_level_turnover_20():
+    """003.md 多路径①：顶层 turnover_20 扁平字段优先。"""
+    d = _fake(avg_turnover=1.2)
+    d["turnover_20"] = 1.5
+    out = classify(d)
+    assert out["chip_low"] is True
+    assert out["chip_low_unknown"] is False
+
+
+def test_chip_low_from_mystery_turnover_20():
+    """003.md 多路径②：mystery.turnover_20。"""
+    d = _fake(avg_turnover=None)
+    d["mystery"]["turnover_20"] = 1.0
+    out = classify(d)
+    assert out["chip_low"] is True
+    assert out["chip_low_unknown"] is False
+
+
+def test_chip_low_from_vap_atr_top_level():
+    """003.md 多路径③：vap_atr 顶层 avg_turnover（自适应周期缺失时）。"""
+    d = _fake(avg_turnover=None)
+    d["mystery"]["vap_atr"] = {"突破信号": False, "avg_turnover": 1.8}
+    out = classify(d)
+    assert out["chip_low"] is True
+    assert out["chip_low_unknown"] is False
+
+
+def test_top_level_turnover_20_takes_precedence():
+    """顶层 turnover_20 存在时，即使 mystery 里有更高值也以顶层为准。"""
+    d = _fake(avg_turnover=None)
+    d["turnover_20"] = 3.0
+    d["mystery"]["turnover_20"] = 1.0
+    out = classify(d)
+    assert out["chip_low"] is False
+    assert out["chip_low_unknown"] is False
+
+
 def test_no_signals_default():
     out = classify(_fake())
     assert out == {
