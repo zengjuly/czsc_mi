@@ -135,9 +135,17 @@ analyze_one_stock(symbol):
 | W1 | 报表（Excel/HTML，daily 落盘）+ 扫描三类信号写库 | ✅ 0.5.0 |
 | W2 | sync 断点/多周期 + tdx_api 接入 + Web 真三振池/系统状态/板块强度表 | ✅ 0.5.0 |
 | W3 | plot_czsc 嵌入个股页 + Excel 缠论列 + daily_pipeline.sh + 去绝对路径 | ✅ 0.5.0 |
+| W3-perf | indicators 逐行索引→numpy 向量化（712x，新旧 57 列逐元素一致）；web 名称搜索/侧栏列表加缓存；个股分析 66s→5s | ✅ 0.5.0 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。
+
+性能修复（2026-08-29）：`indicators.py` 9 个热点函数原用 `.iloc[i]['col']`/`.loc[i, col]`
+逐行访问，pandas 3.0 Arrow 后端下单票 enrich 达 90s+。已全部改为 numpy 数组向量化
+（递推类 OBV 用 numpy 循环），新旧实现对照 57 列全等（含旧版 down 条件用 i-1 MA20
+的不对称逐字复刻）。坑：pandas Series 与 numpy 混算会按 index 并集对齐（up 变 2669 行），
+必须统一转 numpy 数组。web 端 `_search_cached`/`_name_map_cached` 加
+`st.cache_data(ttl=600)`，避免每次 rerun 无缓存拉全市场列表。
 
 ## 10. 运行环境
 
