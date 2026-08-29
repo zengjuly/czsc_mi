@@ -266,6 +266,24 @@ class CzscAdapter:
         c = CZSC(bars, min_bi_len=self.min_bi_len)
         return self._extract(c, series.freq)
 
+    def _build_czsc(self, series: BarSeries):
+        """BarSeries → CZSC 对象（失败返回 None；CZSC 只留在本 adapter 内）。"""
+        try:
+            from czsc import CZSC, Freq, format_standard_kline
+        except ImportError:
+            logger.warning("czsc 未安装，缠论图不可用（pip install -e '.[chan]'）")
+            return None
+        if not series.bars:
+            return None
+        df = _to_df(series)
+        freq_name = _FREQ_MAP.get(series.freq, "D")
+        try:
+            bars = format_standard_kline(df, freq=getattr(Freq, freq_name))
+            return CZSC(bars, min_bi_len=self.min_bi_len)
+        except Exception as e:
+            logger.warning(f"CZSC 构建失败({series.symbol}): {str(e)[:100]}")
+            return None
+
     def plot_figure(self, series: BarSeries, tail_bars: Optional[int] = 400,
                     theme: str = "light",
                     ma_periods: tuple = _MA_PERIODS):
@@ -276,20 +294,8 @@ class CzscAdapter:
         （涨红跌绿，与 czsc 历史配色一致）。画图所需 CZSC 对象只留在 adapter 内。
         失败（czsc 未装 / 数据不足 / 构建异常）→ None，调用方降级文本。
         """
-        try:
-            from czsc import CZSC, Freq, format_standard_kline
-        except ImportError:
-            logger.warning("czsc 未安装，plot_figure 不可用（pip install -e '.[chan]'）")
-            return None
-        if not series.bars:
-            return None
-        df = _to_df(series)
-        freq_name = _FREQ_MAP.get(series.freq, "D")
-        try:
-            bars = format_standard_kline(df, freq=getattr(Freq, freq_name))
-            c = CZSC(bars, min_bi_len=self.min_bi_len)
-        except Exception as e:
-            logger.warning(f"CZSC 构建失败({series.symbol}): {str(e)[:100]}")
+        c = self._build_czsc(series)
+        if c is None:
             return None
         try:
             return _build_chan_figure(c, series, tail_bars=tail_bars,
@@ -299,19 +305,33 @@ class CzscAdapter:
             logger.warning(f"缠论图构建失败({series.symbol}): {str(e)[:100]}")
             return None
 
+    def plot_lightweight_html(self, series: BarSeries,
+                              tail_bars: Optional[int] = None,
+                              theme: str = "light") -> str:
+        """官方 lightweight 校验图（czsc plot_czsc(c, output='html')）。失败返回 ''。"""
+        c = self._build_czsc(series)
+        if c is None:
+            return ""
+        try:
+            from czsc.utils.plotting.lightweight import plot_czsc
+            html = plot_czsc(c, output="html", theme=theme, tail_bars=tail_bars)
+            return html or ""
+        except Exception as e:
+            logger.warning(f"lightweight 校验图失败({series.symbol}): {str(e)[:100]}")
+            return ""
+
     def plot_html(self, series: BarSeries, tail_bars: Optional[int] = 400,
                   theme: str = "light",
                   ma_periods: tuple = _MA_PERIODS) -> str:
-        """plot_figure → 自包含 HTML（历史 stc.html 兼容路径；失败返回空串）。"""
+        """自包含 HTML（主图=plotly 中枢盒 → 失败降级 lightweight → 失败 ''）。"""
         fig = self.plot_figure(series, tail_bars=tail_bars, theme=theme,
                                ma_periods=ma_periods)
-        if fig is None:
-            return ""
-        try:
-            return fig.to_html(full_html=True, include_plotlyjs="cdn")
-        except Exception as e:
-            logger.warning(f"plotly HTML 输出失败: {str(e)[:80]}")
-            return ""
+        if fig is not None:
+            try:
+                return fig.to_html(full_html=True, include_plotlyjs="cdn")
+            except Exception as e:
+                logger.warning(f"plotly HTML 输出失败: {str(e)[:80]}")
+        return self.plot_lightweight_html(series, tail_bars=tail_bars, theme=theme)
 
     def analyze_multi(self, daily: BarSeries,
                       freqs: List[str]) -> Dict[str, ChanStructure]:

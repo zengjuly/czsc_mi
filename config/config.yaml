@@ -15,8 +15,10 @@ data_source:
     api_url: ${TDX_API_URL:-http://localhost:8080/api}
 
 chan:
-  enabled: false          # 环境变量 MYSTERY_CHAN_ENABLED 可覆盖
+  enabled: true           # 默认开（结构展示）；环境变量 MYSTERY_CHAN_ENABLED 可覆盖
+  score: false            # 混合分默认关（CHAN_SCORE）；环境变量 MYSTERY_CHAN_SCORE 可覆盖
   freqs: [1d, 1w]
+  plot: zs_box            # 主图=中枢盒（plotly 自绘）；lightweight 仅作官方校验图
 
 scoring:
   mystery: 0.55

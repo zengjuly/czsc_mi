@@ -12,6 +12,7 @@ from typing import Dict, Optional
 
 from ..adapters import market as _market
 from ..adapters import sector as _sector
+from ..config import load_config
 from ..core.models import AnalysisResult, BarSeries, ChanStructure, MarketContext, MysteryBreakdown
 from ..core.mystery_rules import MysteryLogic
 from ..core.patterns import PatternRecognition
@@ -22,12 +23,36 @@ logger = logging.getLogger(__name__)
 _INDEX_CODE = 'sh.000001'   # 上证指数
 
 
+def _env_flag(name: str) -> Optional[bool]:
+    """读布尔环境变量；未设置返回 None（由调用方决定缺省）。"""
+    v = os.environ.get(name)
+    if v is None:
+        return None
+    return v.strip().lower() not in ('0', 'false', 'off', '')
+
+
 def chan_enabled() -> bool:
-    """环境变量 MYSTERY_CHAN_ENABLED 覆盖 config（一期默认关）。"""
-    v = os.environ.get('MYSTERY_CHAN_ENABLED')
+    """缠论结构展示开关：env MYSTERY_CHAN_ENABLED → config chan.enabled（默认开）。"""
+    flag = _env_flag('MYSTERY_CHAN_ENABLED')
+    if flag is not None:
+        return flag
+    return bool((load_config().get('chan') or {}).get('enabled', True))
+
+
+def chan_score_enabled() -> bool:
+    """混合分开关：env MYSTERY_CHAN_SCORE → config chan.score（默认关）。"""
+    v = os.environ.get('MYSTERY_CHAN_SCORE')
     if v is not None:
-        return v.strip().lower() not in ('0', 'false', 'off', '')
-    return False
+        return v.strip().lower() in ('1', 'true', 'on', 'yes')
+    return bool((load_config().get('chan') or {}).get('score', False))
+
+
+def _avg_turnover_20(daily: BarSeries) -> Optional[float]:
+    """近 20 根日 K 换手率均值(%)；换手率为 0 视为缺失，不足则 None。"""
+    vals = [float(b.turnover) for b in daily.bars[-20:] if b.turnover]
+    if not vals:
+        return None
+    return round(sum(vals) / len(vals), 4)
 
 
 class AnalysisService:
@@ -127,10 +152,13 @@ class AnalysisService:
             chan = self._analyze_chan(daily)
 
         bd = self.run_rules(daily, weekly, monthly, ctx, include_detail)
+        # 混合分开关：chan_enabled AND chan_score_enabled（结构展示 ≠ 混合分）
+        mix_enabled = chan_enabled() and chan_score_enabled()
         score, advice, true_res = _scorer.combine(bd, chan,
-                                                  chan_enabled=chan_enabled())
+                                                  chan_enabled=mix_enabled)
         last = daily.bars[-1]
         name = self.market.db.get_stock_name(internal) or ''
+        turnover_20 = _avg_turnover_20(daily)
         czsc_ver = ''
         if chan:
             from ..adapters.czsc_adapter import czsc_version
@@ -143,6 +171,7 @@ class AnalysisService:
             score=score,
             advice=advice,
             true_resonance=true_res,
+            turnover_20=turnover_20,
             mystery=bd,
             chan=chan,
             sector={'行业名称': ctx.industry_name, '行业趋势分': ctx.industry_score,
