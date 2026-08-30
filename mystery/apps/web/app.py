@@ -704,8 +704,10 @@ def view_sector():
                     use_container_width=True):
         stocks = svc.market.db.get_sector_stocks(s_code)[:10]
         if not stocks:
-            st.warning("该板块暂无成分股数据（stock_sector_rel 未同步该板块）。"
-                       "可先执行板块成分同步，或改用板块强度表/全市场扫描。")
+            st.warning(
+                f"该板块暂无成分股数据（stock_sector_rel 未同步 {s_code}）。"
+                f"执行 `czsc-mi sector-sync --sector {s_code}` 同步后重试，"
+                "或改用板块强度表/全市场扫描。")
         else:
             with st.spinner(f"分析 {len(stocks)} 只成分股..."):
                 rows = scan_market(universe=stocks, include_detail=False)
@@ -713,7 +715,9 @@ def view_sector():
     if c_all.button("🚀 后台扫描全部成分股", use_container_width=True):
         stocks = svc.market.db.get_sector_stocks(s_code)
         if not stocks:
-            st.warning("该板块暂无成分股数据（stock_sector_rel 未同步该板块）。")
+            st.warning(
+                f"该板块暂无成分股数据（stock_sector_rel 未同步 {s_code}）。"
+                f"执行 `czsc-mi sector-sync --sector {s_code}` 同步后重试。")
         else:
             _bg_launch(f"板块:{s_name}({len(stocks)})",
                        lambda cb, holder, _st=stocks: scan_market(

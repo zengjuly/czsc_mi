@@ -97,3 +97,78 @@ def test_get_sector_stocks_code_normalize():
     # 无关板块 / 空：返回空列表
     assert db.get_sector_stocks("ths_885863") == []
 
+
+def test_upsert_stock_sector_rel_normalize():
+    """成分写入归一：600519.SH → sh.600519、ths_886015 → 886015.TI；重复写不增行。"""
+    db = _fresh_db()
+    db.upsert_stock_sector_rel("600519.SH", "ths_886015", is_primary=0)
+    db.upsert_stock_sector_rel("sh600519", "886015", is_primary=0)
+    db.upsert_stock_sector_rel("000078.SZ", "881143.TI", is_primary=1)
+    conn = db._connect()
+    try:
+        rows = conn.execute(
+            "SELECT stock_code, sector_code, is_primary FROM stock_sector_rel "
+            "ORDER BY sector_code").fetchall()
+    finally:
+        conn.close()
+    assert rows == [
+        ('sz.000078', '881143.TI', 1),
+        ('sh.600519', '886015.TI', 0),
+    ], f"归一/去重失败: {rows}"
+
+
+def test_upsert_rel_does_not_break_primary_industry():
+    """概念成分 is_primary=0 不得影响主行业查询（get_industry 用 is_primary=1）。"""
+    db = _fresh_db()
+    conn = db._connect()
+    try:
+        conn.execute("INSERT INTO stock_sector_rel (stock_code, sector_code, "
+                     "is_primary) VALUES ('sz.000078', '881143.TI', 1)")
+        conn.commit()
+    finally:
+        conn.close()
+    db.upsert_stock_sector_rel("000078.SZ", "ths_886015", is_primary=0)
+    conn = db._connect()
+    try:
+        row = conn.execute(
+            "SELECT r.sector_code FROM stock_sector_rel r "
+            "WHERE r.stock_code='sz.000078' AND r.is_primary=1 LIMIT 1"
+        ).fetchone()
+        n = conn.execute(
+            "SELECT COUNT(*) FROM stock_sector_rel WHERE stock_code='sz.000078'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert row == ('881143.TI',) and n == 2
+
+
+def test_ensure_sector_meta_keeps_name():
+    """ensure_sector_meta 不覆盖已有板块名；缺失时插入占位行。"""
+    db = _fresh_db()
+    conn = db._connect()
+    try:
+        conn.execute("INSERT INTO sector_meta (sector_code, sector_name, "
+                     "parent_type, base_code, is_active) "
+                     "VALUES ('886015.TI', '创新药', '行业/概念', '886015', 1)")
+        conn.commit()
+    finally:
+        conn.close()
+    db.ensure_sector_meta('886015.TI')
+    db.ensure_sector_meta('886999.TI')  # 不存在 → 插占位
+    conn = db._connect()
+    try:
+        rows = dict(conn.execute(
+            "SELECT sector_code, sector_name FROM sector_meta").fetchall())
+    finally:
+        conn.close()
+    assert rows['886015.TI'] == '创新药', f"板块名被覆盖: {rows}"
+    assert rows['886999.TI'] == '886999.TI'
+
+
+def test_ths_sector_code_normalize():
+    """ThsClient 板块代码归一：ths_ 前缀/裸代码 → .TI（fuyao 只认 .TI）。"""
+    from mystery.adapters.ths import ThsClient
+    assert ThsClient._to_sector_ti('ths_886015') == '886015.TI'
+    assert ThsClient._to_sector_ti('886015') == '886015.TI'
+    assert ThsClient._to_sector_ti('886015.TI') == '886015.TI'
+

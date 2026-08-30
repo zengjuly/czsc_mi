@@ -6,6 +6,7 @@
   czsc-mi daily --watchlist --limit 3
   czsc-mi scan --limit 100 --signal true_resonance
   czsc-mi sync --period daily --period weekly --days 365
+  czsc-mi sector-sync --sector ths_886015
 """
 from __future__ import annotations
 
@@ -149,6 +150,14 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sector_sync(args: argparse.Namespace) -> int:
+    from ..services.sync import sync_sector_constituents
+
+    out = sync_sector_constituents(args.sector, cfg=args.cfg, limit=args.limit)
+    print(json.dumps(out, ensure_ascii=False))
+    return 0 if out.get('written') else 1
+
+
 def _cmd_watchlist_import_tdx(args: argparse.Namespace) -> int:
     from ..services import watchlist as _wl
 
@@ -200,6 +209,13 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--symbols", nargs="*", default=None)
     p.add_argument("--limit", type=int, default=None)
     p.set_defaults(func=_cmd_sync)
+
+    p = sub.add_parser("sector-sync", help="同步板块成分股 → stock_sector_rel")
+    p.add_argument("--sector", required=True,
+                   help="板块代码（ths_886015 / 886015 / 886015.TI 均可）")
+    p.add_argument("--limit", type=int, default=None,
+                   help="最多写 N 只成分（调试用）")
+    p.set_defaults(func=_cmd_sector_sync)
 
     p = sub.add_parser("watchlist", help="自选股管理")
     wsub = p.add_subparsers(dest="wl_cmd", required=True)

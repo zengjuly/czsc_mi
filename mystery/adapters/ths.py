@@ -287,3 +287,41 @@ class ThsClient:
             digits, mkt = s.split('.')
             return f"{mkt.lower()}{digits}"
         return s
+
+    @staticmethod
+    def _to_sector_ti(sector_code: str) -> str:
+        """板块代码 → 指数后缀格式：ths_886015 / 886015 → 886015.TI。
+
+        fuyao index-constituents 只认 .TI 后缀（传 ths_ 前缀报
+        input error、无后缀静默返回空 —— 0822 实测坑）。
+        """
+        s = str(sector_code).strip()
+        if s.startswith('ths_'):
+            s = s[4:]
+        if '.' not in s:
+            s = f'{s}.TI'
+        return s
+
+    def fetch_constituents(self, sector_code: str,
+                           timeout: int = 120) -> List[Dict]:
+        """板块成分股 [{thscode, ticker, name}]（index-constituents）。
+
+        fuyao 偶发断流：失败重试 2 次（与 get_stock_list 同模式）。
+        传入格式兼容 ths_886015 / 886015 / 886015.TI。
+        """
+        scode = self._to_sector_ti(sector_code)
+        last_err = ''
+        for attempt in range(3):
+            try:
+                raw = self._run_fuyao(
+                    ['index-constituents', '--thscode', scode], timeout=timeout)
+                if raw:
+                    return [{'thscode': x.get('thscode', ''),
+                             'ticker': x.get('ticker', ''),
+                             'name': str(x.get('name', ''))}
+                            for x in raw if x.get('thscode')]
+                last_err = '空结果'
+            except Exception as e:
+                last_err = str(e)[:80]
+        logger.warning(f"⚠️ fuyao index-constituents {scode} 全部失败: {last_err}")
+        return []

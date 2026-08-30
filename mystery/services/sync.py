@@ -126,3 +126,36 @@ def sync_market(period: Optional[str] = None,
         _save_checkpoint(cp)
     return {'periods': periods, 'days': days, 'synced': synced, 'failed': failed,
             'skipped': skipped, 'rows': updated_rows, 'errors': errors[:10]}
+
+
+def sync_sector_constituents(sector_code: str,
+                             cfg: Optional[Dict] = None,
+                             limit: Optional[int] = None) -> dict:
+    """同步单个板块的成分股 → stock_sector_rel（is_primary=0，不覆盖主行业）。
+
+    空结果（网络失败/板块无成分）不写库、返回 error，禁止静默"成功"。
+    """
+    from ..adapters.ths import ThsClient
+    from ..store.db import MysteryDB
+
+    ths = ThsClient(cfg)
+    db = MysteryDB(cfg.get('db_path') if cfg else None)
+    cons = ths.fetch_constituents(sector_code)
+    if limit:
+        cons = cons[:limit]
+    if not cons:
+        return {'sector_code': sector_code, 'total': 0, 'written': 0,
+                'error': '成分拉取为空（网络失败或该板块无成分股）'}
+    written = 0
+    for c in cons:
+        try:
+            db.upsert_stock_sector_rel(c['thscode'], sector_code, is_primary=0)
+            written += 1
+        except Exception as e:
+            logger.warning(f"[sync] rel 写入失败 {c.get('thscode')}: {str(e)[:60]}")
+    # 刷新板块元数据活跃时间（成分已落库即视为活跃；不覆盖已有板块名）
+    try:
+        db.ensure_sector_meta(sector_code)
+    except Exception as e:
+        logger.debug(f"[sync] meta 刷新跳过: {str(e)[:60]}")
+    return {'sector_code': sector_code, 'total': len(cons), 'written': written}

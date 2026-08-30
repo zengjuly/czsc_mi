@@ -240,6 +240,80 @@ class MysteryDB:
             finally:
                 conn.close()
 
+    @staticmethod
+    def _norm_sector_ti(sector_code: str) -> str:
+        """ths_886015 / 886015 / 886015.TI → 886015.TI（rel/constituents 存储格式）。"""
+        code = str(sector_code).strip()
+        if code.startswith('ths_'):
+            code = code[4:]
+        if '.' not in code:
+            code = f'{code}.TI'
+        return code
+
+    def upsert_stock_sector_rel(self, stock_code: str, sector_code: str,
+                                is_primary: int = 0) -> None:
+        """写股票-板块关系（stock 归一 sh.600519，sector 归一 886015.TI）。
+
+        行业板块（881/884）is_primary=1（主行业语义，与存量回填一致）；
+        概念板块（885/886）is_primary=0，不影响 get_industry 主行业查询。
+        """
+        from ..adapters.codes import db_code_of
+        stock_db = db_code_of(stock_code)
+        sector_ti = self._norm_sector_ti(sector_code)
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT INTO stock_sector_rel (stock_code, sector_code, is_primary) "
+                    "VALUES (?,?,?) "
+                    "ON CONFLICT(stock_code, sector_code) "
+                    "DO UPDATE SET is_primary=excluded.is_primary",
+                    (stock_db, sector_ti, int(is_primary)))
+                conn.commit()
+            finally:
+                conn.close()
+
+    def upsert_sector_meta(self, sector_code: str, sector_name: str,
+                           parent_type: str = '行业/概念',
+                           is_active: int = 1) -> None:
+        """upsert 板块元数据（保持入参原格式写入，与存量混格式兼容）。"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT INTO sector_meta (sector_code, sector_name, parent_type, "
+                    "base_code, is_active, last_sync_date) VALUES (?,?,?,?,?,"
+                    "date('now','localtime')) "
+                    "ON CONFLICT(sector_code) DO UPDATE SET "
+                    "sector_name=excluded.sector_name, parent_type=excluded.parent_type, "
+                    "is_active=excluded.is_active, last_sync_date=excluded.last_sync_date",
+                    (str(sector_code).strip(), str(sector_name).strip(),
+                     parent_type, str(sector_code).strip().split('.')[-1]
+                     .replace('ths_', '')[:6], int(is_active)))
+                conn.commit()
+            finally:
+                conn.close()
+
+    def ensure_sector_meta(self, sector_code: str) -> None:
+        """板块元数据存在则只刷新 last_sync_date；不存在才插入占位行。
+
+        禁止用代码覆盖已有 sector_name（如 创新药）。
+        """
+        code = str(sector_code).strip()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT INTO sector_meta (sector_code, sector_name, "
+                    "parent_type, base_code, is_active, last_sync_date) "
+                    "VALUES (?, ?, '行业/概念', ?, 1, date('now','localtime')) "
+                    "ON CONFLICT(sector_code) DO UPDATE SET "
+                    "is_active=1, last_sync_date=date('now','localtime')",
+                    (code, code, code.replace('ths_', '')[:6]))
+                conn.commit()
+            finally:
+                conn.close()
+
     # ---------------- 财务 ----------------
     def set_financial(self, code: str, report_date: str,
                       roe=None, roe_avg=None, np_margin=None, gp_margin=None,
