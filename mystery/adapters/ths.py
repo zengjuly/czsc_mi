@@ -188,6 +188,59 @@ class ThsClient:
                         'pe_mrq': fin.get('pe_mrq') or 0, 'ps': fin.get('ps_ttm') or 0}
         return {}
 
+    @staticmethod
+    def _latest_report_quarters(n: int = 4) -> List[str]:
+        """最近 N 个已披露财报期（YYYY-Q，倒序；Q1末→Q4按自然季回推）。"""
+        from datetime import date
+        y, q = date.today().year, (date.today().month - 1) // 3 + 1
+        out = []
+        for _ in range(n):
+            q -= 1
+            if q == 0:
+                q = 4
+                y -= 1
+            out.append(f"{y}-{q}")
+        return out
+
+    def get_indicators(self, symbol: str) -> Dict:
+        """财报指标（financials-indicators，最近已披露季度优先）。
+
+        取 扣非加权ROE/加权ROE/毛利率/净利率。失败返回 {}。
+        """
+        ths_code = self._to_ths_code(symbol)
+        for report in self._latest_report_quarters(3):
+            raw = self._run_fuyao(['financials-indicators',
+                                   '--thscode', ths_code,
+                                   '--report', report])
+            if not raw:
+                continue
+            item = raw[0] if isinstance(raw[0], dict) else {}
+            abilities = item.get('abilities') or []
+            ind_map = {}
+            for ab in (abilities or []):
+                for ind in (ab.get('indicators') or []):
+                    ind_map[ind.get('index_id')] = ind.get('value')
+            if not ind_map:
+                continue
+
+            def _f(key):
+                v = ind_map.get(key)
+                try:
+                    return float(v) if v not in (None, '') else None
+                except (TypeError, ValueError):
+                    return None
+
+            out = {
+                'roe': _f('index_deduct_weighted_avg_roe'),
+                'roe_avg': _f('index_weighted_avg_roe'),
+                'gp_margin': _f('sale_gross_margin'),
+                'np_margin': _f('sale_net_interest_ratio'),
+                'report_date': report,
+            }
+            if out['roe'] is not None or out['roe_avg'] is not None:
+                return out
+        return {}
+
     # ---------------- 证券列表 ----------------
     def get_stock_list(self) -> List[Dict]:
         """[{code, name}]：本地缓存优先（tickers-cache.json，7天内），网络兜底。"""

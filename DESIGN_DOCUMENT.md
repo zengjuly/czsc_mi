@@ -162,6 +162,7 @@ analyze_one_stock(symbol):
 | W8-fix | tdx_api 交易所判定 bug：内部格式 `600000.SH` 因 `startswith('sh')` 恒 False 被误判为 BJ → 请求 BJ600000 永远返回空 → 降级链 ths→tdx_api→tdx_local 全空、sync 卡死。改用 `codes.to_tdx_api()` 统一归一（兼容 600000.SH/sh600000/SH600000），指数 `/api/index` 判定同步修正 | ✅ 0.9.2 |
 | W8-env | czsc-mi CLI 入口自动补 THS 默认路径：未设 `THS_FUYAO_SCRIPT`/`THS_MARKETDB_DIR` 时从仓库 sibling（`../Financial-API`）推导注入（路径存在才设，不写死单机绝对路径；须在 `load_config()` 展开 `${THS_...}` 前调用）；新增 `test_cli_default_ths_env.py` 回归 | ✅ 0.9.3 |
 | W8-fix2 | sync 写库 key 不一致导致数据永远"过期"：sync.py 用 `code if '.' in code` 原样保留内部格式 `600010.SH` 写库，而读取走 `db_code_of()=sh.600010` → 每次写入新行、读取看到旧行，新鲜度检查永远失败。改用 `db_code_of()` 统一；market.py 降级链加新鲜度择优（ths 落后参照日不再短路，继续尝试 tdx_api/tdx_local，fuyao 晚发布一天时自动取更新源）；清理历史脏格式行 | ✅ 0.9.4 |
+| W9 | 主升浪满足数量修正：checklist 统计含 `平台范围`(dict, truthy) 被误计 → 满足数量+1，改只统计 8 项布尔指标。财务数据链路：analyze 本地库缺 ROE 时走 fuyao 在线补齐（`valuations-snapshot` PE/PB + `financials-indicators` 扣非加权ROE/毛利率/净利率，最近已披露季度优先）并回填 `set_financial`，下次命中缓存；db.py 增 `set_financial` upsert | ✅ 0.9.5 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。

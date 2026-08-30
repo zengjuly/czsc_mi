@@ -241,8 +241,29 @@ class MysteryDB:
                 conn.close()
 
     # ---------------- 财务 ----------------
+    def set_financial(self, code: str, report_date: str,
+                      roe=None, roe_avg=None, np_margin=None, gp_margin=None,
+                      pe=None, pb=None, eps_ttm=None, divid_cash=None) -> None:
+        """upsert 财务快照（code 归一为 sh.600519，与 get_financial 一致）。"""
+        from ..adapters.codes import db_code_of
+        db_code = db_code_of(code) if not code.startswith(('sh.', 'sz.', 'bj.')) \
+            else code
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO stock_financial_data "
+                    "(code, report_date, roe, roe_avg, np_margin, gp_margin, "
+                    "net_profit, eps_ttm, PB, PE, divid_cash) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (db_code, report_date, roe, roe_avg, np_margin, gp_margin,
+                     None, eps_ttm, pb, pe, divid_cash))
+                conn.commit()
+            finally:
+                conn.close()
+
     def get_financial(self, code: str) -> Dict[str, Any]:
-        """最新财报快照 {pe, pb, roe, roe_avg, eps_ttm, dividend, report_date...}。"""
+        """最新财报快照 {pe, pb, roe, roe_avg, eps_ttm, divid_cash, report_date...}。"""
         from ..adapters.codes import db_code_of
         db_code = db_code_of(code) if not code.startswith(('sh.', 'sz.', 'bj.')) else code
         try:

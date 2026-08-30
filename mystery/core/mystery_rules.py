@@ -713,10 +713,12 @@ class MysteryLogic:
                 checklist['详情'].append('行业板块走弱')
             else:
                 checklist['详情'].append('行业趋势数据缺失')
-            items = [k for k in checklist if k != '详情']
-            satisfied = sum(1 for k in items if checklist[k])
+            # 只统计 8 项布尔指标（排除 详情/平台范围 dict/汇总字段），
+            # 平台范围是 dict（truthy），旧实现被误计为满足项 → 满足数量+1
+            bool_items = [k for k, v in checklist.items() if isinstance(v, bool)]
+            satisfied = sum(1 for k in bool_items if checklist[k])
             checklist['满足数量'] = satisfied
-            checklist['满足占比'] = satisfied / len(items) if items else 0
+            checklist['满足占比'] = satisfied / len(bool_items) if bool_items else 0
             if satisfied >= 6:
                 checklist['综合判断'] = '主升浪高概率'
             elif satisfied >= 4:

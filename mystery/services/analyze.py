@@ -104,6 +104,37 @@ class AnalysisService:
             ctx.financial = self.market.db.get_financial(symbol)
         except Exception as e:
             logger.debug(f"财务获取失败: {str(e)[:60]}")
+        # W9: 本地库缺财务（或只有 PE/PB 缺 ROE）→ ths 在线补齐并回填库。
+        # valuations-snapshot(PE/PB/PS) + financials-indicators(扣非ROE/毛利率/净利率)
+        fin = ctx.financial or {}
+        if not fin.get('roe'):
+            try:
+                val = self.market.ths.get_financial(symbol) or {}
+                ind = self.market.ths.get_indicators(symbol) or {}
+                if val or ind:
+                    report = (ind.get('report_date')
+                              or val.get('report_date') or '')
+                    fin = {
+                        'PE': val.get('pe'), 'PB': val.get('pb'),
+                        'roe': ind.get('roe'), 'roe_avg': ind.get('roe_avg'),
+                        'np_margin': ind.get('np_margin'),
+                        'gp_margin': ind.get('gp_margin'),
+                        'report_date': report,
+                    }
+                    ctx.financial = fin
+                    # 回填本地库（下次直接命中；失败不影响本次分析）
+                    try:
+                        if report:
+                            self.market.db.set_financial(
+                                symbol, report, roe=fin.get('roe'),
+                                roe_avg=fin.get('roe_avg'),
+                                np_margin=fin.get('np_margin'),
+                                gp_margin=fin.get('gp_margin'),
+                                pe=val.get('pe'), pb=val.get('pb'))
+                    except Exception as e:
+                        logger.debug(f"财务回填失败: {str(e)[:60]}")
+            except Exception as e:
+                logger.debug(f"财务在线补齐失败: {str(e)[:60]}")
         return ctx
 
     # ---------------- 规则明细（收口到 core.pipeline 纯计算） ----------------
