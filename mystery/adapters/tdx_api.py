@@ -47,16 +47,16 @@ class TdxApiClient:
         """拉日K并统一为中文列（price×1000 → 元）。
 
         接口要求带交易所前缀大写代码（SZ000001/SH600519）；指数走 /api/index。
+        代码格式用 codes.to_tdx_api 统一（兼容 600000.SH / sh600000 / SH600000）。
         """
-        pure = str(stock_code).replace(".", "").replace("sh", "").replace("sz", "")
-        pure = "".join(ch for ch in pure if ch.isdigit())
-        mkt = "SH" if str(stock_code).startswith("sh") else (
-            "SZ" if str(stock_code).startswith("sz") else "BJ")
-        api_code = f"{mkt}{pure}"
+        from ..adapters.codes import to_tdx_api
+        api_code = to_tdx_api(str(stock_code))
+        mkt = api_code[:2]
+        pure = api_code[2:]
         _is_idx = (
-            (str(stock_code).startswith("sh") and pure.startswith("000"))
-            or (str(stock_code).startswith("sz") and pure.startswith("399"))
-            or (str(stock_code).startswith("bj") and pure.startswith("899"))
+            (mkt == "SH" and pure.startswith("000"))
+            or (mkt == "SZ" and pure.startswith("399"))
+            or (mkt == "BJ" and pure.startswith("899"))
         )
         endpoint = "index" if _is_idx else "kline-all"
         try:
