@@ -94,7 +94,11 @@ def sync_market(period: Optional[str] = None,
     skipped = 0
     errors: List[str] = []
     for code in codes:
-        db_code = code if '.' in code else code[:2] + '.' + code[2:]
+        # W8-fix2: 统一 db_code 归一（600010.SH → sh.600010）。旧实现
+        # "code if '.' in code" 把内部格式原样写库，与 db_code_of() 读格式
+        # 不一致 → 每次写入新行、读取永远看到旧行，数据永远"过期"。
+        from ..adapters.codes import db_code_of
+        db_code = db_code_of(code)
         for p in periods:
             key = f"{db_code}::{p}"
             if not force and done.get(key):

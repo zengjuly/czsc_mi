@@ -70,9 +70,10 @@ class MarketDataClient:
         """
         db_code = _codes.db_code_of(internal)
         df = self.db.load_kline(db_code, 'daily', start, end)
+        ref = self._freshness_ref(internal) if (df is not None and not df.empty) \
+            else None
         if df is not None and not df.empty:
             db_last = str(df['date'].max())[:10]
-            ref = self._freshness_ref(internal)
             if not (ref and db_last < ref):
                 return to_cn_columns(df), 'db'
             logger.warning(f"[db→降级] {internal} 本地库过期({db_last}<最新{ref})，切 ths_official")
@@ -80,8 +81,16 @@ class MarketDataClient:
         try:
             raw = self.ths.get_daily(internal, start, end)
             if raw is not None and not raw.empty:
-                return raw, 'ths_official'
-            logger.warning(f"[ths_official→降级] {internal} 返回空，切 tdx_api")
+                # 新鲜度择优：ths 数据若落后参照日（如 fuyao 晚一天发布），
+                # 不立即接受，继续尝试 tdx_api/tdx_local 取更新的数据
+                raw_last = str(raw['日期'].max())[:10]
+                if not (ref and raw_last < ref):
+                    return raw, 'ths_official'
+                logger.warning(
+                    f"[ths_official] {internal} 返回数据落后({raw_last}<最新{ref})，"
+                    f"继续尝试 tdx_api/tdx_local")
+            else:
+                logger.warning(f"[ths_official→降级] {internal} 返回空，切 tdx_api")
         except Exception as e:
             logger.warning(f"[ths_official→降级] {internal} 异常 {type(e).__name__}: {str(e)[:60]}，切 tdx_api")
         # 3. tdx_api（W2-A：本地 tdx-api 容器，带交易所前缀、价格×1000 还原）
