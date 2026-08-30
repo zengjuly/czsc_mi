@@ -131,9 +131,10 @@ analyze_one_stock(symbol):
 
 ## 8. 测试与验收
 
-- `pytest -q -m "not integration"`：89 passed（models/core 合成 OHLC/czsc adapter
+- `pytest -q -m "not integration"`：91 passed（models/core 合成 OHLC/czsc adapter
   mock K 线/金标 ≤ 1/scan_signals 三类信号/缠论图 plot_figure/technical 快照/
-  web 页面冒烟 + 后台任务仓库跨 rerun 持久回归 + Excel 超链接导航回归）。
+  web 页面冒烟 + 后台任务仓库跨 rerun 持久回归 + Excel 超链接导航回归 +
+  CLI 默认 THS 环境注入回归）。
 - 金标 fixtures：`tests/fixtures/gold_{sh600519,sz000001,sh600150}.json`
   （由旧系统 `unified_stock_analysis` 生成，2026-08-27）。
 - 三只票 score：0.0 / 49.0 / 0.0，与旧系统 0 分差（价格/日期/行业分全一致）。
@@ -158,6 +159,8 @@ analyze_one_stock(symbol):
 | W7 | 扫描报告下载：扫描结果/真三振池下方「下载 Excel 报告」按钮（汇总 sheet + 每只个股详情 sheet，与 daily 的 `write_excel` 同格式）；web 扫描落库缺 VAP/平台明细，下载时按需 `include_detail=True` 补详情再生成 | ✅ 0.9.0 |
 | W7-fix | 后台扫描任务仓库从模块级 dict 改为 `st.cache_resource` 进程级 store（Streamlit 每次 rerun 重跑脚本顶层，模块级 dict 被重置 → 后台任务全丢"暂无后台任务"；改为跨 rerun/session 共享同一对象后任务/进度/结果保留），新增跨 rerun 持久回归测试 | ✅ 0.9.1 |
 | W8 | Excel 报告导航对齐 misteryanalyze fa1444ff：汇总报告「代码」列超链接 → 对应个股 sheet A1（`Hyperlink.location` 内部引用，避免外部 target 补全文件路径）；个股 sheet 第 1 行导航 首页(→汇总报告)/前一页/后一页（跟随 results 顺序，首尾无对应链接）；daily 落盘与 web 下载共用 `_build_buffer` 同时生效；新增 `test_excel_hyperlinks.py` 回归（无死链校验） | ✅ 0.9.2 |
+| W8-fix | tdx_api 交易所判定 bug：内部格式 `600000.SH` 因 `startswith('sh')` 恒 False 被误判为 BJ → 请求 BJ600000 永远返回空 → 降级链 ths→tdx_api→tdx_local 全空、sync 卡死。改用 `codes.to_tdx_api()` 统一归一（兼容 600000.SH/sh600000/SH600000），指数 `/api/index` 判定同步修正 | ✅ 0.9.2 |
+| W8-env | czsc-mi CLI 入口自动补 THS 默认路径：未设 `THS_FUYAO_SCRIPT`/`THS_MARKETDB_DIR` 时从仓库 sibling（`../Financial-API`）推导注入（路径存在才设，不写死单机绝对路径；须在 `load_config()` 展开 `${THS_...}` 前调用）；新增 `test_cli_default_ths_env.py` 回归 | ✅ 0.9.3 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。

@@ -18,6 +18,33 @@ from typing import Optional
 from ..config import load_config, output_dir
 
 
+def _ensure_default_ths_env() -> None:
+    """未设置 THS_FUYAO_SCRIPT / THS_MARKETDB_DIR 时，从仓库 sibling 推导默认。
+
+    czsc_mi 与 Financial-API 同级部署（../Financial-API）：默认
+    fuyao.py 与 market.duckdb 路径。仅当环境变量未设且路径真实存在时
+    注入（不存在则不设，交给降级链 tdx_api/tdx_local）。
+    必须在 load_config() 展开 ${THS_...} 之前调用。
+    """
+    import os
+    if os.environ.get("THS_FUYAO_SCRIPT") and os.environ.get("THS_MARKETDB_DIR"):
+        return
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))      # .../czsc_mi
+    fa_root = os.path.join(os.path.dirname(repo_root), "Financial-API")
+    if not os.path.isdir(fa_root):
+        return
+    if not os.environ.get("THS_FUYAO_SCRIPT"):
+        cand = os.path.join(fa_root, "python", "toolkit", "fuyao", "scripts",
+                            "fuyao.py")
+        if os.path.isfile(cand):
+            os.environ["THS_FUYAO_SCRIPT"] = cand
+    if not os.environ.get("THS_MARKETDB_DIR"):
+        cand = os.path.join(fa_root, "data")
+        if os.path.isdir(cand):
+            os.environ["THS_MARKETDB_DIR"] = cand
+
+
 def _cmd_analyze(args: argparse.Namespace) -> int:
     from ..services.analyze import analyze_one_stock
 
@@ -135,6 +162,8 @@ def _cmd_watchlist_import_tdx(args: argparse.Namespace) -> int:
 
 
 def main(argv: Optional[list] = None) -> int:
+    # 未设 THS 路径时自动补 sibling Financial-API 默认（须在 load_config 前）
+    _ensure_default_ths_env()
     parser = argparse.ArgumentParser(prog="czsc-mi", description="Mistery 趋势交易分析")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
