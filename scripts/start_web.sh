@@ -23,6 +23,9 @@ SSL_KEY="${CZSC_MI_WEB_SSL_KEY:-/home/ai/ai_runner/stock/ssl_fix/nextcloud.key}"
 
 export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-/home/ai/ai_runner/stock/data/db/mystery_cache.db}"
 export MYSTERY_CHAN_ENABLED="${MYSTERY_CHAN_ENABLED:-1}"
+# THS 数据源（同花顺扶摇）——不导出则 web 进程找不到 SDK，板块钻取/扫描全走本地库
+export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
+export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-/home/ai/ai_runner/stock/Financial-API/data}"
 
 print_urls() {
   local scheme="http"
