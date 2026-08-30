@@ -12,6 +12,8 @@ import io
 import logging
 from typing import Any, Dict, List
 
+from openpyxl.worksheet.hyperlink import Hyperlink
+
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -170,13 +172,21 @@ def _sheet_name(d: Dict[str, Any]) -> str:
 
 def _build_buffer(results: List[Dict[str, Any]]) -> "io.BytesIO":
     """生成 Excel 到内存 buffer（汇总 + 每只个股明细）。write_excel 与
-    excel_bytes 共用，保证 web 下载与 daily 落盘格式完全一致。"""
+    excel_bytes 共用，保证 web 下载与 daily 落盘格式完全一致。
+
+    W8（对齐 misteryanalyze fa1444ff）：
+    - 汇总报告「代码」列超链接 → 对应个股 sheet 的 A1（用 Hyperlink.location
+      内部引用，避免字符串赋值被存为外部 target 而补全文件路径）
+    - 个股 sheet 第 1 行导航：首页(→汇总报告A1) / 前一页 / 后一页
+      （跟随 results 顺序，首尾无对应链接）
+    """
     import io
     rows = [_flat(d) for d in results]
     if rows:
         rows.sort(key=lambda r: (r["score"] is not None, float(r["score"] or -1)),
                   reverse=True)
     summary = pd.DataFrame(rows).rename(columns=dict(SUMMARY_COLS))
+    sheet_names = [_sheet_name(d) for d in results]
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
@@ -185,13 +195,58 @@ def _build_buffer(results: List[Dict[str, Any]]) -> "io.BytesIO":
         for i, col in enumerate(summary.columns, 1):
             width = max(len(str(col)), 10)
             ws.column_dimensions[chr(64 + i)].width = width
-        for d in results:
+
+        # 汇总报告「代码」列超链接 → 个股 sheet A1。用原始 results 构建
+        # symbol→sheet 名映射（避免 summary 中 NaN/None 产生死链），
+        # 按分排序不影响匹配。
+        if "代码" in summary.columns:
+            sym_to_sheet = {}
+            for d in results:
+                s = d.get("symbol")
+                if s is not None:
+                    sym_to_sheet[str(s)] = _sheet_name(d)
+            code_col = summary.columns.get_loc("代码") + 1  # 1-based
+            for row_idx, (_, srow) in enumerate(summary.iterrows(), start=2):
+                sym = srow.get("代码")
+                sheet_name = sym_to_sheet.get(str(sym)) if sym is not None \
+                    else None
+                if not sheet_name:
+                    continue
+                cell = ws.cell(row=row_idx, column=code_col)
+                cell.hyperlink = Hyperlink(ref=cell.coordinate,
+                                           location=f"'{sheet_name}'!A1")
+                cell.style = "Hyperlink"
+
+        # 个股详情 sheet：第 1 行导航链接，明细数据从第 2 行开始
+        for idx, d in enumerate(results):
+            sheet_name = sheet_names[idx]
             det = pd.DataFrame(_detail_rows(d), columns=["项目", "结果", "备注"])
-            det.to_excel(writer, sheet_name=_sheet_name(d), index=False)
-            ws2 = writer.sheets[_sheet_name(d)]
+            det.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
+            ws2 = writer.sheets[sheet_name]
             ws2.column_dimensions["A"].width = 20
             ws2.column_dimensions["B"].width = 26
             ws2.column_dimensions["C"].width = 40
+
+            # 首页 -> 汇总报告 A1
+            cell_home = ws2.cell(row=1, column=1, value="首页")
+            cell_home.hyperlink = Hyperlink(ref=cell_home.coordinate,
+                                            location="'汇总报告'!A1")
+            cell_home.style = "Hyperlink"
+            # 前一页（跟随 results 顺序）
+            if idx > 0:
+                cell_prev = ws2.cell(row=1, column=2, value="前一页")
+                cell_prev.hyperlink = Hyperlink(
+                    ref=cell_prev.coordinate,
+                    location=f"'{sheet_names[idx - 1]}'!A1")
+                cell_prev.style = "Hyperlink"
+            # 后一页
+            if idx + 1 < len(sheet_names):
+                cell_next = ws2.cell(row=1, column=3, value="后一页")
+                cell_next.hyperlink = Hyperlink(
+                    ref=cell_next.coordinate,
+                    location=f"'{sheet_names[idx + 1]}'!A1")
+                cell_next.style = "Hyperlink"
+
     buf.seek(0)
     return buf
 
