@@ -6,7 +6,12 @@
 """
 from __future__ import annotations
 
+import logging
 import sys
+import threading
+import time
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -15,8 +20,12 @@ import streamlit as st  # noqa: E402
 
 st.set_page_config(page_title="Mistery 趋势交易分析", layout="wide")
 
+logger = logging.getLogger(__name__)
+
 from mystery.adapters.codes import normalize_symbol  # noqa: E402
+from mystery.apps.reports.excel_report import excel_bytes  # noqa: E402
 from mystery.config import load_config, output_dir  # noqa: E402
+from mystery.core.scan_signals import classify  # noqa: E402
 from mystery.services.analyze import (AnalysisService, chan_enabled,  # noqa: E402
                                       chan_score_enabled)
 from mystery.services.scan import (scan_market, latest_scan_job,  # noqa: E402
@@ -38,26 +47,214 @@ def _fmt(v, nd=2):
         return str(v)
 
 
-def _resolve_code(text: str):
-    """输入代码或名称 → (code, name) 或 None。"""
-    t = text.strip()
-    if not t:
-        return None
-    try:
-        return normalize_symbol(t), ""
-    except Exception:
-        pass
-    hits = _search_cached(t)
-    if hits:
-        h = hits[0]
-        return h['code'], h['name']
-    return None
-
-
 @st.cache_data(ttl=600, show_spinner=False)
-def _search_cached(keyword: str) -> list:
-    """名称搜索（缓存 10 分钟，避免每次 rerun 在线拉全市场列表）。"""
-    return _wl.search_stock(keyword, limit=8)
+def _stock_pick_options() -> list:
+    """全市场「名称（代码）」选项列表（selectbox 名称搜索用，缓存 10 分钟）。"""
+    svc = _service()
+    stocks = svc.market.fetch_stock_list()
+    seen, out = set(), []
+    for s in stocks:
+        code = str(s.get('code', ''))
+        name = str(s.get('name') or '')
+        if code in seen:
+            continue
+        seen.add(code)
+        try:
+            norm = normalize_symbol(code)
+        except Exception:
+            norm = code
+        out.append(f"{name or '未知'}（{norm}）")
+    out.sort()
+    return out
+
+
+# ================= 后台扫描任务（模块级，进程内跨 rerun 持久） =================
+_BG_LOCK = threading.Lock()
+_BG_TASKS: dict = {}
+
+
+def _bg_launch(label: str, fn) -> str:
+    """启动后台扫描任务。fn(cb, job_holder) -> rows（cb(done,total) 报进度）。"""
+    tid = uuid.uuid4().hex[:8]
+    with _BG_LOCK:
+        _BG_TASKS[tid] = {"id": tid, "label": label, "status": "running",
+                          "done": 0, "total": 0, "job_id": None,
+                          "results": [], "error": "", "created": time.time()}
+
+    def _run():
+        holder: list = []
+
+        def cb(done, total):
+            with _BG_LOCK:
+                t = _BG_TASKS.get(tid)
+                if t:
+                    t["done"], t["total"] = done, total
+
+        try:
+            rows = fn(cb, holder)
+            with _BG_LOCK:
+                t = _BG_TASKS.get(tid)
+                if t:
+                    t["status"] = "done"
+                    t["results"] = rows
+                    t["job_id"] = holder[0] if holder else None
+        except Exception as e:  # noqa: BLE001
+            with _BG_LOCK:
+                t = _BG_TASKS.get(tid)
+                if t:
+                    t["status"] = "error"
+                    t["error"] = str(e)[:200]
+
+    threading.Thread(target=_run, daemon=True).start()
+    return tid
+
+
+@st.fragment(run_every=2.0)
+def _bg_running_fragment():
+    """运行中后台任务进度（每 2 秒自动刷新）。"""
+    with _BG_LOCK:
+        rt = sorted([t for t in _BG_TASKS.values() if t["status"] == "running"],
+                    key=lambda t: t["created"], reverse=True)
+    for t in rt:
+        pct = (t["done"] / t["total"]) if t["total"] else 0.0
+        st.progress(min(1.0, pct),
+                    text=f"⏳ {t['label']} 运行中 {t['done']}/{t['total']}（自动刷新）")
+
+
+def _recent_jobs(limit: int = 20) -> list:
+    """最近扫描任务 [(id, trade_date, started_at, n_ok, n_fail), ...] 降序。"""
+    svc = _service()
+    conn = svc.market.db._connect()
+    try:
+        return conn.execute(
+            "SELECT id, trade_date, started_at, n_ok, n_fail "
+            "FROM scan_jobs ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+    finally:
+        conn.close()
+
+
+def _render_bg_tasks():
+    """后台任务列表：运行中自动刷新 + 完成/失败态 + 查看结果。"""
+    with _BG_LOCK:
+        tasks = sorted(_BG_TASKS.values(), key=lambda t: t["created"], reverse=True)
+    if not tasks:
+        st.caption("暂无后台任务")
+        return
+    _bg_running_fragment()
+    for t in tasks:
+        if t["status"] == "done":
+            st.success(f"✅ {t['label']} 完成：{len(t['results'])} 只"
+                       f"（job #{t['job_id']}）")
+            if st.button(f"查看结果（{t['label']}）", key=f"bg_view_{t['id']}"):
+                st.session_state['bg_view_id'] = t['id']
+        elif t["status"] == "error":
+            st.error(f"❌ {t['label']} 失败：{t['error'][:120]}")
+    view_id = st.session_state.get('bg_view_id')
+    if view_id:
+        with _BG_LOCK:
+            t = _BG_TASKS.get(view_id)
+        if t and t["results"]:
+            _render_scan_table(t["results"], key=f"bg_{view_id}")
+
+
+def _render_scan_table(rows: list, key: str = "scan"):
+    """扫描结果表格（代码/名称/评分/建议/筹码/日期）+ 加入自选。"""
+    st.caption(f"共 {len(rows)} 只（按分降序）")
+    st.dataframe([{'代码': r['symbol'], '名称': r.get('name') or '未知',
+                   '评分': r.get('score'), '建议': r.get('advice', ''),
+                   '筹码低位': '是' if r.get('chip_low') else '否',
+                   '换手未知': '未知' if r.get('chip_low_unknown') else '',
+                   '高位缩量': '是' if r.get('chip_quiet') else '否',
+                   '20日换手': r.get('turnover_20'),
+                   '回撤%': (None if r.get('price_pos') is None
+                             else round(float(r['price_pos']) * 100, 1)),
+                   '日期': r.get('trade_date', '')} for r in rows],
+                 use_container_width=True, hide_index=True)
+    _render_excel_download(rows, key=key)
+    _add_watchlist_widget(rows, key=key)
+
+
+def _needs_detail(r: dict) -> bool:
+    """行是否缺个股详情（web 扫描落库 include_detail=False，缺 VAP/平台明细）。"""
+    m = r.get('mystery') or {}
+    return not m.get('vap_atr') or not m.get('platform')
+
+
+def _enrich_scan_rows(rows: list) -> list:
+    """补齐扫描结果详情（include_detail=True 重算），保证下载 Excel 与
+    daily 报告一致。已有详情的行直接复用，单只失败保留原行不中断。"""
+    need = [r for r in rows if _needs_detail(r)]
+    if not need:
+        return rows
+    svc = _service()
+    enriched = {}
+    for r in need:
+        try:
+            d = svc.analyze_one_stock(r['symbol'], include_detail=True).to_dict()
+            d.update(classify(d))
+            enriched[r['symbol']] = d
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[web] {r.get('symbol')} 补详情失败，保留原行: {str(e)[:80]}")
+    return [enriched.get(r['symbol'], r) for r in rows]
+
+
+def _render_excel_download(rows: list, key: str = "scan"):
+    """扫描结果表下方「下载 Excel 报告」按钮（汇总 + 每只个股详情，同 daily 格式）。
+
+    首次点击补齐详情（web 扫描落库缺明细）并生成 xlsx bytes 存 session；
+    再次点击直接用已生成文件下载，避免每次 rerun 重算。
+    session key 绑定 rows 签名：切换任务/信号后自动作废旧文件。
+    """
+    if not rows:
+        return
+    sig = f"{len(rows)}:{rows[0].get('symbol')}:{rows[-1].get('symbol')}:{rows[0].get('trade_date', '')}"
+    gen_key, data_key = f"{key}_xlsx_gen", f"{key}_xlsx_data_{sig}"
+    if st.button(f"📥 下载 Excel 报告（{len(rows)} 只）", key=gen_key):
+        with st.spinner(f"补齐 {len(rows)} 只个股详情并生成 Excel..."):
+            enriched = _enrich_scan_rows(rows)
+            try:
+                st.session_state[data_key] = excel_bytes(enriched)
+            except Exception as e:  # noqa: BLE001
+                st.error(f"生成 Excel 失败: {e}")
+                st.session_state.pop(data_key, None)
+    if data_key in st.session_state:
+        fname = f"扫描报告_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        st.download_button("💾 保存 Excel 报告", data=st.session_state[data_key],
+                           file_name=fname,
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           key=f"{key}_xlsx_dl")
+        st.caption("包含：汇总报告 + 每只个股详情（与每日报告同格式）")
+
+
+def _stock_pick_select(label: str = "选择股票（输入名称搜索）",
+                       key: str = "stock_pick",
+                       default_code: str = "") -> tuple:
+    """名称搜索 selectbox：选项「名称（代码）」，返回 (symbol, name)。
+
+    默认值 default_code 优先匹配选项；匹配不到时附加一条「未知（代码）」候选，
+    并把该选项强制写入 session_state[key]（覆盖旧的 selectbox 会话值）。
+    """
+    options = _stock_pick_options()
+    default_idx = 0
+    if default_code:
+        try:
+            dc = normalize_symbol(default_code)
+        except Exception:
+            dc = default_code
+        matched = None
+        for i, o in enumerate(options):
+            if o.endswith(f"（{dc}）"):
+                matched, default_idx = i, i
+                break
+        if matched is None:
+            options = [f"未知（{dc}）"] + options
+            default_idx = 0
+        st.session_state[key] = options[default_idx]
+    pick = st.selectbox(label, options, index=default_idx, key=key)
+    if "（" in pick:
+        name, code = pick.rsplit("（", 1)
+        return code[:-1], name
+    return pick, ""
 
 
 @st.cache_data(show_spinner=False)
@@ -337,22 +534,15 @@ def view_watchlist_subpage():
                        "T0002/blocknew）")
 
     kw_col, add_col = st.columns([3, 1])
-    kw = kw_col.text_input("添加自选（代码或名称）", key="wl_add_input")
+    with kw_col:
+        sym = _stock_pick_select("添加自选（输入名称搜索）", key="wl_add_pick")
+        _wl_add_name = sym[1]
     if add_col.button("添加", type="primary"):
-        add_text = kw.strip()
-        if add_text:
-            hits = _wl.search_stock(add_text, limit=8)
-            if hits:
-                h = hits[0]
-                _wl.add_to_watchlist(h['code'], name=h['name'], source='manual')
-                st.rerun()
-            else:
-                try:
-                    sym = normalize_symbol(add_text)
-                    _wl.add_to_watchlist(sym, name='', source='manual')
-                    st.rerun()
-                except Exception:
-                    st.error(f"未找到股票：{add_text}")
+        if sym[0]:
+            _wl.add_to_watchlist(sym[0], name=_wl_add_name, source='manual')
+            st.rerun()
+        else:
+            st.error("未找到股票")
 
     items = _wl.load_watchlist_items()
     if not items:
@@ -377,38 +567,26 @@ def view_watchlist_subpage():
 
 # ================= 视图 =================
 def view_stock():
-    st.header("个股分析（支持代码或股票名搜索）")
+    st.header("个股分析（输入名称或代码搜索，选中即分析）")
     pending = st.session_state.pop('_pending_symbol', None)
-    c1, c2 = st.columns([3, 1])
-    text = c1.text_input("输入代码或名称", pending or "sh600519").strip()
-    do_analyze = c2.button("分析", type="primary") or bool(pending)
-    # 名称搜索提示（输入非代码时展示匹配候选）
-    candidates = None
-    if text:
-        try:
-            normalize_symbol(text)
-        except Exception:
-            candidates = _search_cached(text)
-            if candidates:
-                opts = {f"{h['name']}（{h['code']}）": h['code'] for h in candidates}
-                pick = st.radio("匹配到以下股票，选择后点分析：",
-                                list(opts.keys()), horizontal=True)
-                text = opts[pick]
+    # 名称搜索 selectbox（缓存全市场列表，输入名称即时过滤，无需回车）
+    code, name = _stock_pick_select("选择股票（输入名称搜索）",
+                                    key="stock_pick",
+                                    default_code=pending or "")
+    if not code:
+        st.info("未匹配到股票，请输入完整代码或名称")
+        return
+    do_analyze = st.button("分析", type="primary") or bool(pending)
     if do_analyze:
-        resolved = _resolve_code(text)
-        if resolved is None:
-            st.error(f"未找到股票：{text}")
-        else:
-            code, _ = resolved
-            with st.spinner("分析中..."):
-                try:
-                    r = _service().analyze_one_stock(code)
-                    d = r.to_dict()
-                    st.session_state['stock_analysis'] = d
-                    st.session_state['stock_analysis']['_input'] = text
-                except Exception as e:
-                    st.error(f"分析失败: {e}")
-                    st.session_state.pop('stock_analysis', None)
+        with st.spinner(f"分析中（{name} {code}）..."):
+            try:
+                r = _service().analyze_one_stock(code)
+                d = r.to_dict()
+                st.session_state['stock_analysis'] = d
+                st.session_state['stock_analysis']['_input'] = f"{name}（{code}）"
+            except Exception as e:
+                st.error(f"分析失败: {e}")
+                st.session_state.pop('stock_analysis', None)
     d = st.session_state.get('stock_analysis')
     if d:
         render_stock(d)
@@ -431,29 +609,67 @@ def view_stock():
 
 def view_scan():
     st.header("全市场扫描")
-    c1, c2 = st.columns(2)
-    limit = c1.number_input("最多分析只数", 1, 5000, 100)
-    min_score = c2.number_input("最低分", 0.0, 100.0, 0.0)
-    if st.button("开始扫描", type="primary"):
+    st.caption("后台扫描不阻塞页面：任务在后台线程执行，结果自动落库（scan_jobs），"
+               "可随时回到本页/系统状态查看。")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        limit = st.number_input("前台快速扫描只数", 1, 5000, 100)
+    with c2:
+        min_score = st.number_input("最低分", 0.0, 100.0, 0.0)
+    if c3.button("开始前台扫描", type="primary"):
         with st.spinner("扫描中（单票失败自动跳过）..."):
             rows = scan_market(limit=int(limit), include_detail=False,
                                min_score=min_score or None)
             st.session_state['scan_results'] = rows
             st.session_state['scan_ts'] = len(rows)
+
+    st.divider()
+    st.subheader("后台扫描任务")
+    b1, b2 = st.columns(2)
+    if b1.button("🚀 后台扫描全部股票", type="primary", use_container_width=True):
+        _bg_launch("全部股票",
+                   lambda cb, holder: scan_market(include_detail=False,
+                                                  progress_cb=cb,
+                                                  job_holder=holder))
+        st.rerun()
+    if b2.button("🚀 后台扫描全部自选股", use_container_width=True):
+        wl = _wl.load_watchlist()
+        if not wl:
+            st.warning("自选股为空，先到「自选股」页添加")
+        else:
+            _bg_launch(f"全部自选股({len(wl)})",
+                       lambda cb, holder, _wl=wl: scan_market(
+                           watchlist=_wl, include_detail=False,
+                           progress_cb=cb, job_holder=holder))
+            st.rerun()
+    _render_bg_tasks()
+
+    st.divider()
+    st.subheader("最近扫描任务与结果")
+    jobs = _recent_jobs(limit=20)
+    if not jobs:
+        st.caption("暂无扫描记录（前台或后台扫描后出现）")
+        return
+    opts = {f"job#{j[0]} {j[1] or ''} 成功{j[3]} 失败{j[4]} {j[2] or ''}": j[0]
+            for j in jobs}
+    pick = st.selectbox("选择扫描任务查看结果", list(opts.keys()), key="scan_job_pick")
+    job_id = opts[pick]
+    sig = st.radio("信号过滤", ["全部", "真三振", "VAP-ATR突破", "筹码低位"],
+                   horizontal=True, key="scan_job_sig")
+    sig_map = {"全部": None, "真三振": "true_resonance",
+               "VAP-ATR突破": "vap_atr", "筹码低位": "chip_low"}
+    rows = scan_results_of(job_id, signal=sig_map[sig])
+    st.caption(f"job #{job_id}（{sig}）共 {len(rows)} 只")
+    if rows:
+        _render_scan_table(rows, key="scanjob")
+    else:
+        st.info("该任务无满足条件的标的")
+
     rows = st.session_state.get('scan_results')
     if rows:
-        st.caption(f"共 {len(rows)} 只（按分降序）")
-        st.dataframe([{'代码': r['symbol'], '名称': r.get('name') or '未知',
-                       '评分': r.get('score'), '建议': r.get('advice', ''),
-                       '筹码低位': '是' if r.get('chip_low') else '否',
-                       '换手未知': '未知' if r.get('chip_low_unknown') else '',
-                       '高位缩量': '是' if r.get('chip_quiet') else '否',
-                       '20日换手': r.get('turnover_20'),
-                       '回撤%': (None if r.get('price_pos') is None
-                                 else round(float(r['price_pos']) * 100, 1)),
-                       '日期': r.get('trade_date', '')} for r in rows],
-                     use_container_width=True, hide_index=True)
-        _add_watchlist_widget(rows, key="scan")
+        st.divider()
+        st.subheader("前台扫描结果")
+        _render_scan_table(rows, key="scan")
 
 
 def view_sector():
@@ -465,10 +681,13 @@ def view_sector():
     if not pick:
         return
     s_code = pick.split("（")[-1][:-1]
+    s_name = pick.rsplit("（", 1)[0]
     ind = svc.sector.get_sector(s_code)
     st.metric("行业强度分（0~25）", _fmt(ind.get('score')),
               delta="向上" if ind.get("up") else "向下")
-    if st.button("分析板块成分股 Top10", type="primary"):
+    c_top, c_all = st.columns(2)
+    if c_top.button("分析板块成分股 Top10", type="primary",
+                    use_container_width=True):
         stocks = svc.market.db.get_sector_stocks(s_code)[:10]
         if not stocks:
             st.warning("该板块暂无成分股数据（stock_sector_rel 未同步该板块）。"
@@ -477,13 +696,21 @@ def view_sector():
             with st.spinner(f"分析 {len(stocks)} 只成分股..."):
                 rows = scan_market(universe=stocks, include_detail=False)
                 st.session_state['sector_results'] = rows
+    if c_all.button("🚀 后台扫描全部成分股", use_container_width=True):
+        stocks = svc.market.db.get_sector_stocks(s_code)
+        if not stocks:
+            st.warning("该板块暂无成分股数据（stock_sector_rel 未同步该板块）。")
+        else:
+            _bg_launch(f"板块:{s_name}({len(stocks)})",
+                       lambda cb, holder, _st=stocks: scan_market(
+                           universe=_st, include_detail=False,
+                           progress_cb=cb, job_holder=holder))
+            st.rerun()
+    _render_bg_tasks()
     rows = st.session_state.get('sector_results')
     if rows:
-        st.dataframe([{'代码': r['symbol'], '名称': r.get('name') or '未知',
-                       '评分': r.get('score'), '建议': r.get('advice', ''),
-                       '行业': r.get('sector', {}).get('行业名称', '-')}
-                      for r in rows], use_container_width=True, hide_index=True)
-        _add_watchlist_widget(rows, key="sector")
+        st.caption(f"板块成分股 Top10 结果（共 {len(rows)} 只，按分降序）")
+        _render_scan_table(rows, key="sector")
 
 
 # ================= W2-B 新视图 =================
@@ -538,6 +765,7 @@ def view_true_resonance():
                        '评分': r.get('score'), '建议': r.get('advice', ''),
                        '日期': r.get('trade_date', '')} for r in rows],
                      use_container_width=True, hide_index=True)
+        _render_excel_download(rows, key="resonance")
         _add_watchlist_widget(rows, key="resonance")
     else:
         st.info("最近一次扫描无真三振标的")
@@ -579,22 +807,27 @@ def view_system():
         "data_source.fallback": (cfg.get("data_source") or {}).get("fallback", []),
         "行情降级顺序": "db → ths_official → tdx_api → tdx_local",
     }, expanded=True)
-    st.subheader("最近扫描任务")
-    try:
-        conn = db._connect()
-        rows = conn.execute(
-            "SELECT id, trade_date, started_at, n_ok, n_fail "
-            "FROM scan_jobs ORDER BY id DESC LIMIT 5").fetchall()
-        conn.close()
+    st.subheader("最近扫描任务与结果")
+    jobs = _recent_jobs(limit=20)
+    if jobs:
+        opts = {f"job#{j[0]} {j[1] or ''} 成功{j[3]} 失败{j[4]} {j[2] or ''}": j[0]
+                for j in jobs}
+        pick = st.selectbox("选择扫描任务查看结果", list(opts.keys()),
+                            key="sys_job_pick")
+        job_id = opts[pick]
+        sig = st.radio("信号过滤", ["全部", "真三振", "VAP-ATR突破", "筹码低位"],
+                       horizontal=True, key="sys_job_sig")
+        sig_map = {"全部": None, "真三振": "true_resonance",
+                   "VAP-ATR突破": "vap_atr", "筹码低位": "chip_low"}
+        rows = scan_results_of(job_id, signal=sig_map[sig])
+        st.caption(f"job #{job_id}（{sig}）共 {len(rows)} 只")
         if rows:
-            st.dataframe([{'job_id': r[0], 'trade_date': r[1],
-                           'started_at': r[2], '成功': r[3], '失败': r[4]}
-                          for r in rows], use_container_width=True,
-                         hide_index=True)
+            _render_scan_table(rows, key="sysjob")
         else:
-            st.caption("尚无扫描记录（czsc-mi scan 后出现）")
-    except Exception as e:
-        st.caption(f"读取失败: {str(e)[:60]}")
+            st.info("该任务无满足条件的标的")
+    else:
+        st.caption("尚无扫描记录（czsc-mi scan 或页面扫描后出现）")
+    _render_bg_tasks()
 
 
 def view_sector_strength():

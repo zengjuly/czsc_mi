@@ -115,11 +115,17 @@ analyze_one_stock(symbol):
   `sync --period daily [--period weekly] --days 365 [--symbols ...] [--limit] [--force]`
   （断点 `data/sync_checkpoint.json`，参数变化丢弃旧断点，中断再跑跳过已完成；
   周/月由日K重采样写入；证券列表为空报错退出）
-- Web：`streamlit run mystery/apps/web/app.py`（六视图：个股/扫描/板块钻取/
+- Web：`streamlit run mystery/apps/web/app.py`（七视图：个股/自选/扫描/板块钻取/
   真三振池/系统状态/板块强度表，只调 Service；session 只存结果 dict；
   渲染与计算分离，不用 st.stop()；个股页 chan 开启时 plotly 自绘缠论图，
   支持 日线/周线/月线 切换，`st.plotly_chart` 原生渲染；W5 起「分析明细」
-  展示 均线排列/破五反五/量价/筹码/换手率/多周期，财务补 EPS/股息/利润率）。
+  展示 均线排列/破五反五/量价/筹码/换手率/多周期，财务补 EPS/股息/利润率；
+  W6 起个股/自选输入改名称搜索 selectbox（`_stock_pick_options` 缓存全市场），
+  全市场扫描与板块钻取支持后台扫描（线程任务 `_bg_launch`，进度自动刷新，
+  结果落 `scan_jobs`/`scan_results`），系统状态与扫描页可查最近任务结果；
+  W7 起扫描结果表/真三振池下方可「下载 Excel 报告」（汇总+每只个股详情，
+  同 daily 格式；web 扫描落库缺明细，下载时按需补详情 `_enrich_scan_rows`，
+  `excel_bytes` 生成 bytes 经 `st.download_button` 下载）。
 - verify：`python scripts/verify_unified_analysis.py` —— 个股/扫描/CLI 三路径
   score 差 ≤ 1 + 金标对比。
 
@@ -147,6 +153,8 @@ analyze_one_stock(symbol):
 | W3-perf | indicators 逐行索引→numpy 向量化（712x，新旧 57 列逐元素一致）；web 名称搜索/侧栏列表加缓存；个股分析 66s→5s | ✅ 0.5.0 |
 | W4 | 个股页缠论图增强：plotly 自绘（K线+MA 5/10/20/55/233/610+分型/笔+中枢矩形+量+MACD）；日/周/月切换；chan 摘要补月线 | ✅ 0.6.0 |
 | W5 | 个股页补齐技术面明细：均线排列/破五反五/量价/筹码/换手率/多周期（technical 快照，仅展示）；财务补 EPS/股息/利润率；换手率缺失不伪造 | ✅ 0.7.0 |
+| W6 | Web 交互升级：个股/自选输入改名称搜索 selectbox（缓存全市场）；全市场扫描/板块钻取支持后台扫描（线程任务+进度自动刷新+结果落库）；系统状态与扫描页新增「最近扫描任务与结果」查询入口 | ✅ 0.8.0 |
+| W7 | 扫描报告下载：扫描结果/真三振池下方「下载 Excel 报告」按钮（汇总 sheet + 每只个股详情 sheet，与 daily 的 `write_excel` 同格式）；web 扫描落库缺 VAP/平台明细，下载时按需 `include_detail=True` 补详情再生成 | ✅ 0.9.0 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。
@@ -155,7 +163,7 @@ P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序�
 逐行访问，pandas 3.0 Arrow 后端下单票 enrich 达 90s+。已全部改为 numpy 数组向量化
 （递推类 OBV 用 numpy 循环），新旧实现对照 57 列全等（含旧版 down 条件用 i-1 MA20
 的不对称逐字复刻）。坑：pandas Series 与 numpy 混算会按 index 并集对齐（up 变 2669 行），
-必须统一转 numpy 数组。web 端 `_search_cached`/`_name_map_cached` 加
+必须统一转 numpy 数组。web 端 `_stock_pick_options`（全市场名称列表）加
 `st.cache_data(ttl=600)`，避免每次 rerun 无缓存拉全市场列表。
 
 ## 10. 运行环境

@@ -8,6 +8,7 @@ results = ``[AnalysisResult.to_dict(), ...]``。生成器内禁止取数/调 ana
 """
 from __future__ import annotations
 
+import io
 import logging
 from typing import Any, Dict, List
 
@@ -167,17 +168,18 @@ def _sheet_name(d: Dict[str, Any]) -> str:
     return s[:31]
 
 
-def write_excel(results: List[Dict[str, Any]], path: str) -> str:
-    """汇总 + 每只个股明细。返回写入路径。"""
-    import os
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+def _build_buffer(results: List[Dict[str, Any]]) -> "io.BytesIO":
+    """生成 Excel 到内存 buffer（汇总 + 每只个股明细）。write_excel 与
+    excel_bytes 共用，保证 web 下载与 daily 落盘格式完全一致。"""
+    import io
     rows = [_flat(d) for d in results]
     if rows:
         rows.sort(key=lambda r: (r["score"] is not None, float(r["score"] or -1)),
                   reverse=True)
     summary = pd.DataFrame(rows).rename(columns=dict(SUMMARY_COLS))
 
-    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         summary.to_excel(writer, sheet_name="汇总报告", index=False)
         ws = writer.sheets["汇总报告"]
         for i, col in enumerate(summary.columns, 1):
@@ -190,5 +192,21 @@ def write_excel(results: List[Dict[str, Any]], path: str) -> str:
             ws2.column_dimensions["A"].width = 20
             ws2.column_dimensions["B"].width = 26
             ws2.column_dimensions["C"].width = 40
+    buf.seek(0)
+    return buf
+
+
+def excel_bytes(results: List[Dict[str, Any]]) -> bytes:
+    """Web 下载用：AnalysisResult 列表 → xlsx bytes（格式同 write_excel）。"""
+    return _build_buffer(results).getvalue()
+
+
+def write_excel(results: List[Dict[str, Any]], path: str) -> str:
+    """汇总 + 每只个股明细。返回写入路径。"""
+    import os
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    buf = _build_buffer(results)
+    with open(path, "wb") as f:
+        f.write(buf.getvalue())
     logger.info("✅ Excel 报告生成完成: %s（%d 只）", path, len(results))
     return path

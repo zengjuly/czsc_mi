@@ -54,7 +54,9 @@ def scan_market(limit: Optional[int] = None,
                 cfg: Optional[Dict] = None,
                 universe: Optional[List[str]] = None,
                 min_score: Optional[float] = None,
-                no_persist: bool = False) -> List[Dict[str, Any]]:
+                no_persist: bool = False,
+                progress_cb=None,
+                job_holder: Optional[list] = None) -> List[Dict[str, Any]]:
     """扫描市场，返回 AnalysisResult.to_dict() 列表（按分数降序）。
 
     :param watchlist: 指定代码列表（优先）
@@ -63,6 +65,8 @@ def scan_market(limit: Optional[int] = None,
     :param min_score: 只保留 >= 该分的股票
     :param include_detail: 是否带 VAP-ATR/平台明细（三类信号需要）
     :param no_persist: True 只打印不写库
+    :param progress_cb: 可选回调 progress_cb(done, total)，每处理一只调用一次（后台扫描进度）
+    :param job_holder: 可选 list，落库后把 job_id append 进去（后台扫描捕获任务号）
     """
     svc = AnalysisService(cfg)
     if watchlist:
@@ -77,7 +81,8 @@ def scan_market(limit: Optional[int] = None,
 
     results: List[Dict[str, Any]] = []
     failed = 0
-    for code in codes:
+    total = len(codes)
+    for i, code in enumerate(codes, 1):
         try:
             r = svc.analyze_one_stock(code, include_detail=include_detail)
             d = r.to_dict()
@@ -88,6 +93,11 @@ def scan_market(limit: Optional[int] = None,
         except Exception as e:
             failed += 1
             logger.warning(f"[scan] {code} 分析失败跳过: {str(e)[:80]}")
+        if progress_cb is not None:
+            try:
+                progress_cb(i, total)
+            except Exception:
+                pass
     results.sort(key=lambda x: (x.get('score') is not None,
                                 float(x.get('score') or -1)), reverse=True)
 
@@ -96,6 +106,11 @@ def scan_market(limit: Optional[int] = None,
             trade_date = max((str(r.get('trade_date', '')) for r in results),
                              default='')
             job_id = _write_scan_batch(svc.market.db, results, failed, trade_date)
+            if job_holder is not None:
+                try:
+                    job_holder.append(job_id)
+                except Exception:
+                    pass
             logger.info(f"[scan] 已写库 job_id={job_id}（{len(results)} 只，失败 {failed}）")
         except Exception as e:  # 写库失败不阻断扫描结果
             logger.warning(f"[scan] 写库失败（不影响本次结果）: {str(e)[:100]}")
