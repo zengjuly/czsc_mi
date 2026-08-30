@@ -131,8 +131,9 @@ analyze_one_stock(symbol):
 
 ## 8. 测试与验收
 
-- `pytest -q -m "not integration"`：58 passed（models/core 合成 OHLC/czsc adapter
-  mock K 线/金标 ≤ 1/scan_signals 三类信号/缠论图 plot_figure/technical 快照）。
+- `pytest -q -m "not integration"`：84 passed（models/core 合成 OHLC/czsc adapter
+  mock K 线/金标 ≤ 1/scan_signals 三类信号/缠论图 plot_figure/technical 快照/
+  web 页面冒烟 + 后台任务仓库跨 rerun 持久回归）。
 - 金标 fixtures：`tests/fixtures/gold_{sh600519,sz000001,sh600150}.json`
   （由旧系统 `unified_stock_analysis` 生成，2026-08-27）。
 - 三只票 score：0.0 / 49.0 / 0.0，与旧系统 0 分差（价格/日期/行业分全一致）。
@@ -155,6 +156,7 @@ analyze_one_stock(symbol):
 | W5 | 个股页补齐技术面明细：均线排列/破五反五/量价/筹码/换手率/多周期（technical 快照，仅展示）；财务补 EPS/股息/利润率；换手率缺失不伪造 | ✅ 0.7.0 |
 | W6 | Web 交互升级：个股/自选输入改名称搜索 selectbox（缓存全市场）；全市场扫描/板块钻取支持后台扫描（线程任务+进度自动刷新+结果落库）；系统状态与扫描页新增「最近扫描任务与结果」查询入口 | ✅ 0.8.0 |
 | W7 | 扫描报告下载：扫描结果/真三振池下方「下载 Excel 报告」按钮（汇总 sheet + 每只个股详情 sheet，与 daily 的 `write_excel` 同格式）；web 扫描落库缺 VAP/平台明细，下载时按需 `include_detail=True` 补详情再生成 | ✅ 0.9.0 |
+| W7-fix | 后台扫描任务仓库从模块级 dict 改为 `st.cache_resource` 进程级 store（Streamlit 每次 rerun 重跑脚本顶层，模块级 dict 被重置 → 后台任务全丢"暂无后台任务"；改为跨 rerun/session 共享同一对象后任务/进度/结果保留），新增跨 rerun 持久回归测试 | ✅ 0.9.1 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。

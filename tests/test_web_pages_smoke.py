@@ -74,3 +74,24 @@ def test_system_page_renders():
     assert len(at.exception) == 0, [str(e) for e in at.exception]
     # 系统状态含「最近扫描任务与结果」入口
     assert any("最近扫描任务" in s.value for s in at.subheader)
+
+
+def test_bg_store_persists_across_rerun():
+    """后台任务仓库跨 rerun 持久（st.cache_resource，非模块级 dict）。"""
+    from mystery.apps.web.app import _bg_store, _bg_lock, _bg_tasks, _bg_launch
+    # 第一次"rerun"：启动一个 fake 任务并完成
+    s1, l1, t1, launch = _bg_store, _bg_lock, _bg_tasks, _bg_launch
+    tid = launch("测试任务", lambda cb, holder: (cb(1, 2),
+                                                 holder.append(99),
+                                                 [{"symbol": "x"}])[2])
+    for _ in range(50):
+        if t1().get(tid, {}).get("status") == "done":
+            break
+        import time
+        time.sleep(0.05)
+    # 第二次"rerun"：模块级 dict 若被重置会丢任务，这里必须仍是同一对象
+    assert s1() is _bg_store()
+    assert l1() is _bg_lock()
+    assert t1() is _bg_tasks()
+    assert tid in t1(), "任务跨 rerun 丢失"
+    assert t1()[tid]["status"] == "done", t1()[tid]

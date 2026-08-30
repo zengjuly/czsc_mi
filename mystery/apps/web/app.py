@@ -68,39 +68,52 @@ def _stock_pick_options() -> list:
     return out
 
 
-# ================= 后台扫描任务（模块级，进程内跨 rerun 持久） =================
-_BG_LOCK = threading.Lock()
-_BG_TASKS: dict = {}
+# ============ 后台扫描任务仓库（进程内跨 rerun 持久） ============
+# Streamlit 每次 rerun 会重新执行脚本顶层代码，普通模块级 dict 会被
+# 重置为空 → 后台任务丢失。用 st.cache_resource 存进程级可变对象，
+# 主线程与后台线程读写同一 store（跨 rerun / 跨 session 共享）。
+@st.cache_resource
+def _bg_store() -> dict:
+    return {"lock": threading.Lock(), "tasks": {}}
+
+
+def _bg_lock() -> threading.Lock:
+    return _bg_store()["lock"]
+
+
+def _bg_tasks() -> dict:
+    return _bg_store()["tasks"]
 
 
 def _bg_launch(label: str, fn) -> str:
     """启动后台扫描任务。fn(cb, job_holder) -> rows（cb(done,total) 报进度）。"""
     tid = uuid.uuid4().hex[:8]
-    with _BG_LOCK:
-        _BG_TASKS[tid] = {"id": tid, "label": label, "status": "running",
-                          "done": 0, "total": 0, "job_id": None,
-                          "results": [], "error": "", "created": time.time()}
+    lock, tasks = _bg_lock(), _bg_tasks()
+    with lock:
+        tasks[tid] = {"id": tid, "label": label, "status": "running",
+                      "done": 0, "total": 0, "job_id": None,
+                      "results": [], "error": "", "created": time.time()}
 
     def _run():
         holder: list = []
 
         def cb(done, total):
-            with _BG_LOCK:
-                t = _BG_TASKS.get(tid)
+            with lock:
+                t = tasks.get(tid)
                 if t:
                     t["done"], t["total"] = done, total
 
         try:
             rows = fn(cb, holder)
-            with _BG_LOCK:
-                t = _BG_TASKS.get(tid)
+            with lock:
+                t = tasks.get(tid)
                 if t:
                     t["status"] = "done"
                     t["results"] = rows
                     t["job_id"] = holder[0] if holder else None
         except Exception as e:  # noqa: BLE001
-            with _BG_LOCK:
-                t = _BG_TASKS.get(tid)
+            with lock:
+                t = tasks.get(tid)
                 if t:
                     t["status"] = "error"
                     t["error"] = str(e)[:200]
@@ -112,8 +125,8 @@ def _bg_launch(label: str, fn) -> str:
 @st.fragment(run_every=2.0)
 def _bg_running_fragment():
     """运行中后台任务进度（每 2 秒自动刷新）。"""
-    with _BG_LOCK:
-        rt = sorted([t for t in _BG_TASKS.values() if t["status"] == "running"],
+    with _bg_lock():
+        rt = sorted([t for t in _bg_tasks().values() if t["status"] == "running"],
                     key=lambda t: t["created"], reverse=True)
     for t in rt:
         pct = (t["done"] / t["total"]) if t["total"] else 0.0
@@ -135,8 +148,9 @@ def _recent_jobs(limit: int = 20) -> list:
 
 def _render_bg_tasks():
     """后台任务列表：运行中自动刷新 + 完成/失败态 + 查看结果。"""
-    with _BG_LOCK:
-        tasks = sorted(_BG_TASKS.values(), key=lambda t: t["created"], reverse=True)
+    with _bg_lock():
+        tasks = sorted(_bg_tasks().values(), key=lambda t: t["created"],
+                       reverse=True)
     if not tasks:
         st.caption("暂无后台任务")
         return
@@ -151,8 +165,8 @@ def _render_bg_tasks():
             st.error(f"❌ {t['label']} 失败：{t['error'][:120]}")
     view_id = st.session_state.get('bg_view_id')
     if view_id:
-        with _BG_LOCK:
-            t = _BG_TASKS.get(view_id)
+        with _bg_lock():
+            t = _bg_tasks().get(view_id)
         if t and t["results"]:
             _render_scan_table(t["results"], key=f"bg_{view_id}")
 
