@@ -25,6 +25,8 @@ export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-/home/ai/ai_runner/stock/data/db/myst
 export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
 export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-/home/ai/ai_runner/stock/Financial-API/data}"
 export MYSTERY_REPORT_DIR="${MYSTERY_REPORT_DIR:-${ROOT}/output}"
+export HITHINK_FINANCE_API_KEY="sk-fuyao-ujO0_f6hxdCxp3gglWe1rj3MVxPfwf0k"
+
 
 {
   echo "===== $(date '+%F %T') 开始 ====="
