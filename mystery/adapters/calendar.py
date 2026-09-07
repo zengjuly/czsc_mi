@@ -1,7 +1,13 @@
-"""mystery.adapters.calendar — 交易日历（迁自 trade_calendar.py，akshare 在线 + DB 兜底）。"""
+"""mystery.adapters.calendar — 交易日历（迁自 trade_calendar.py，akshare 在线 + DB 兜底）。
+
+三层缓存：进程内存（TTL 600s）→ 磁盘 data/calendar-cache.json（TTL 24h）→ akshare 在线。
+磁盘层消除"每次进程冷启动都打一次在线日历"的卡顿（实测 4~36s）。
+"""
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timedelta
@@ -10,9 +16,16 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 _CALENDAR_TTL = 600
+_DISK_TTL = 24 * 3600
 _calendar_cache: Optional[List[str]] = None
 _calendar_ts: float = 0.0
 _calendar_lock = threading.Lock()
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_DISK_CACHE_PATH = os.environ.get(
+    "MYSTERY_CALENDAR_CACHE",
+    os.path.join(_REPO_ROOT, "data", "calendar-cache.json"),
+)
 
 # 收盘时间（当日 15:30 前视为盘中，最新交易日回退上一交易日）
 _CLOSE_HOUR, _CLOSE_MINUTE = 15, 30
@@ -31,6 +44,31 @@ def _fetch_online_calendar() -> List[str]:
     except Exception as e:
         logger.warning(f"⚠️ 在线交易日历获取失败({str(e)[:80]})，回退主库")
         return []
+
+
+def _load_disk_calendar() -> List[str]:
+    """磁盘日历缓存（24h 内有效），损坏/过期返回空列表。"""
+    try:
+        if os.path.exists(_DISK_CACHE_PATH) and \
+                time.time() - os.path.getmtime(_DISK_CACHE_PATH) < _DISK_TTL:
+            with open(_DISK_CACHE_PATH, encoding='utf-8') as f:
+                dates = json.load(f)
+            if isinstance(dates, list) and dates:
+                return [str(d) for d in dates]
+    except Exception as e:
+        logger.debug(f"日历磁盘缓存读取失败: {str(e)[:60]}")
+    return []
+
+
+def _save_disk_calendar(dates: List[str]) -> None:
+    try:
+        os.makedirs(os.path.dirname(_DISK_CACHE_PATH), exist_ok=True)
+        tmp = _DISK_CACHE_PATH + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(dates, f, ensure_ascii=False)
+        os.replace(tmp, _DISK_CACHE_PATH)
+    except Exception as e:
+        logger.debug(f"日历磁盘缓存写入失败: {str(e)[:60]}")
 
 
 def _get_db_max_date() -> Optional[str]:
@@ -63,7 +101,13 @@ def get_latest_trade_date(now: Optional[datetime] = None) -> Optional[str]:
 
     with _calendar_lock:
         if _calendar_cache is None or time.time() - _calendar_ts > _CALENDAR_TTL:
-            dates = _fetch_online_calendar()
+            # 1) 磁盘缓存（24h）：进程冷启动不再打在线
+            dates = _load_disk_calendar()
+            if not dates:
+                # 2) akshare 在线；成功则落盘供下次冷启动使用
+                dates = _fetch_online_calendar()
+                if dates:
+                    _save_disk_calendar(dates)
             if dates:
                 _calendar_cache = dates
                 _calendar_ts = time.time()

@@ -80,6 +80,16 @@ def _batch_presync_from_duckdb(svc: AnalysisService, codes: List[str]) -> int:
     logger.info(f"[sync] 批量预同步：DuckDB → SQLite（阈值 {latest}）")
 
     synced = 0
+    duck_conn = None
+    try:
+        import duckdb
+        duck_conn = duckdb.connect(ths.marketdb_path, read_only=True)
+    except Exception as e:
+        logger.debug(f"[sync] DuckDB 连接失败: {str(e)[:60]}")
+        return 0
+
+    sql = ("SELECT date, open, high, low, close, volume, turnover "
+           "FROM v_daily_qfq WHERE thscode = ? ORDER BY date ASC")
     for code in codes:
         if is_bj_stock(code):
             continue
@@ -87,36 +97,32 @@ def _batch_presync_from_duckdb(svc: AnalysisService, codes: List[str]) -> int:
         db_code = db_code_of(code)
         ths_code = normalize_symbol(code)
 
-        # 检查 SQLite 是否已是最新
+        # 检查 SQLite 是否已是最新（MAX(date)，不整表加载）
         try:
-            cached_df = db.load_kline(db_code, 'daily')
-            if cached_df is not None and not cached_df.empty:
-                cache_last = str(cached_df['date'].max())[:10]
-                if cache_last >= latest:
-                    continue  # SQLite 已是最新，跳过
+            cache_last = db.kline_last_date(db_code, 'daily')
+            if cache_last and cache_last >= latest:
+                continue  # SQLite 已是最新，跳过
         except Exception:
             pass
 
         # 从 DuckDB 读取
         try:
-            import duckdb
-            conn = duckdb.connect(ths.marketdb_path, read_only=True)
-            try:
-                sql = ("SELECT date, open, high, low, close, volume, turnover "
-                       "FROM v_daily_qfq WHERE thscode = ? ORDER BY date ASC")
-                df = conn.execute(sql, [ths_code]).fetchdf()
-                if df is None or df.empty:
-                    continue
-                df_last = str(df['date'].max())[:10]
-                if df_last < latest:
-                    continue  # DuckDB 也落后，跳过（让后续走在线）
-                # 写入 SQLite
-                db.upsert_kline(df, db_code, 'daily')
-                synced += 1
-            finally:
-                conn.close()
+            df = duck_conn.execute(sql, [ths_code]).fetchdf()
+            if df is None or df.empty:
+                continue
+            df_last = str(df['date'].max())[:10]
+            if df_last < latest:
+                continue  # DuckDB 也落后，跳过（让后续走在线）
+            # 写入 SQLite
+            db.upsert_kline(df, db_code, 'daily')
+            synced += 1
         except Exception as e:
             logger.debug(f"[sync] {code} DuckDB 读取失败: {str(e)[:60]}")
+
+    try:
+        duck_conn.close()
+    except Exception:
+        pass
 
     if synced > 0:
         logger.info(f"[sync] 批量预同步完成：{synced} 只股票已写入 SQLite")

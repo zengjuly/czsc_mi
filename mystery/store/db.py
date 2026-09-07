@@ -96,6 +96,18 @@ class MysteryDB:
             finally:
                 conn.close()
 
+    def kline_last_date(self, code: str, period: str = 'daily') -> Optional[str]:
+        """本地缓存该票最新日期（MAX(date)，不整表加载——新鲜度检查专用）。"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT MAX(date) FROM stock_kline_data WHERE code=? AND period=?",
+                    (code, period)).fetchone()
+                return str(row[0])[:10] if row and row[0] else None
+            finally:
+                conn.close()
+
     def upsert_kline(self, df: pd.DataFrame, code: str, period: str,
                      max_rows: Optional[int] = None) -> None:
         """写行情（df 为中文列或英文列均可）。

@@ -12,6 +12,7 @@
 set -euo pipefail
 
 source /home/ai/ai_runner/.bashrc
+source /home/ai/ai_runner/.stockrc
 source /home/ai/ai_runner/venv/bin/activate
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -173,18 +173,80 @@ def _render_bg_tasks():
 
 
 def _render_scan_table(rows: list, key: str = "scan"):
-    """扫描结果表格（代码/名称/评分/建议/筹码/日期）+ 加入自选。"""
+    """扫描结果表格（代码可点击进入详情）+ 加入自选。
+    
+    「详情」列为超链接（?stock=<symbol>），点击直达个股分析页并自动分析。
+    """
     st.caption(f"共 {len(rows)} 只（按分降序）")
-    st.dataframe([{'代码': r['symbol'], '名称': r.get('name') or '未知',
-                   '评分': r.get('score'), '建议': r.get('advice', ''),
-                   '筹码低位': '是' if r.get('chip_low') else '否',
-                   '换手未知': '未知' if r.get('chip_low_unknown') else '',
-                   '高位缩量': '是' if r.get('chip_quiet') else '否',
-                   '20日换手': r.get('turnover_20'),
-                   '回撤%': (None if r.get('price_pos') is None
-                             else round(float(r['price_pos']) * 100, 1)),
-                   '日期': r.get('trade_date', '')} for r in rows],
-                 use_container_width=True, hide_index=True)
+    
+    # 构建表格数据
+    table_data = []
+    for idx, row in enumerate(rows):
+        table_data.append({
+            '序号': idx + 1,
+            '代码': row['symbol'],
+            '名称': row.get('name') or '未知',
+            '评分': row.get('score'),
+            '建议': row.get('advice', ''),
+            '筹码低位': '是' if row.get('chip_low') else '否',
+            '高位缩量': '是' if row.get('chip_quiet') else '否',
+            '回撤%': (None if row.get('price_pos') is None
+                      else round(float(row['price_pos']) * 100, 1)),
+            '日期': row.get('trade_date', ''),
+            '详情': f"?stock={row['symbol']}",
+        })
+    
+    # 显示表格
+    df = st.dataframe(
+        table_data,
+        use_container_width=True,
+        hide_index=True,
+        key=f"{key}_table",
+        column_config={
+            '详情': st.column_config.LinkColumn(
+                '详情',
+                help='点击查看个股分析详情',
+                display_text='查看 →',
+            ),
+        }
+    )
+    
+    # 为表格下方添加代码输入框，用于跳转详情
+    st.markdown("---")
+    st.markdown("**查看详情**：输入序号或代码")
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        selected_idx = st.number_input(
+            "序号",
+            min_value=1,
+            max_value=len(rows),
+            value=1,
+            key=f"{key}_select_idx"
+        )
+    
+    with col2:
+        # 显示选中股票的代码供确认
+        if selected_idx and 1 <= selected_idx <= len(rows):
+            selected_row = rows[selected_idx - 1]
+            st.text_input(
+                "股票代码",
+                value=selected_row['symbol'],
+                disabled=True,
+                key=f"{key}_show_code"
+            )
+    
+    # 查看详情按钮
+    if st.button("查看该股票详情", key=f"{key}_view_detail"):
+        if selected_idx and 1 <= selected_idx <= len(rows):
+            selected_row = rows[selected_idx - 1]
+            # 设置导航上下文
+            st.session_state['stock_nav_list'] = rows
+            st.session_state['stock_nav_idx'] = selected_idx - 1
+            st.session_state['_pending_symbol'] = selected_row['symbol']
+            st.session_state['page'] = '个股分析'
+            st.rerun()
+    
     _render_excel_download(rows, key=key)
     _add_watchlist_widget(rows, key=key)
 
@@ -583,7 +645,50 @@ def view_watchlist_subpage():
 # ================= 视图 =================
 def view_stock():
     st.header("个股分析（输入名称或代码搜索，选中即分析）")
-    pending = st.session_state.pop('_pending_symbol', None)
+
+    # URL query 直达（扫描结果表格「详情」链接 ?stock=600519.SH）
+    try:
+        _qp = st.query_params
+        if _qp.get('stock'):
+            st.session_state['_pending_symbol'] = _qp.get('stock')
+            st.session_state['stock_nav_list'] = None
+            st.session_state['stock_nav_idx'] = None
+            st.query_params.clear()
+    except Exception:
+        pass
+
+    # 检查是否有扫描导航上下文
+    nav_list = st.session_state.get('stock_nav_list')
+    nav_idx = st.session_state.get('stock_nav_idx')
+    has_nav = nav_list and nav_idx is not None
+    
+    # 显示导航按钮（如果有导航上下文）
+    if has_nav:
+        nav_cols = st.columns([1, 2, 1, 1])
+        with nav_cols[0]:
+            if st.button("← 上一只", disabled=(nav_idx == 0)):
+                st.session_state['stock_nav_idx'] = nav_idx - 1
+                st.rerun()
+        with nav_cols[2]:
+            if st.button("下一只 →", disabled=(nav_idx >= len(nav_list) - 1)):
+                st.session_state['stock_nav_idx'] = nav_idx + 1
+                st.rerun()
+        with nav_cols[3]:
+            if st.button("返回列表"):
+                st.session_state.pop('stock_nav_list', None)
+                st.session_state.pop('stock_nav_idx', None)
+                st.rerun()
+        
+        # 显示当前位置
+        st.caption(f"扫描结果 {nav_idx + 1} / {len(nav_list)}")
+    
+    # 处理导航跳转
+    if has_nav and nav_list:
+        pending = nav_list[nav_idx].get('symbol')
+        st.session_state.pop('_pending_symbol', None)  # 清除待分析标记，避免重复分析
+    else:
+        pending = st.session_state.pop('_pending_symbol', None)
+    
     # 名称搜索 selectbox（缓存全市场列表，输入名称即时过滤，无需回车）
     code, name = _stock_pick_select("选择股票（输入名称搜索）",
                                     key="stock_pick",
@@ -633,7 +738,7 @@ def view_scan():
         min_score = st.number_input("最低分", 0.0, 100.0, 0.0)
     if c3.button("开始前台扫描", type="primary"):
         with st.spinner("扫描中（单票失败自动跳过）..."):
-            rows = scan_market(limit=int(limit), include_detail=False,
+            rows = scan_market(limit=int(limit), include_detail=True,
                                min_score=min_score or None)
             st.session_state['scan_results'] = rows
             st.session_state['scan_ts'] = len(rows)
@@ -874,7 +979,16 @@ def _clear_subview():
 def main():
     page = st.sidebar.radio("导航", ["个股分析", "自选股", "全市场扫描", "板块钻取",
                                     "真三振池", "系统状态", "板块强度表"],
+                            key="nav_page",
                             on_change=_clear_subview)
+    
+    # 检查是否有跳转请求（从扫描结果点击股票）
+    jump_target = st.session_state.pop('_jump_to_page', None)
+    if jump_target:
+        page = jump_target
+        # 同步更新 sidebar radio 的显示
+        st.session_state['nav_page'] = jump_target
+    
     st.sidebar.caption("唯一计算入口：mystery.services.analyze.analyze_one_stock")
     st.sidebar.caption(
         f"chan 开关: {'开' if chan_enabled() else '关'} | "

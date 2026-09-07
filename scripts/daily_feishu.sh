@@ -24,13 +24,13 @@ export VENV="${VENV:-/home/ai/ai_runner/venv}"
 export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-/home/ai/ai_runner/stock/data/db/mystery_cache.db}"
 export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
 export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-/home/ai/ai_runner/stock/Financial-API/data}"
-export MYSTERY_REPORT_DIR="${MYSTERY_REPORT_DIR:-${ROOT}/output}"
-export HITHINK_FINANCE_API_KEY="sk-fuyao-ujO0_f6hxdCxp3gglWe1rj3MVxPfwf0k"
+export MYSTERY_REPORT_DIR="${MYSTERY_REPORT_DIR:-/home/ai/ai_runner/stock/output}"
+# API Key 不写入仓库：由 .stockrc / config.yaml 顶层 hithink_api_key 注入（ths.py 启动时读）
 
 
 {
   echo "===== $(date '+%F %T') 开始 ====="
-  source /home/ai/ai_runner/.bashrc
+  source /home/ai/ai_runner/.stockrc
   cd "${ROOT}"
   bash scripts/daily_pipeline.sh
   rc=$?
