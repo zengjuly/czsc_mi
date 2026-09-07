@@ -12,7 +12,7 @@
 #   RUN_MARKET_SCAN（默认 0：不跑全市场扫描；=1 时用 SCAN_LIMIT 只数）
 #   SCAN_LIMIT
 set -euo pipefail
-
+source /home/ai/ai_runner/.bashrc
 source "${VENV:-/home/ai/ai_runner/venv}/bin/activate"
 cd "${CZSC_MI_ROOT:-$(dirname "$0")/..}"
 

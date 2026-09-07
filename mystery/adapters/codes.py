@@ -6,23 +6,36 @@ from __future__ import annotations
 
 import re
 
-_INTERNAL_RE = re.compile(r"^(\d{6})\.(SH|SZ)$", re.I)
+_INTERNAL_RE = re.compile(r"^(\d{6})\.(SH|SZ|BJ)$", re.I)
 
 
 def normalize_symbol(symbol: str) -> str:
-    """sh600519 / 600519.SH / SH600519 / sh.600519 / 600519 → 600519.SH"""
+    """sh600519 / 600519.SH / SH600519 / sh.600519 / 600519 / bj920002 → 600519.SH/920002.BJ"""
     s = str(symbol).strip()
     if _INTERNAL_RE.match(s):
         return s.upper()
-    m = re.match(r"^(?:(sh|sz)\.?)?(\d{6})(?:\.(SH|SZ))?$", s, re.I)
+    m = re.match(r"^(?:(sh|sz|bj)\.?)?(\d{6})(?:\.(SH|SZ|BJ))?$", s, re.I)
     if not m:
         raise ValueError(f"无法识别股票代码: {symbol!r}")
     prefix, digits, suffix = m.group(1), m.group(2), m.group(3)
     exch = (suffix or prefix or "").upper()
     if not exch:
         # 无前缀无后缀：按交易所规则推断
-        exch = "SH" if digits[0] in "569" else "SZ"
+        if digits.startswith("92"):
+            exch = "BJ"
+        elif digits[0] in "569":
+            exch = "SH"
+        else:
+            exch = "SZ"
     return f"{digits}.{exch}"
+
+
+def is_bj_stock(symbol: str) -> bool:
+    """判断是否北交所代码（920xxx）。"""
+    try:
+        return normalize_symbol(symbol).endswith(".BJ")
+    except ValueError:
+        return False
 
 
 def to_ths(symbol: str) -> str:

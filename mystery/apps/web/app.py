@@ -161,6 +161,7 @@ def _render_bg_tasks():
                        f"（job #{t['job_id']}）")
             if st.button(f"查看结果（{t['label']}）", key=f"bg_view_{t['id']}"):
                 st.session_state['bg_view_id'] = t['id']
+                st.rerun()
         elif t["status"] == "error":
             st.error(f"❌ {t['label']} 失败：{t['error'][:120]}")
     view_id = st.session_state.get('bg_view_id')
@@ -642,7 +643,7 @@ def view_scan():
     b1, b2 = st.columns(2)
     if b1.button("🚀 后台扫描全部股票", type="primary", use_container_width=True):
         _bg_launch("全部股票",
-                   lambda cb, holder: scan_market(include_detail=False,
+                   lambda cb, holder: scan_market(include_detail=True,
                                                   progress_cb=cb,
                                                   job_holder=holder))
         st.rerun()
@@ -653,7 +654,7 @@ def view_scan():
         else:
             _bg_launch(f"全部自选股({len(wl)})",
                        lambda cb, holder, _wl=wl: scan_market(
-                           watchlist=_wl, include_detail=False,
+                           watchlist=_wl, include_detail=True,
                            progress_cb=cb, job_holder=holder))
             st.rerun()
     _render_bg_tasks()
@@ -721,7 +722,7 @@ def view_sector():
         else:
             _bg_launch(f"板块:{s_name}({len(stocks)})",
                        lambda cb, holder, _st=stocks: scan_market(
-                           universe=_st, include_detail=False,
+                           universe=_st, include_detail=True,
                            progress_cb=cb, job_holder=holder))
             st.rerun()
     _render_bg_tasks()

@@ -11,6 +11,9 @@
 #   CZSC_MI_WEB_PORT / MYSTERY_DB_PATH / MYSTERY_CHAN_ENABLED
 set -euo pipefail
 
+source /home/ai/ai_runner/.bashrc
+source /home/ai/ai_runner/venv/bin/activate
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # 解释器：默认当前 shell 的 python（venv 激活后即 venv），可用 CZSC_MI_WEB_PY 覆盖
 PY="${CZSC_MI_WEB_PY:-python}"

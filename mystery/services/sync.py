@@ -1,6 +1,7 @@
 """mystery.services.sync — 行情同步到本地库（迁自 sync_all_market.py）。
 
 单票失败不中断。默认只同步自选/指定列表，全市场 --force 需用户明确要求。
+DuckDB 优先：sync 开始时批量从 DuckDB 读取最新数据写入 SQLite，避免逐股走在线降级链。
 W2-A：
 - 多周期：``sync_market(periods=[...])``，周/月由日K重采样写入（不再打在线链）。
 - 断点：``data/sync_checkpoint.json`` 记录 days/periods/done_symbols；
@@ -27,7 +28,7 @@ _DEFAULT_CHECKPOINT = os.environ.get(
 )
 
 
-# ---------------- 断点 ---------------- 
+# ---------------- 断点 ----------------
 def _load_checkpoint() -> dict:
     try:
         if os.path.exists(_DEFAULT_CHECKPOINT):
@@ -47,6 +48,79 @@ def _save_checkpoint(cp: dict) -> None:
             json.dump(cp, f, ensure_ascii=False, indent=1)
     except Exception as e:
         logger.warning(f"[sync] 断点写入失败: {str(e)[:60]}")
+
+
+# ---------------- DuckDB 批量预同步（v1.22.x）----------------
+def _batch_presync_from_duckdb(svc: AnalysisService, codes: List[str]) -> int:
+    """批量从 DuckDB 读取最新数据写入 SQLite，避免逐股走在线降级链。
+
+    返回成功写入的股票数。DuckDB 不存在或无数据时返回 0（静默，后续走逐股 sync）。
+    """
+    from ..adapters.codes import db_code_of, is_bj_stock, normalize_symbol
+    from ..adapters.calendar import get_latest_trade_date
+
+    db = svc.market.db
+    ths = svc.market.ths
+
+    # DuckDB 路径检查
+    if not ths.marketdb_path or not os.path.exists(ths.marketdb_path):
+        logger.debug("[sync] DuckDB 不存在，跳过批量预同步")
+        return 0
+
+    # 获取最新交易日作为新鲜度阈值
+    try:
+        latest = get_latest_trade_date()
+        if not latest:
+            logger.debug("[sync] 无法获取最新交易日，跳过批量预同步")
+            return 0
+    except Exception as e:
+        logger.debug(f"[sync] 获取最新交易日失败: {str(e)[:60]}")
+        return 0
+
+    logger.info(f"[sync] 批量预同步：DuckDB → SQLite（阈值 {latest}）")
+
+    synced = 0
+    for code in codes:
+        if is_bj_stock(code):
+            continue
+
+        db_code = db_code_of(code)
+        ths_code = normalize_symbol(code)
+
+        # 检查 SQLite 是否已是最新
+        try:
+            cached_df = db.load_kline(db_code, 'daily')
+            if cached_df is not None and not cached_df.empty:
+                cache_last = str(cached_df['date'].max())[:10]
+                if cache_last >= latest:
+                    continue  # SQLite 已是最新，跳过
+        except Exception:
+            pass
+
+        # 从 DuckDB 读取
+        try:
+            import duckdb
+            conn = duckdb.connect(ths.marketdb_path, read_only=True)
+            try:
+                sql = ("SELECT date, open, high, low, close, volume, turnover "
+                       "FROM v_daily_qfq WHERE thscode = ? ORDER BY date ASC")
+                df = conn.execute(sql, [ths_code]).fetchdf()
+                if df is None or df.empty:
+                    continue
+                df_last = str(df['date'].max())[:10]
+                if df_last < latest:
+                    continue  # DuckDB 也落后，跳过（让后续走在线）
+                # 写入 SQLite
+                db.upsert_kline(df, db_code, 'daily')
+                synced += 1
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.debug(f"[sync] {code} DuckDB 读取失败: {str(e)[:60]}")
+
+    if synced > 0:
+        logger.info(f"[sync] 批量预同步完成：{synced} 只股票已写入 SQLite")
+    return synced
 
 
 def sync_market(period: Optional[str] = None,
@@ -90,10 +164,21 @@ def sync_market(period: Optional[str] = None,
         cp = {"days": days, "periods": sorted(periods), "done_symbols": {}}
     done = cp.get("done_symbols", {})
 
+    # ---------- DuckDB 批量预同步（v1.22.x）----------
+    # 在逐股 sync 之前，先从 DuckDB 批量读取最新数据写入 SQLite。
+    # 这样后续的 fetch_bars() 会直接命中 SQLite，避免逐股走在线降级链。
+    if not force:
+        _batch_presync_from_duckdb(svc, codes)
+
     synced, failed, updated_rows = 0, 0, 0
     skipped = 0
     errors: List[str] = []
     for code in codes:
+        # 跳过北交所(920xxx.BJ)
+        from ..adapters.codes import is_bj_stock
+        if is_bj_stock(code):
+            logger.debug(f"[sync] 跳过北交所: {code}")
+            continue
         # W8-fix2: 统一 db_code 归一（600010.SH → sh.600010）。旧实现
         # "code if '.' in code" 把内部格式原样写库，与 db_code_of() 读格式
         # 不一致 → 每次写入新行、读取永远看到旧行，数据永远"过期"。

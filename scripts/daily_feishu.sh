@@ -30,6 +30,7 @@ export HITHINK_FINANCE_API_KEY="sk-fuyao-ujO0_f6hxdCxp3gglWe1rj3MVxPfwf0k"
 
 {
   echo "===== $(date '+%F %T') 开始 ====="
+  source /home/ai/ai_runner/.bashrc
   cd "${ROOT}"
   bash scripts/daily_pipeline.sh
   rc=$?

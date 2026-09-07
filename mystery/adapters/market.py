@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -65,29 +66,54 @@ class MarketDataClient:
                      end: Optional[str]):
         """日K多源退避（返回 (df, source)）。
 
-        新鲜度参照优先级：MarketDB 本地最新交易日 → .day 文件最新日期。
-        DB 未过期 → 直接用；过期 → ths_official(MarketDB→fuyao) → tdx_local。
+        优先级：SQLite → DuckDB(v_daily_qfq) → ths_official(fuyao在线) → tdx_local。
+        SQLite 过期时优先 DuckDB，避免走在线降级链。
         """
         db_code = _codes.db_code_of(internal)
         df = self.db.load_kline(db_code, 'daily', start, end)
         ref = self._freshness_ref(internal) if (df is not None and not df.empty) \
             else None
+        
+        # SQLite 未过期 → 直接用
         if df is not None and not df.empty:
             db_last = str(df['date'].max())[:10]
             if not (ref and db_last < ref):
                 return to_cn_columns(df), 'db'
-            logger.warning(f"[db→降级] {internal} 本地库过期({db_last}<最新{ref})，切 ths_official")
-        # 2. ths_official（MarketDB 本地秒读 → fuyao 兜底）
+            # SQLite 过期 → 优先 DuckDB
+            logger.info(f"[db→DuckDB] {internal} SQLite过期({db_last}<{ref})，尝试DuckDB")
+            duckdb_df = self._fetch_from_duckdb(internal, start, end)
+            if duckdb_df is not None and not duckdb_df.empty:
+                dk_last = str(duckdb_df['date'].max())[:10]
+                # 写入 SQLite 缓存
+                try:
+                    self.db.upsert_kline(duckdb_df, db_code, 'daily')
+                    logger.info(f"[DuckDB→SQLite] {internal} 已更新到 {dk_last}")
+                except Exception as e:
+                    logger.debug(f"[DuckDB→SQLite] 写入失败: {str(e)[:60]}")
+                return to_cn_columns(duckdb_df), 'db'
+            logger.warning(f"[DuckDB→降级] {internal} DuckDB无数据，切 ths_official")
+        
+        # SQLite 为空 → 也先查 DuckDB
+        if df is None or df.empty:
+            duckdb_df = self._fetch_from_duckdb(internal, start, end)
+            if duckdb_df is not None and not duckdb_df.empty:
+                dk_last = str(duckdb_df['date'].max())[:10]
+                try:
+                    self.db.upsert_kline(duckdb_df, db_code, 'daily')
+                    logger.info(f"[DuckDB→SQLite] {internal} 首次写入到 {dk_last}")
+                except Exception as e:
+                    logger.debug(f"[DuckDB→SQLite] 写入失败: {str(e)[:60]}")
+                return to_cn_columns(duckdb_df), 'db'
+        
+        # DuckDB 也没有 → 走在线（ths_official / tdx_local）
         try:
             raw = self.ths.get_daily(internal, start, end)
             if raw is not None and not raw.empty:
-                # 新鲜度择优：ths 数据若落后参照日（如 fuyao 晚一天发布），
-                # 不立即接受，继续尝试 tdx_api/tdx_local 取更新的数据
                 raw_last = str(raw['日期'].max())[:10]
                 if not (ref and raw_last < ref):
                     return raw, 'ths_official'
                 logger.warning(
-                    f"[ths_official] {internal} 返回数据落后({raw_last}<最新{ref})，"
+                    f"[ths_official] {internal} 返回数据落后({raw_last}<{ref})，"
                     f"继续尝试 tdx_api/tdx_local")
             else:
                 logger.warning(f"[ths_official→降级] {internal} 返回空，切 tdx_api")
@@ -110,6 +136,44 @@ class MarketDataClient:
         except Exception as e:
             logger.warning(f"[tdx_local→降级] {internal} 异常 {type(e).__name__}: {str(e)[:60]}")
         return None, ''
+
+    def _fetch_from_duckdb(self, internal: str, start: Optional[str],
+                           end: Optional[str]):
+        """从 DuckDB (v_daily_qfq 前复权视图) 读取日K数据。
+
+        返回英文列 DataFrame（date/open/high/low/close/volume/amount），失败返回 None。
+        """
+        if not self.ths.marketdb_path or not os.path.exists(self.ths.marketdb_path):
+            return None
+        try:
+            import duckdb
+            from .codes import normalize_symbol
+            # internal: 600519.SH → DuckDB thscode 也是 600519.SH
+            thscode = normalize_symbol(internal)
+            conn = duckdb.connect(self.ths.marketdb_path, read_only=True)
+            try:
+                sql = ("SELECT thscode, date, open, high, low, close, volume, turnover "
+                       "FROM v_daily_qfq WHERE thscode = ?")
+                params = [thscode]
+                if start:
+                    sql += " AND date >= ?"
+                    params.append(start)
+                if end:
+                    sql += " AND date <= ?"
+                    params.append(end)
+                sql += " ORDER BY date ASC"
+                df = conn.execute(sql, params).fetchdf()
+                if df is not None and not df.empty:
+                    # 重命名列：turnover → amount，保留英文列
+                    df = df.rename(columns={'turnover': 'amount'})
+                    # 只保留需要的列
+                    keep_cols = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount']
+                    return df[[c for c in keep_cols if c in df.columns]]
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.debug(f"[DuckDB] {internal} 读取失败: {str(e)[:80]}")
+        return None
 
     def _freshness_ref(self, internal: str) -> Optional[str]:
         """新鲜度参照：在线交易日历最新交易日 → MarketDB → .day 文件。"""
