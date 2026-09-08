@@ -120,13 +120,18 @@ def test_scan_detail_link_without_nav():
 
 
 def test_scan_table_shows_signal_flags():
-    """扫描结果表格展示判定列（年线滤网/周线锚定/破五反五/主升浪），值来自 mystery.signal。"""
-    from mystery.apps.web.app import _sig_flag, _scan_table_data
+    """扫描结果表格展示判定列（年线滤网/周线锚定/破五反五/主升浪8项），值来自 mystery。"""
+    from mystery.apps.web.app import _sig_flag, _main_wave_flag, _scan_table_data
     # _sig_flag 取值：True→✅ / False→❌ / 缺失→''
     assert _sig_flag({"mystery": {"signal": {"年线滤网": True}}}, "年线滤网") == "✅"
     assert _sig_flag({"mystery": {"signal": {"年线滤网": False}}}, "年线滤网") == "❌"
     assert _sig_flag({"mystery": {"signal": {}}}, "年线滤网") == ""
     assert _sig_flag({}, "年线滤网") == ""
+
+    # _main_wave_flag：checklist8.满足数量 → N/8；缺失 → ''
+    assert _main_wave_flag({"mystery": {"checklist8": {"满足数量": 4}}}) == "4/8"
+    assert _main_wave_flag({"mystery": {"checklist8": {}}}) == ""
+    assert _main_wave_flag({}) == ""
 
     # 表格数据列与判定值
     rows = [
@@ -134,23 +139,25 @@ def test_scan_table_shows_signal_flags():
          "advice": "观望（未通过年线滤网）", "chip_low": False, "chip_quiet": False,
          "price_pos": 0.05, "trade_date": "2026-09-07",
          "mystery": {"signal": {"年线滤网": False, "周线锚定": True,
-                                "破五反五": False, "主升浪信号": False}}},
+                                "破五反五": False},
+                     "checklist8": {"满足数量": 4}}},
         {"symbol": "600519.SH", "name": "贵州茅台", "score": 60.0,
          "advice": "关注", "chip_low": True, "chip_quiet": False,
          "price_pos": None, "trade_date": "2026-09-07",
          "mystery": {"signal": {"年线滤网": True, "周线锚定": True,
-                                "破五反五": True, "主升浪信号": True}}},
+                                "破五反五": True},
+                     "checklist8": {"满足数量": 8}}},
     ]
     data = _scan_table_data(rows, key="scan")
     cols = list(data[0].keys())
-    for c in ['年线滤网', '周线锚定', '破五反五', '主升浪', '筹码低位',
+    for c in ['年线滤网', '周线锚定', '破五反五', '主升浪8项', '筹码低位',
               '高位缩量', '回撤%', '详情']:
         assert c in cols, f"缺少列 {c}: {cols}"
     # 判定值正确映射
-    assert data[0]['年线滤网'] == '❌' and data[0]['主升浪'] == '❌'
-    assert data[0]['周线锚定'] == '✅'
-    assert data[1]['年线滤网'] == '✅' and data[1]['主升浪'] == '✅'
-    assert data[1]['破五反五'] == '✅'
+    assert data[0]['年线滤网'] == '❌' and data[0]['周线锚定'] == '✅'
+    assert data[0]['主升浪8项'] == '4/8'
+    assert data[1]['年线滤网'] == '✅' and data[1]['破五反五'] == '✅'
+    assert data[1]['主升浪8项'] == '8/8'
     # 详情链接带 nav 参数
     assert data[0]['详情'] == "?stock=600150.SH&nav_key=scan&nav_idx=0"
 

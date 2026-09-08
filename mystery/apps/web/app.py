@@ -184,10 +184,23 @@ def _sig_flag(row: dict, key: str):
     return ''
 
 
+def _main_wave_flag(row: dict):
+    """主升浪8项满足数量：返回 'N/8'；checklist8 缺失时返回 ''。"""
+    cl = (row.get('mystery') or {}).get('checklist8') or {}
+    n = cl.get('满足数量')
+    if n is None:
+        return ''
+    try:
+        return f"{int(n)}/8"
+    except (TypeError, ValueError):
+        return ''
+
+
 def _scan_table_data(rows: list, key: str = "scan") -> list:
     """扫描结果表格数据（纯函数，渲染与计算分离）。
 
-    判定列：年线滤网/周线锚定/破五反五/主升浪 来自 mystery.signal（只展示不改判）。
+    判定列：年线滤网/周线锚定/破五反五 来自 mystery.signal；
+    主升浪8项 来自 checklist8.满足数量（只展示不改判）。
     """
     table_data = []
     for idx, row in enumerate(rows):
@@ -200,7 +213,7 @@ def _scan_table_data(rows: list, key: str = "scan") -> list:
             '年线滤网': _sig_flag(row, '年线滤网'),
             '周线锚定': _sig_flag(row, '周线锚定'),
             '破五反五': _sig_flag(row, '破五反五'),
-            '主升浪': _sig_flag(row, '主升浪信号'),
+            '主升浪8项': _main_wave_flag(row),
             '筹码低位': '是' if row.get('chip_low') else '否',
             '高位缩量': '是' if row.get('chip_quiet') else '否',
             '回撤%': (None if row.get('price_pos') is None
