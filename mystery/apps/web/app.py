@@ -172,6 +172,45 @@ def _render_bg_tasks():
             _render_scan_table(t["results"], key=f"bg_{view_id}")
 
 
+def _sig_flag(row: dict, key: str):
+    """从扫描行取 mystery.signal 判定字段：返回 '✅'/'❌'/''（缺失时 ''）。"""
+    m = row.get('mystery') or {}
+    sig = m.get('signal') or {}
+    v = sig.get(key)
+    if v is True:
+        return '✅'
+    if v is False:
+        return '❌'
+    return ''
+
+
+def _scan_table_data(rows: list, key: str = "scan") -> list:
+    """扫描结果表格数据（纯函数，渲染与计算分离）。
+
+    判定列：年线滤网/周线锚定/破五反五/主升浪 来自 mystery.signal（只展示不改判）。
+    """
+    table_data = []
+    for idx, row in enumerate(rows):
+        table_data.append({
+            '序号': idx + 1,
+            '代码': row['symbol'],
+            '名称': row.get('name') or '未知',
+            '评分': row.get('score'),
+            '建议': row.get('advice', ''),
+            '年线滤网': _sig_flag(row, '年线滤网'),
+            '周线锚定': _sig_flag(row, '周线锚定'),
+            '破五反五': _sig_flag(row, '破五反五'),
+            '主升浪': _sig_flag(row, '主升浪信号'),
+            '筹码低位': '是' if row.get('chip_low') else '否',
+            '高位缩量': '是' if row.get('chip_quiet') else '否',
+            '回撤%': (None if row.get('price_pos') is None
+                      else round(float(row['price_pos']) * 100, 1)),
+            '日期': row.get('trade_date', ''),
+            '详情': f"?stock={row['symbol']}&nav_key={key}&nav_idx={idx}",
+        })
+    return table_data
+
+
 def _render_scan_table(rows: list, key: str = "scan"):
     """扫描结果表格（代码可点击进入详情）+ 加入自选。
     
@@ -184,21 +223,7 @@ def _render_scan_table(rows: list, key: str = "scan"):
     st.session_state[f"{key}_nav_rows"] = rows
     
     # 构建表格数据
-    table_data = []
-    for idx, row in enumerate(rows):
-        table_data.append({
-            '序号': idx + 1,
-            '代码': row['symbol'],
-            '名称': row.get('name') or '未知',
-            '评分': row.get('score'),
-            '建议': row.get('advice', ''),
-            '筹码低位': '是' if row.get('chip_low') else '否',
-            '高位缩量': '是' if row.get('chip_quiet') else '否',
-            '回撤%': (None if row.get('price_pos') is None
-                      else round(float(row['price_pos']) * 100, 1)),
-            '日期': row.get('trade_date', ''),
-            '详情': f"?stock={row['symbol']}&nav_key={key}&nav_idx={idx}",
-        })
+    table_data = _scan_table_data(rows, key=key)
     
     # 显示表格
     df = st.dataframe(

@@ -119,6 +119,42 @@ def test_scan_detail_link_without_nav():
     assert "返回列表" not in labels
 
 
+def test_scan_table_shows_signal_flags():
+    """扫描结果表格展示判定列（年线滤网/周线锚定/破五反五/主升浪），值来自 mystery.signal。"""
+    from mystery.apps.web.app import _sig_flag, _scan_table_data
+    # _sig_flag 取值：True→✅ / False→❌ / 缺失→''
+    assert _sig_flag({"mystery": {"signal": {"年线滤网": True}}}, "年线滤网") == "✅"
+    assert _sig_flag({"mystery": {"signal": {"年线滤网": False}}}, "年线滤网") == "❌"
+    assert _sig_flag({"mystery": {"signal": {}}}, "年线滤网") == ""
+    assert _sig_flag({}, "年线滤网") == ""
+
+    # 表格数据列与判定值
+    rows = [
+        {"symbol": "600150.SH", "name": "中国船舶", "score": 0.0,
+         "advice": "观望（未通过年线滤网）", "chip_low": False, "chip_quiet": False,
+         "price_pos": 0.05, "trade_date": "2026-09-07",
+         "mystery": {"signal": {"年线滤网": False, "周线锚定": True,
+                                "破五反五": False, "主升浪信号": False}}},
+        {"symbol": "600519.SH", "name": "贵州茅台", "score": 60.0,
+         "advice": "关注", "chip_low": True, "chip_quiet": False,
+         "price_pos": None, "trade_date": "2026-09-07",
+         "mystery": {"signal": {"年线滤网": True, "周线锚定": True,
+                                "破五反五": True, "主升浪信号": True}}},
+    ]
+    data = _scan_table_data(rows, key="scan")
+    cols = list(data[0].keys())
+    for c in ['年线滤网', '周线锚定', '破五反五', '主升浪', '筹码低位',
+              '高位缩量', '回撤%', '详情']:
+        assert c in cols, f"缺少列 {c}: {cols}"
+    # 判定值正确映射
+    assert data[0]['年线滤网'] == '❌' and data[0]['主升浪'] == '❌'
+    assert data[0]['周线锚定'] == '✅'
+    assert data[1]['年线滤网'] == '✅' and data[1]['主升浪'] == '✅'
+    assert data[1]['破五反五'] == '✅'
+    # 详情链接带 nav 参数
+    assert data[0]['详情'] == "?stock=600150.SH&nav_key=scan&nav_idx=0"
+
+
 def test_bg_store_persists_across_rerun():
     """后台任务仓库跨 rerun 持久（st.cache_resource，非模块级 dict）。"""
     from mystery.apps.web.app import _bg_store, _bg_lock, _bg_tasks, _bg_launch
