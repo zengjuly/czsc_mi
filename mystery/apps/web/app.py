@@ -175,9 +175,13 @@ def _render_bg_tasks():
 def _render_scan_table(rows: list, key: str = "scan"):
     """扫描结果表格（代码可点击进入详情）+ 加入自选。
     
-    「详情」列为超链接（?stock=<symbol>），点击直达个股分析页并自动分析。
+    「详情」列为超链接（?stock=<symbol>&nav_key=<key>&nav_idx=<i>），
+    点击直达个股分析页并自动分析；nav_key/nav_idx 用于恢复「上一只/下一只/返回列表」。
     """
     st.caption(f"共 {len(rows)} 只（按分降序）")
+    
+    # 存当前列表到 session，供详情页导航恢复（key 绑定渲染时列表）
+    st.session_state[f"{key}_nav_rows"] = rows
     
     # 构建表格数据
     table_data = []
@@ -193,7 +197,7 @@ def _render_scan_table(rows: list, key: str = "scan"):
             '回撤%': (None if row.get('price_pos') is None
                       else round(float(row['price_pos']) * 100, 1)),
             '日期': row.get('trade_date', ''),
-            '详情': f"?stock={row['symbol']}",
+            '详情': f"?stock={row['symbol']}&nav_key={key}&nav_idx={idx}",
         })
     
     # 显示表格
@@ -646,13 +650,29 @@ def view_watchlist_subpage():
 def view_stock():
     st.header("个股分析（输入名称或代码搜索，选中即分析）")
 
-    # URL query 直达（扫描结果表格「详情」链接 ?stock=600519.SH）
+    # URL query 直达（扫描结果表格「详情」链接 ?stock=600519.SH&nav_key=...&nav_idx=...）
     try:
         _qp = st.query_params
         if _qp.get('stock'):
             st.session_state['_pending_symbol'] = _qp.get('stock')
-            st.session_state['stock_nav_list'] = None
-            st.session_state['stock_nav_idx'] = None
+            # 恢复扫描列表导航上下文（无 nav_key 时为独立查看，清空导航）
+            nav_key = _qp.get('nav_key')
+            if nav_key:
+                nav_rows = st.session_state.get(f"{nav_key}_nav_rows")
+                if nav_rows:
+                    try:
+                        nav_idx = int(_qp.get('nav_idx') or 0)
+                    except (TypeError, ValueError):
+                        nav_idx = 0
+                    nav_idx = max(0, min(nav_idx, len(nav_rows) - 1))
+                    st.session_state['stock_nav_list'] = nav_rows
+                    st.session_state['stock_nav_idx'] = nav_idx
+                else:
+                    st.session_state['stock_nav_list'] = None
+                    st.session_state['stock_nav_idx'] = None
+            else:
+                st.session_state['stock_nav_list'] = None
+                st.session_state['stock_nav_idx'] = None
             st.query_params.clear()
     except Exception:
         pass

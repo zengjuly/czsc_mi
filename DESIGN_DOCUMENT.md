@@ -126,6 +126,9 @@ analyze_one_stock(symbol):
   W7 起扫描结果表/真三振池下方可「下载 Excel 报告」（汇总+每只个股详情，
   同 daily 格式；web 扫描落库缺明细，下载时按需补详情 `_enrich_scan_rows`，
   `excel_bytes` 生成 bytes 经 `st.download_button` 下载）。
+  W10 起扫描结果表「详情」列超链接带 `nav_key/nav_idx`（列表存 session
+  `<key>_nav_rows`），点击直达个股页并恢复「上一只/下一只/返回列表」导航；
+  无 `nav_key` 的直达链接（收藏/外部）不显示导航，保持独立查看。
 - verify：`python scripts/verify_unified_analysis.py` —— 个股/扫描/CLI 三路径
   score 差 ≤ 1 + 金标对比。
 
@@ -164,6 +167,7 @@ analyze_one_stock(symbol):
 | W8-fix2 | sync 写库 key 不一致导致数据永远"过期"：sync.py 用 `code if '.' in code` 原样保留内部格式 `600010.SH` 写库，而读取走 `db_code_of()=sh.600010` → 每次写入新行、读取看到旧行，新鲜度检查永远失败。改用 `db_code_of()` 统一；market.py 降级链加新鲜度择优（ths 落后参照日不再短路，继续尝试 tdx_api/tdx_local，fuyao 晚发布一天时自动取更新源）；清理历史脏格式行 | ✅ 0.9.4 |
 | W9 | 主升浪满足数量修正：checklist 统计含 `平台范围`(dict, truthy) 被误计 → 满足数量+1，改只统计 8 项布尔指标。财务数据链路：analyze 本地库缺 ROE 时走 fuyao 在线补齐（`valuations-snapshot` PE/PB + `financials-indicators` 扣非加权ROE/毛利率/净利率，最近已披露季度优先）并回填 `set_financial`，下次命中缓存；db.py 增 `set_financial` upsert | ✅ 0.9.5 |
 | W9-fix | 板块成分同步能力补齐（修复「板块钻取：创新药 ths_886015 暂无成分股」）：czsc_mi 缺写 `stock_sector_rel` 的入口（存量 9000+ 行系旧仓迁来，只覆盖 881/884 行业板块；388 个 ths_ 概念板块无成分）。新增 `ThsClient.fetch_constituents`（index-constituents，入参 ths_886015/886015/886015.TI 归一 → 886015.TI，fuyao 只认 .TI，重试 3 次 timeout=120）+ `MysteryDB.upsert_stock_sector_rel/upsert_sector_meta/ensure_sector_meta`（stock 归一 sh.600519、sector 归一 .TI；概念成分 is_primary=0 不覆盖主行业；ensure 不覆盖已有板块名）+ `sync_sector_constituents` 服务 + CLI `czsc-mi sector-sync --sector <code>`；web 钻取空成分提示给出确切同步命令。北交所 920xxx.BJ 被内部代码归一拒绝（仅 SH/SZ），跳过不中断。实测 886015 创新药 277 成分 → 268 落库，get_sector_stocks 可查；新增 5 个离线单测 | ✅ 0.9.6 |
+| W10 | 扫描结果「详情」超链接导航：链接带 `nav_key/nav_idx`，进入个股页恢复「上一只/下一只/返回列表」；列表存 session `<key>_nav_rows`，无 nav_key 的直达链接保持独立查看；新增 2 个 AppTest 回归（恢复导航/无导航） | ✅ 0.9.7 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。

@@ -76,6 +76,49 @@ def test_system_page_renders():
     assert any("最近扫描任务" in s.value for s in at.subheader)
 
 
+def test_scan_detail_link_restores_nav():
+    """从扫描结果「详情」链接进入个股页：恢复上一只/下一只/返回列表导航。
+
+    链接格式 ?stock=<sym>&nav_key=<key>&nav_idx=<i>；session 中对应
+    <key>_nav_rows 为渲染扫描表时存的列表。无 nav_key 时不显示导航。
+    """
+    at = _make()
+    rows = [
+        {"symbol": "600519.SH", "name": "贵州茅台"},
+        {"symbol": "000001.SZ", "name": "平安银行"},
+        {"symbol": "000100.SZ", "name": "TCL科技"},
+    ]
+    at.session_state["scan_nav_rows"] = rows
+    # 模拟点击「详情」链接（第 2 只，index 1）
+    at.query_params["stock"] = "000001.SZ"
+    at.query_params["nav_key"] = "scan"
+    at.query_params["nav_idx"] = "1"
+    at.run()
+    assert len(at.exception) == 0, [str(e) for e in at.exception]
+    labels = [b.label for b in at.button]
+    assert "← 上一只" in labels
+    assert "下一只 →" in labels
+    assert "返回列表" in labels
+    assert any("扫描结果 2 / 3" in c.value for c in at.caption)
+    # 第 1 只：上一只应禁用
+    at.session_state["stock_nav_idx"] = 0
+    at.run()
+    assert len(at.exception) == 0, [str(e) for e in at.exception]
+    prev = [b for b in at.button if b.label == "← 上一只"]
+    assert prev and prev[0].disabled
+
+
+def test_scan_detail_link_without_nav():
+    """无 nav_key 的直达链接（如收藏/外部链接）：不显示导航。"""
+    at = _make()
+    at.query_params["stock"] = "600519.SH"
+    at.run()
+    assert len(at.exception) == 0, [str(e) for e in at.exception]
+    labels = [b.label for b in at.button]
+    assert "← 上一只" not in labels
+    assert "返回列表" not in labels
+
+
 def test_bg_store_persists_across_rerun():
     """后台任务仓库跨 rerun 持久（st.cache_resource，非模块级 dict）。"""
     from mystery.apps.web.app import _bg_store, _bg_lock, _bg_tasks, _bg_launch
