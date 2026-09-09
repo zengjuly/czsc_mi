@@ -178,6 +178,7 @@ analyze_one_stock(symbol):
 | W10-fix2 | 扫描结果表「主升浪」列改为「主升浪8项」显示满足数量（来自 `checklist8.满足数量`，与 Excel/HTML/个股页口径一致） | ✅ 0.9.9 |
 | W10-fix3 | 扫描结果表「主升浪8项」改为纯数值 int（去掉 N/8 文本），便于表格过滤/排序；缺失显示空 | ✅ 0.9.10 |
 | W10-fix4 | 扫描结果「详情」导航列表从 session_state 改存进程级缓存 `mystery/apps/web/nav_cache.py`（LinkColumn 新标签页 = 全新 session 不共享 state；TTL 30 分钟，过期/未知 nav_key 退化为独立查看不报错） | ✅ 0.9.11 |
+| W11 | 定时管线去重与提速：①下线重复 crontab `daily_stock_report.sh`（与新 daily_feishu.sh 双管线 18:00 并发跑同一 SQLite，互相锁竞争致 86 只耗 100 分钟；xlsx 链接+git push 职责并入新管线）②`czsc-mi daily` 逐股串行改 `--workers`（默认 4）ThreadPoolExecutor 并发，DB 层已有 `_lock` 线程安全，实测稳态 21min→5min ③feishu_notify 补 xlsx GitHub raw 下载链接（quote 编码）④daily_pipeline 末尾 git push 报告 | ✅ 0.9.12 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。
