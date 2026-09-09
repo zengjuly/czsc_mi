@@ -74,16 +74,31 @@ def _cmd_daily(args: argparse.Namespace) -> int:
         return 1
     results = []
     failed = 0
-    for code in codes:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    max_workers = max(1, int(getattr(args, 'workers', 4) or 4))
+
+    def _one(code: str):
+        """单只分析（线程内）：返回 (dict, None) 或 (None, 错误串)。"""
         try:
             r = analyze_one_stock(code, include_detail=True, cfg=args.cfg)
-            d = r.to_dict()
-            if args.min_score is None or (d.get('score') is not None
-                                          and float(d['score']) >= args.min_score):
-                results.append(d)
+            return r.to_dict(), None
         except Exception as e:
-            failed += 1
-            print(f"[daily] {code} 分析失败跳过: {str(e)[:80]}", file=sys.stderr)
+            return None, f"{code} 分析失败跳过: {str(e)[:80]}"
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {ex.submit(_one, c): c for c in codes}
+        for done_n, fut in enumerate(as_completed(futs), 1):
+            d, err = fut.result()
+            if err:
+                failed += 1
+                print(f"[daily] {err}", file=sys.stderr)
+            elif d is not None and (args.min_score is None
+                                    or (d.get('score') is not None
+                                        and float(d['score']) >= args.min_score)):
+                results.append(d)
+            if done_n % 20 == 0 or done_n == len(codes):
+                print(f"[daily] 进度 {done_n}/{len(codes)}（workers={max_workers}）",
+                      flush=True)
     if not results:
         print("全部失败或低于最低分，未生成报告")
         return 1
@@ -184,6 +199,8 @@ def main(argv: Optional[list] = None) -> int:
     p = sub.add_parser("daily", help="日报：AnalysisResult → Excel/HTML 落盘")
     p.add_argument("--watchlist", action="store_true",
                    help="读自选股 data/watchlist.json（默认）")
+    p.add_argument("--workers", type=int, default=4,
+                   help="并发分析线程数（默认 4）")
     p.add_argument("--symbols", nargs="*", default=None, help="临时指定代码")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--min-score", type=float, default=None)

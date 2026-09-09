@@ -91,12 +91,15 @@ def _build_ok_message() -> str:
             nm = _name(payload)
             lines.append(f"  · {sym} {nm} 分={score}")
 
-    # 最新日报文件（xlsx/html 任取其一）
+    # 最新日报 xlsx → GitHub raw 链接（可点击下载；与旧 daily_stock_report.sh 口径一致）
     try:
+        from urllib.parse import quote
         files = sorted(Path(_report_dir()).glob("每日股票分析报告_*.xlsx"),
                        key=lambda p: p.stat().st_mtime, reverse=True)
         if files:
-            lines.append(f"📁 报告：{files[0]}")
+            url = ("https://raw.githubusercontent.com/zengjuly/misteryresult/main/"
+                   + quote(files[0].name))
+            lines.append(f"📥 xlsx 报告下载: {url}")
     except Exception:
         pass
     return "\n".join(lines)

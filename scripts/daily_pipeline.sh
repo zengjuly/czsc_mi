@@ -34,3 +34,10 @@ if [ "${RUN_MARKET_SCAN:-0}" = "1" ]; then
 fi
 
 echo "[daily_pipeline] ✅ 完成"
+
+# 报告入 git（xlsx 经 GitHub raw 链接发给用户；失败不阻塞主流程）
+REPORT_GIT_DIR="${MYSTERY_REPORT_DIR:-/home/ai/ai_runner/stock/output}"
+git -C "${REPORT_GIT_DIR}" add -A 2>/dev/null || true
+git -C "${REPORT_GIT_DIR}" commit -m "daily report $(date +%Y%m%d)" 2>/dev/null || true
+git -C "${REPORT_GIT_DIR}" push origin main 2>/dev/null \
+  || echo "[daily_pipeline] ⚠️ git push 失败（报告仍在本地 ${REPORT_GIT_DIR}）"
