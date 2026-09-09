@@ -79,19 +79,20 @@ def test_system_page_renders():
 def test_scan_detail_link_restores_nav():
     """从扫描结果「详情」链接进入个股页：恢复上一只/下一只/返回列表导航。
 
-    链接格式 ?stock=<sym>&nav_key=<key>&nav_idx=<i>；session 中对应
-    <key>_nav_rows 为渲染扫描表时存的列表。无 nav_key 时不显示导航。
+    链接格式 ?stock=<sym>&nav_key=<key>&nav_idx=<i>；nav_key 为进程级导航缓存
+    （_nav_cache_put 生成）的 key，供 LinkColumn 新标签页（全新 session）恢复列表。
     """
+    from mystery.apps.web.app import _nav_cache_put
     at = _make()
     rows = [
         {"symbol": "600519.SH", "name": "贵州茅台"},
         {"symbol": "000001.SZ", "name": "平安银行"},
         {"symbol": "000100.SZ", "name": "TCL科技"},
     ]
-    at.session_state["scan_nav_rows"] = rows
-    # 模拟点击「详情」链接（第 2 只，index 1）
+    nav_key = _nav_cache_put(rows)  # 模拟扫描表渲染时存入进程级缓存
+    # 模拟点击「详情」链接（第 2 只，index 1）——新标签页全新 session
     at.query_params["stock"] = "000001.SZ"
-    at.query_params["nav_key"] = "scan"
+    at.query_params["nav_key"] = nav_key
     at.query_params["nav_idx"] = "1"
     at.run()
     assert len(at.exception) == 0, [str(e) for e in at.exception]
@@ -149,7 +150,7 @@ def test_scan_table_shows_signal_flags():
                                 "破五反五": True},
                      "checklist8": {"满足数量": 8}}},
     ]
-    data = _scan_table_data(rows, key="scan")
+    data = _scan_table_data(rows, nav_key="scan")
     cols = list(data[0].keys())
     for c in ['年线滤网', '周线锚定', '破五反五', '主升浪8项', '筹码低位',
               '高位缩量', '回撤%', '详情']:
@@ -159,7 +160,7 @@ def test_scan_table_shows_signal_flags():
     assert data[0]['主升浪8项'] == 4
     assert data[1]['年线滤网'] == '✅' and data[1]['破五反五'] == '✅'
     assert data[1]['主升浪8项'] == 8
-    # 详情链接带 nav 参数
+    # 详情链接带 nav 参数（nav_key 为进程缓存 key）
     assert data[0]['详情'] == "?stock=600150.SH&nav_key=scan&nav_idx=0"
 
 

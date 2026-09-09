@@ -126,9 +126,11 @@ analyze_one_stock(symbol):
   W7 起扫描结果表/真三振池下方可「下载 Excel 报告」（汇总+每只个股详情，
   同 daily 格式；web 扫描落库缺明细，下载时按需补详情 `_enrich_scan_rows`，
   `excel_bytes` 生成 bytes 经 `st.download_button` 下载）。
-  W10 起扫描结果表「详情」列超链接带 `nav_key/nav_idx`（列表存 session
-  `<key>_nav_rows`），点击直达个股页并恢复「上一只/下一只/返回列表」导航；
-  无 `nav_key` 的直达链接（收藏/外部）不显示导航，保持独立查看。
+  W10 起扫描结果表「详情」列超链接带 `nav_key/nav_idx`，点击直达个股页并
+  恢复「上一只/下一只/返回列表」导航；W10-fix4 起导航列表存进程级缓存
+  `mystery/apps/web/nav_cache.py`（LinkColumn 新标签页 = 全新 session，
+  session_state 不共享，必须进程级共享；TTL 30 分钟，nav_key 过期/未知时
+  退化为独立查看不报错）；无 `nav_key` 的直达链接（收藏/外部）不显示导航。
   W10-fix 起扫描结果表增加判定列：年线滤网/周线锚定/破五反五/主升浪8项
   （年线滤网等来自 `mystery.signal`；主升浪8项来自 `checklist8.满足数量`，显示
   纯数值 int 便于表格过滤/排序；只展示不改判；表格数据构建抽为纯函数
@@ -175,6 +177,7 @@ analyze_one_stock(symbol):
 | W10-fix | 扫描结果表增加判定列：年线滤网/周线锚定/破五反五/主升浪8项（年线滤网等来自 `mystery.signal`，主升浪8项来自 `checklist8.满足数量` 显示 N/8；只展示不改判；表格数据构建抽纯函数 `_scan_table_data`，渲染与计算分离） | ✅ 0.9.8 |
 | W10-fix2 | 扫描结果表「主升浪」列改为「主升浪8项」显示满足数量（来自 `checklist8.满足数量`，与 Excel/HTML/个股页口径一致） | ✅ 0.9.9 |
 | W10-fix3 | 扫描结果表「主升浪8项」改为纯数值 int（去掉 N/8 文本），便于表格过滤/排序；缺失显示空 | ✅ 0.9.10 |
+| W10-fix4 | 扫描结果「详情」导航列表从 session_state 改存进程级缓存 `mystery/apps/web/nav_cache.py`（LinkColumn 新标签页 = 全新 session 不共享 state；TTL 30 分钟，过期/未知 nav_key 退化为独立查看不报错） | ✅ 0.9.11 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。

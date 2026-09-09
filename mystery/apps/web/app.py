@@ -22,6 +22,10 @@ st.set_page_config(page_title="Mistery 趋势交易分析", layout="wide")
 
 logger = logging.getLogger(__name__)
 
+from mystery.apps.web.nav_cache import (nav_cache_get as _nav_cache_get,
+                                        nav_cache_put as _nav_cache_put,
+                                        nav_cache_clear as _nav_cache_clear)  # noqa: E402
+
 from mystery.adapters.codes import normalize_symbol  # noqa: E402
 from mystery.apps.reports.excel_report import excel_bytes  # noqa: E402
 from mystery.config import load_config, output_dir  # noqa: E402
@@ -196,11 +200,13 @@ def _main_wave_count(row: dict):
         return None
 
 
-def _scan_table_data(rows: list, key: str = "scan") -> list:
+def _scan_table_data(rows: list, nav_key: str = "") -> list:
     """扫描结果表格数据（纯函数，渲染与计算分离）。
 
     判定列：年线滤网/周线锚定/破五反五 来自 mystery.signal；
     主升浪8项 来自 checklist8.满足数量（只展示不改判）。
+    nav_key 为进程级导航缓存 key（_render_scan_table 生成），
+    链接用 ?stock=..&nav_key=..&nav_idx=.. 供新标签页恢复导航。
     """
     table_data = []
     for idx, row in enumerate(rows):
@@ -219,7 +225,7 @@ def _scan_table_data(rows: list, key: str = "scan") -> list:
             '回撤%': (None if row.get('price_pos') is None
                       else round(float(row['price_pos']) * 100, 1)),
             '日期': row.get('trade_date', ''),
-            '详情': f"?stock={row['symbol']}&nav_key={key}&nav_idx={idx}",
+            '详情': f"?stock={row['symbol']}&nav_key={nav_key}&nav_idx={idx}",
         })
     return table_data
 
@@ -227,16 +233,18 @@ def _scan_table_data(rows: list, key: str = "scan") -> list:
 def _render_scan_table(rows: list, key: str = "scan"):
     """扫描结果表格（代码可点击进入详情）+ 加入自选。
     
-    「详情」列为超链接（?stock=<symbol>&nav_key=<key>&nav_idx=<i>），
-    点击直达个股分析页并自动分析；nav_key/nav_idx 用于恢复「上一只/下一只/返回列表」。
+    「详情」列为超链接（?stock=<symbol>&nav_key=<nav_key>&nav_idx=<i>）；
+    LinkColumn 默认新标签页打开（全新 session，session_state 不共享），
+    因此导航列表存进程级缓存 _nav_cache_store（cache_resource 跨会话保留），
+    nav_key 为该缓存的随机 key，进入详情页按 nav_key 恢复导航。
     """
     st.caption(f"共 {len(rows)} 只（按分降序）")
     
-    # 存当前列表到 session，供详情页导航恢复（key 绑定渲染时列表）
-    st.session_state[f"{key}_nav_rows"] = rows
+    # 存当前列表到进程级缓存（跨标签页/会话），供详情页恢复导航
+    nav_key = _nav_cache_put(rows)
     
     # 构建表格数据
-    table_data = _scan_table_data(rows, key=key)
+    table_data = _scan_table_data(rows, nav_key=nav_key)
     
     # 显示表格
     df = st.dataframe(
@@ -278,7 +286,7 @@ def _render_scan_table(rows: list, key: str = "scan"):
                 key=f"{key}_show_code"
             )
     
-    # 查看详情按钮
+    # 查看详情按钮（同一 session 内跳转，直接恢复导航上下文）
     if st.button("查看该股票详情", key=f"{key}_view_detail"):
         if selected_idx and 1 <= selected_idx <= len(rows):
             selected_row = rows[selected_idx - 1]
@@ -286,7 +294,7 @@ def _render_scan_table(rows: list, key: str = "scan"):
             st.session_state['stock_nav_list'] = rows
             st.session_state['stock_nav_idx'] = selected_idx - 1
             st.session_state['_pending_symbol'] = selected_row['symbol']
-            st.session_state['page'] = '个股分析'
+            st.session_state['_jump_to_page'] = '个股分析'
             st.rerun()
     
     _render_excel_download(rows, key=key)
@@ -696,7 +704,7 @@ def view_stock():
             # 恢复扫描列表导航上下文（无 nav_key 时为独立查看，清空导航）
             nav_key = _qp.get('nav_key')
             if nav_key:
-                nav_rows = st.session_state.get(f"{nav_key}_nav_rows")
+                nav_rows = _nav_cache_get(nav_key)
                 if nav_rows:
                     try:
                         nav_idx = int(_qp.get('nav_idx') or 0)
