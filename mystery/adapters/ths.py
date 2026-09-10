@@ -174,6 +174,37 @@ class ThsClient:
                    end: Optional[str] = None) -> Optional[pd.DataFrame]:
         return self.get_daily(symbol, start, end)
 
+    def get_index_daily(self, symbol: str, start: Optional[str] = None,
+                        end: Optional[str] = None,
+                        days: int = 1100) -> Optional[pd.DataFrame]:
+        """指数日K（fuyao index-historical，W12）。
+
+        get_daily 走 prices-historical 对指数代码返回空（fuyao 指数与
+        个股是两个接口），fetch_index 的 ths 分支每天逐票白等后降级。
+        """
+        ths_code = self._to_ths_code(symbol)
+        end_dt = pd.to_datetime(end) if end else datetime.now()
+        start_dt = pd.to_datetime(start) if start else end_dt - timedelta(days=days)
+        raw = self._run_fuyao(['index-historical', '--thscode', ths_code,
+                               '--start-ms', str(int(start_dt.timestamp() * 1000)),
+                               '--end-ms', str(int(end_dt.timestamp() * 1000)),
+                               '--interval', '1d'])
+        if not raw:
+            return pd.DataFrame()
+        df = pd.DataFrame(raw)
+        if df.empty or 'date_ms' not in df.columns:
+            return pd.DataFrame()
+        out = pd.DataFrame()
+        out['日期'] = pd.to_datetime(df['date_ms'], unit='ms')
+        out['开盘价'] = df.get('open_price', 0).astype(float)
+        out['最高价'] = df.get('high_price', 0).astype(float)
+        out['最低价'] = df.get('low_price', 0).astype(float)
+        out['收盘价'] = df.get('close_price', 0).astype(float)
+        out['成交量'] = df.get('volume', 0).astype(float)
+        out['成交额'] = df.get('turnover', 0).astype(float)
+        out['换手率'] = None
+        return out.sort_values('日期').reset_index(drop=True)
+
     def get_financial(self, symbol: str) -> Dict:
         """估值快照（valuations-snapshot，PE/PB/PS）。失败返回空。"""
         ths_code = self._to_ths_code(symbol)

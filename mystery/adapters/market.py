@@ -54,6 +54,11 @@ class MarketDataClient:
         # 全源皆空负缓存（30min）：不存在的票/停牌无数据票，同进程不重复探测
         self._empty_cache: Dict[str, float] = {}
         self._EMPTY_TTL = 1800
+        # 指数会话级缓存（W12）：daily/扫描 86 只逐股调 build_market_context，
+        # 每次都完整走 fetch_index 降级链 ~1.3s；同进程共享一次结果。
+        # 线程安全：daily 用 ThreadPoolExecutor 并发调 fetch_bars。
+        self._index_cache: Dict[str, BarSeries] = {}
+        self._index_lock = threading.Lock()
 
     # ---------------- 主入口 ----------------
     def fetch_bars(self, symbol: str, freq: str = "1d",
@@ -259,9 +264,25 @@ class MarketDataClient:
     def fetch_index(self, code: str, freq: str = "1d",
                     start: Optional[str] = None,
                     end: Optional[str] = None) -> BarSeries:
-        """指数：DB 优先（允许 3 天滞后）→ ths → tdx_local。"""
+        """指数：会话级缓存（W12）→ DB 优先（允许 3 天滞后）→ ths → tdx_local。"""
         internal = _codes.normalize_symbol(code)
         freq = _codes.normalize_freq(freq)
+        # 会话级缓存：daily 逐股分析共用同一指数序列，只走一次降级链。
+        # 仅在无 start/end 切片时缓存（切片请求语义不同，不适用共享）。
+        if start is None and end is None:
+            with self._index_lock:
+                cached = self._index_cache.get(f"{internal}::{freq}")
+            if cached is not None:
+                return cached
+        series = self._fetch_index_uncached(internal, freq, start, end)
+        if start is None and end is None and series.bars:
+            with self._index_lock:
+                self._index_cache[f"{internal}::{freq}"] = series
+        return series
+
+    def _fetch_index_uncached(self, internal: str, freq: str,
+                              start: Optional[str],
+                              end: Optional[str]) -> BarSeries:
         if freq != '1d':
             daily = self.fetch_index(internal, '1d', start, end)
             if not daily.bars:
@@ -288,7 +309,9 @@ class MarketDataClient:
                 return _df_to_series(to_cn_columns(df), internal, freq,
                                      self.adjust, source)
         try:
-            raw = self.ths.get_daily(internal, start, end)
+            # W12: 指数走 index-historical 专用接口（prices-historical 对
+            # 指数代码返回空，曾每天逐票白等 0.8s 后降级 tdx_local）
+            raw = self.ths.get_index_daily(internal, start, end)
             if raw is not None and not raw.empty:
                 # 指数也落库（含 resample 用的日K基底），后续直接命中本地
                 self._cache_online_bars(internal, raw, 'ths_official')

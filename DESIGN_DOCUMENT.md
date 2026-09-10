@@ -179,6 +179,7 @@ analyze_one_stock(symbol):
 | W10-fix3 | 扫描结果表「主升浪8项」改为纯数值 int（去掉 N/8 文本），便于表格过滤/排序；缺失显示空 | ✅ 0.9.10 |
 | W10-fix4 | 扫描结果「详情」导航列表从 session_state 改存进程级缓存 `mystery/apps/web/nav_cache.py`（LinkColumn 新标签页 = 全新 session 不共享 state；TTL 30 分钟，过期/未知 nav_key 退化为独立查看不报错） | ✅ 0.9.11 |
 | W11 | 定时管线去重与提速：①下线重复 crontab `daily_stock_report.sh`（与新 daily_feishu.sh 双管线 18:00 并发跑同一 SQLite，互相锁竞争致 86 只耗 100 分钟；xlsx 链接+git push 职责并入新管线）②`czsc-mi daily` 逐股串行改 `--workers`（默认 4）ThreadPoolExecutor 并发，DB 层已有 `_lock` 线程安全，实测稳态 21min→5min ③feishu_notify 补 xlsx GitHub raw 下载链接（quote 编码）④daily_pipeline 末尾 git push 报告 | ✅ 0.9.12 |
+| W12 | 18:00 管线提速（62min→约13min，冷场景实测）：①`_batch_presync_from_duckdb` 增量化——旧实现 5222 只逐股全历史拉取+全行 upsert 写 4.2GB SQLite（约50分钟黑盒，日志不可见），改为「DuckDB 一次 GROUP BY 全市场 MAX(date) 预筛 → 只对非最新票查增量行 `date > cache_last` → 只 upsert 增量行」，冷场景实测 10.6min，并加 INFO 耗时日志（写入只数/检查数/耗时）②修 `MysteryDB.get_financial` 永远返回空的 bug——`report_date`（'2026-2' 字符串）被塞进 `float()` 抛 ValueError 被 except 吞掉，86 只自选每天逐股 2 次在线补财务；修复后本地 ROE 直接命中（600938 roe=10.2 验证）③`fetch_index` 会话级缓存（`_index_cache`+锁，仅无 start/end 切片时）——daily 86 只逐股 build_market_context 共享一次指数获取；④`fetch_index` ths 分支改调新增 `ThsClient.get_index_daily`（fuyao `index-historical` 专用接口）——旧调 `get_daily`（prices-historical）对指数代码返回空，每天逐票白等 0.8s 后降级 tdx_local（指数停在 09-04 旧数据）；修复后 source=ths_official 且指数数据更新到最新交易日 | ✅ 0.9.13 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。

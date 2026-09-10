@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Dict, List, Optional
 
 from .analyze import AnalysisService
@@ -78,6 +79,7 @@ def _batch_presync_from_duckdb(svc: AnalysisService, codes: List[str]) -> int:
         return 0
 
     logger.info(f"[sync] 批量预同步：DuckDB → SQLite（阈值 {latest}）")
+    t_presync = time.time()
 
     synced = 0
     duck_conn = None
@@ -88,8 +90,24 @@ def _batch_presync_from_duckdb(svc: AnalysisService, codes: List[str]) -> int:
         logger.debug(f"[sync] DuckDB 连接失败: {str(e)[:60]}")
         return 0
 
+    # W12 增量化：只取 date > cache_last 的增量行。旧实现全历史拉取+
+    # 全行 upsert，5200 只逐股写 4.2GB SQLite，是 18:00 管线 50+ 分钟
+    # 黑盒耗时的主因。
+    # 逐股查 DuckDB 一次 ~0.14s × 5222 只 ≈ 12 分钟仍太慢：
+    # 先一次性取每票 MAX(date)（DuckDB 内聚合，秒级），再只对"需要增量"
+    # 的票做逐股查询——已最新的票 0 次查询。
+    try:
+        all_last = duck_conn.execute(
+            "SELECT thscode, MAX(date) FROM v_daily_qfq GROUP BY thscode"
+        ).fetchall()
+        duck_last = {str(r[0]): str(r[1])[:10] for r in all_last}
+    except Exception as e:
+        logger.warning(f"[sync] DuckDB 全市场 MAX(date) 查询失败: {str(e)[:80]}")
+        duck_last = {}
+
     sql = ("SELECT date, open, high, low, close, volume, turnover "
-           "FROM v_daily_qfq WHERE thscode = ? ORDER BY date ASC")
+           "FROM v_daily_qfq WHERE thscode = ? AND date > ? ORDER BY date ASC")
+    n_checked = 0
     for code in codes:
         if is_bj_stock(code):
             continue
@@ -103,17 +121,20 @@ def _batch_presync_from_duckdb(svc: AnalysisService, codes: List[str]) -> int:
             if cache_last and cache_last >= latest:
                 continue  # SQLite 已是最新，跳过
         except Exception:
-            pass
+            cache_last = None
 
-        # 从 DuckDB 读取
+        # DuckDB 里没有该票或也不新鲜 → 跳过（后续 fetch_bars 走在线）
+        d_last = duck_last.get(ths_code)
+        if not d_last or d_last < latest:
+            continue
+        n_checked += 1
+
+        # 从 DuckDB 读取增量行
         try:
-            df = duck_conn.execute(sql, [ths_code]).fetchdf()
+            df = duck_conn.execute(sql, [ths_code, cache_last or '1900-01-01']).fetchdf()
             if df is None or df.empty:
                 continue
-            df_last = str(df['date'].max())[:10]
-            if df_last < latest:
-                continue  # DuckDB 也落后，跳过（让后续走在线）
-            # 写入 SQLite
+            # 写入 SQLite（只写增量行）
             db.upsert_kline(df, db_code, 'daily')
             synced += 1
         except Exception as e:
@@ -124,8 +145,8 @@ def _batch_presync_from_duckdb(svc: AnalysisService, codes: List[str]) -> int:
     except Exception:
         pass
 
-    if synced > 0:
-        logger.info(f"[sync] 批量预同步完成：{synced} 只股票已写入 SQLite")
+    logger.info(f"[sync] 批量预同步完成：{synced} 只写入（检查 {n_checked} 只非最新，"
+                f"总 {len(codes)} 只），耗时 {time.time() - t_presync:.1f}s")
     return synced
 
 

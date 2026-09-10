@@ -363,10 +363,15 @@ class MysteryDB:
                         "ORDER BY report_date DESC LIMIT 1", (db_code,)).fetchone()
                     if not row:
                         return {}
-                    cols = ['report_date', 'roe', 'roe_avg', 'np_margin', 'gp_margin',
-                            'net_profit', 'eps_ttm', 'PB', 'PE', 'divid_cash']
-                    return {k: (float(v) if v is not None else None)
-                            for k, v in zip(cols, row)}
+                    # report_date 是 'YYYY-Q'/'YYYY-MM-DD' 字符串，绝不能 float()——
+                    # float('2026-2') 抛 ValueError 曾让本函数整体 except 返回 {}，
+                    # 86 只自选每天逐股在线补财务（W12）。
+                    fin = {'report_date': row[0]}
+                    for k, v in zip(['roe', 'roe_avg', 'np_margin', 'gp_margin',
+                                     'net_profit', 'eps_ttm', 'PB', 'PE',
+                                     'divid_cash'], row[1:]):
+                        fin[k] = float(v) if v is not None else None
+                    return fin
                 finally:
                     conn.close()
         except Exception:
