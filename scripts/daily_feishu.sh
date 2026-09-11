@@ -20,6 +20,14 @@ LOG_DIR="${HOME}/.local/state/czsc_mi"
 LOG="${LOG_DIR}/daily.log"
 mkdir -p "${LOG_DIR}"
 
+# 按日归档：日志文件不含今天的「开始」记录时整体归档（同日重跑直接 append）
+if [ -s "${LOG}" ]; then
+  last_date="$(grep -oE '^===== [0-9]{4}-[0-9]{2}-[0-9]{2}' "${LOG}" | tail -1 | awk '{print $2}')"
+  if [ -n "${last_date}" ] && [ "${last_date}" != "$(date '+%F')" ]; then
+    mv "${LOG}" "${LOG_DIR}/daily_${last_date}.log"
+  fi
+fi
+
 export VENV="${VENV:-/home/ai/ai_runner/venv}"
 export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-/home/ai/ai_runner/stock/data/db/mystery_cache.db}"
 export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
