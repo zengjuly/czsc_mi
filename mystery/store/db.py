@@ -140,6 +140,43 @@ class MysteryDB:
             finally:
                 conn.close()
 
+    def upsert_kline_many(self, df: pd.DataFrame, period: str = 'daily',
+                          code_col: str = 'thscode') -> None:
+        """批量 upsert 多票行情（W12b：单大事务 executemany）。
+
+        预同步 5200 只逐票调 upsert_kline = 5200 个事务（实测 7.9s）；
+        合并成单事务 executemany 实测 0.05s。df 需含 code_col 列 +
+        中文列（日期/开盘价/...）。全失败或全成功（单事务）。
+        """
+        rows = to_cn_columns(df) if 'date' in df.columns else df.copy()
+        code_series = rows[code_col] if code_col in rows.columns \
+            else rows['代码']
+        data = [
+            (str(code), str(r.get('日期')), period,
+             _f(r.get('开盘价')), _f(r.get('最高价')), _f(r.get('最低价')),
+             _f(r.get('收盘价')), _f(r.get('成交量')), _f(r.get('成交额')),
+             _f(r.get('换手率')), _f(r.get('涨跌幅')))
+            for code, (_, r) in zip(code_series, rows.iterrows())
+        ]
+        if not data:
+            return
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.executemany(
+                    "INSERT INTO stock_kline_data "
+                    "(code, date, period, open, high, low, close, volume, "
+                    "amount, turn, pctChg) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(code, date, period) DO UPDATE SET "
+                    "open=excluded.open, high=excluded.high, low=excluded.low, "
+                    "close=excluded.close, volume=excluded.volume, "
+                    "amount=excluded.amount, "
+                    "turn=COALESCE(excluded.turn, turn), "
+                    "pctChg=COALESCE(excluded.pctChg, pctChg)", data)
+                conn.commit()
+            finally:
+                conn.close()
+
     # ---------------- 股票/板块 ----------------
     def get_stock_list(self, stock_only: bool = True) -> List[Dict]:
         """证券列表 [{code, name}]，code 形如 sh.600519。"""

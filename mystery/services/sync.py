@@ -16,6 +16,8 @@ import os
 import time
 from typing import Dict, List, Optional
 
+import pandas as pd
+
 from .analyze import AnalysisService
 
 logger = logging.getLogger(__name__)
@@ -93,52 +95,52 @@ def _batch_presync_from_duckdb(svc: AnalysisService, codes: List[str]) -> int:
     # W12 增量化：只取 date > cache_last 的增量行。旧实现全历史拉取+
     # 全行 upsert，5200 只逐股写 4.2GB SQLite，是 18:00 管线 50+ 分钟
     # 黑盒耗时的主因。
-    # 逐股查 DuckDB 一次 ~0.14s × 5222 只 ≈ 12 分钟仍太慢：
-    # 先一次性取每票 MAX(date)（DuckDB 内聚合，秒级），再只对"需要增量"
-    # 的票做逐股查询——已最新的票 0 次查询。
-    try:
-        all_last = duck_conn.execute(
-            "SELECT thscode, MAX(date) FROM v_daily_qfq GROUP BY thscode"
-        ).fetchall()
-        duck_last = {str(r[0]): str(r[1])[:10] for r in all_last}
-    except Exception as e:
-        logger.warning(f"[sync] DuckDB 全市场 MAX(date) 查询失败: {str(e)[:80]}")
-        duck_last = {}
-
-    sql = ("SELECT date, open, high, low, close, volume, turnover "
-           "FROM v_daily_qfq WHERE thscode = ? AND date > ? ORDER BY date ASC")
+    # W12b：逐股查 DuckDB 49ms×5200 ≈ 4 分钟也是大头，改为一次全市场
+    # 增量查询（WHERE date > 全局基准）+ pandas 分组写入；SQLite 写入
+    # 从每票一事务改为 upsert_kline_many 单大事务 executemany。
     n_checked = 0
+    per_code_last: Dict[str, Optional[str]] = {}
     for code in codes:
         if is_bj_stock(code):
             continue
-
         db_code = db_code_of(code)
         ths_code = normalize_symbol(code)
-
-        # 检查 SQLite 是否已是最新（MAX(date)，不整表加载）
         try:
             cache_last = db.kline_last_date(db_code, 'daily')
             if cache_last and cache_last >= latest:
                 continue  # SQLite 已是最新，跳过
         except Exception:
             cache_last = None
+        per_code_last[ths_code] = cache_last
+    n_checked = len(per_code_last)
 
-        # DuckDB 里没有该票或也不新鲜 → 跳过（后续 fetch_bars 走在线）
-        d_last = duck_last.get(ths_code)
-        if not d_last or d_last < latest:
-            continue
-        n_checked += 1
-
-        # 从 DuckDB 读取增量行
+    synced = 0
+    if per_code_last:
+        min_last = min((v or '1900-01-01') for v in per_code_last.values())
         try:
-            df = duck_conn.execute(sql, [ths_code, cache_last or '1900-01-01']).fetchdf()
-            if df is None or df.empty:
-                continue
-            # 写入 SQLite（只写增量行）
-            db.upsert_kline(df, db_code, 'daily')
-            synced += 1
+            duck_df = duck_conn.execute(
+                "SELECT thscode, date, open, high, low, close, volume, turnover "
+                "FROM v_daily_qfq WHERE date > ? ORDER BY thscode, date ASC",
+                [min_last]).fetchdf()
         except Exception as e:
-            logger.debug(f"[sync] {code} DuckDB 读取失败: {str(e)[:60]}")
+            logger.warning(f"[sync] DuckDB 全市场增量查询失败: {str(e)[:80]}")
+            duck_df = None
+
+        if duck_df is not None and not duck_df.empty:
+            # 按每票 cache_last 过滤出各自增量（min_last 之上部分票只差
+            # 1 天、部分差更多——各取各的），且只保留本次同步清单内的票
+            parts = []
+            for ths_code, g in duck_df.groupby('thscode'):
+                cache_last = per_code_last.get(str(ths_code))
+                if cache_last is None:
+                    continue  # 不在同步清单（DuckDB 多出的票）
+                parts.append(g[g['date'] > (cache_last or '1900-01-01')])
+            inc = pd.concat(parts, ignore_index=True) if parts \
+                else duck_df.iloc[0:0]
+            if not inc.empty:
+                # 单大事务批量写入（upsert_kline_many 内部 executemany）
+                db.upsert_kline_many(inc, 'daily', code_col='thscode')
+                synced = int(inc['thscode'].nunique())
 
     try:
         duck_conn.close()
