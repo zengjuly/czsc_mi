@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 from typing import Any, Dict, List
 
 from openpyxl.worksheet.hyperlink import Hyperlink
@@ -164,9 +165,12 @@ def _detail_rows(d: Dict[str, Any]) -> List[List[Any]]:
 
 
 def _sheet_name(d: Dict[str, Any]) -> str:
+    """个股 sheet 名：`个股{名称}_{代码}`，清洗 Excel 非法字符（W13-fix：
+    ST 股名含 `*` 等字符会导致 openpyxl 抛 Invalid character，全市场扫描
+    5562 只生成失败降级汇总版）。"""
     name = str(d.get("name", "") or "未知")
     code = str(d.get("symbol", "")).replace(".", "")
-    s = f"个股{name}_{code}"
+    s = re.sub(r"[\[\]:*?/\\\\]", "_", f"个股{name}_{code}")
     return s[:31]
 
 
