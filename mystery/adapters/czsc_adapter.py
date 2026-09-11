@@ -30,10 +30,15 @@ def czsc_version() -> str:
 
 
 def _to_df(series: BarSeries) -> pd.DataFrame:
-    """BarSeries → czsc 标准 DataFrame（symbol/dt/open/high/low/close/vol/amount）。"""
-    rows = [{"symbol": series.symbol, "dt": pd.to_datetime(b.dt), "open": b.open,
+    """BarSeries → czsc 标准 DataFrame（symbol/dt/open/high/low/close/vol/amount）。
+
+    W13：dt 批量一次 to_datetime（逐根 pd.to_datetime 约 250 次/票、占单票
+    分析 40%+ 耗时；列表一次性转换走 C 向量化，秒级→毫秒级）。
+    """
+    dts = pd.to_datetime([b.dt for b in series.bars])
+    rows = [{"symbol": series.symbol, "dt": dts[i], "open": b.open,
              "high": b.high, "low": b.low, "close": b.close, "vol": b.volume,
-             "amount": b.amount} for b in series.bars]
+             "amount": b.amount} for i, b in enumerate(series.bars)]
     return pd.DataFrame(rows)
 
 

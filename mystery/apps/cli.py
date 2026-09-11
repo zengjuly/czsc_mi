@@ -59,7 +59,7 @@ def _cmd_daily(args: argparse.Namespace) -> int:
     from ..apps.reports.excel_report import write_excel
     from ..apps.reports.html_report import write_html
     from ..services import watchlist as _wl
-    from ..services.analyze import analyze_one_stock
+    from ..services.analyze import AnalysisService
 
     if args.watchlist:
         codes = _wl.load_watchlist()
@@ -77,10 +77,15 @@ def _cmd_daily(args: argparse.Namespace) -> int:
     from concurrent.futures import ThreadPoolExecutor, as_completed
     max_workers = max(1, int(getattr(args, 'workers', 4) or 4))
 
+    # W13: 共享 AnalysisService 实例（模块级 analyze_one_stock 每只 new service，
+    # 重复初始化 SQLite 连接/指数/日历缓存，4 线程实测慢 3 倍+，
+    # 是 daily 86 只 6.5min 的根因之一；实例方法共享缓存且线程安全）
+    svc = AnalysisService(args.cfg)
+
     def _one(code: str):
-        """单只分析（线程内）：返回 (dict, None) 或 (None, 错误串)。"""
+        """单只分析（线程内，共享 svc）：返回 (dict, None) 或 (None, 错误串)。"""
         try:
-            r = analyze_one_stock(code, include_detail=True, cfg=args.cfg)
+            r = svc.analyze_one_stock(code, include_detail=True)
             return r.to_dict(), None
         except Exception as e:
             return None, f"{code} 分析失败跳过: {str(e)[:80]}"
