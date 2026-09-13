@@ -70,16 +70,29 @@ class MarketDataClient:
         # 周/月：日 K 重采样（一期统一口径，与旧仓 prefer_resample=true 一致）
         if freq != '1d':
             daily = self.fetch_bars(internal, '1d', start, end)
-            if not daily.bars:
-                return BarSeries(symbol=internal, freq=freq, adjust=self.adjust, source='')
-            df = resample(self.to_df(daily), freq)
-            return _df_to_series(df, internal, freq, self.adjust,
-                                 f"{daily.source}:resample")
+            return self.resample_bars(daily, freq)
         df, source = self._fetch_daily(internal, start, end)
         if df is None or df.empty:
             return BarSeries(symbol=internal, freq=freq, adjust=self.adjust, source='')
         df = _slice(df, start, end)
         return _df_to_series(df, internal, freq, self.adjust, source)
+
+    def resample_bars(self, daily: "BarSeries", freq: str) -> "BarSeries":
+        """由日 K BarSeries 直接重采样出周/月 BarSeries（不重复读库）。
+
+        analyze_one_stock 已取日 K，周/月从同一份数据派生，省一次全量读库
+        + 重采样（W15，实测每只约省 0.3s）。口径与 fetch_bars('1w'/'1M')
+        完全一致（同一 resample 纯函数 + 同一 source 标记）。
+        """
+        freq = _codes.normalize_freq(freq)
+        if freq == '1d':
+            return daily
+        if not daily.bars:
+            return BarSeries(symbol=daily.symbol, freq=freq,
+                             adjust=self.adjust, source='')
+        df = resample(self.to_df(daily), freq)
+        return _df_to_series(df, daily.symbol, freq, self.adjust,
+                             f"{daily.source}:resample")
 
     def _fetch_daily(self, internal: str, start: Optional[str],
                      end: Optional[str]):

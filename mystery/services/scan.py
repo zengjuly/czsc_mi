@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -48,6 +49,49 @@ def _write_scan_batch(db, results: List[Dict[str, Any]], failed: int,
         conn.close()
 
 
+def _scan_worker(codes_batch: List[str], cfg: Optional[Dict],
+                 include_detail: bool, min_score: Optional[float]):
+    """进程池 worker：独立 AnalysisService 分析一批股票（W15 进程级并行）。
+
+    :return: (results, failed, filtered) — filtered=低于 min_score 被过滤的只数
+              （进度统计用，主进程不重算）。
+    """
+    svc = AnalysisService(cfg)
+    out: List[Dict[str, Any]] = []
+    failed = 0
+    filtered = 0
+    for code in codes_batch:
+        try:
+            r = svc.analyze_one_stock(code, include_detail=include_detail)
+            d = r.to_dict()
+            d.update(classify(d))
+            if min_score is None or (d.get('score') is not None
+                                     and float(d['score']) >= min_score):
+                out.append(d)
+            else:
+                filtered += 1
+        except Exception as e:
+            failed += 1
+            logger.warning(f"[scan] {code} 分析失败跳过: {str(e)[:80]}")
+    return out, failed, filtered
+
+
+def _scan_thread_worker(code: str, svc: AnalysisService,
+                        include_detail: bool, min_score: Optional[float]):
+    """线程池 worker（共享 svc）：返回 (dict or None, is_failed)。"""
+    try:
+        r = svc.analyze_one_stock(code, include_detail=include_detail)
+        d = r.to_dict()
+        d.update(classify(d))
+        if min_score is not None and (d.get('score') is None
+                                      or float(d['score']) < min_score):
+            return None, False
+        return d, False
+    except Exception as e:
+        logger.warning(f"[scan] {code} 分析失败跳过: {str(e)[:80]}")
+        return None, True
+
+
 def scan_market(limit: Optional[int] = None,
                 watchlist: Optional[List[str]] = None,
                 include_detail: bool = False,
@@ -79,27 +123,80 @@ def scan_market(limit: Optional[int] = None,
     if limit:
         codes = codes[:limit]
 
+    # W15：全市场扫描并行（对齐 daily W11/W13）。实测单只 ~0.9s，5222 只
+    # 串行 ~80min；ThreadPool 受 GIL 限制几乎无收益（32 只 29.7s vs 串行 29.3s），
+    # 进程池实测 2x（32 只 14.6s）——多进程各自独立 GIL。
+    # 优先进程池；Pool 创建失败（受限环境）回退线程池；小列表直接串行。
+    # workers 优先级：env MYSTERY_SCAN_WORKERS > cfg.scan.workers > 4。
+    workers = max(1, int(os.environ.get('MYSTERY_SCAN_WORKERS')
+                         or (cfg or {}).get('scan', {}).get('workers') or 4))
+    total = len(codes)
     results: List[Dict[str, Any]] = []
     failed = 0
-    total = len(codes)
-    for i, code in enumerate(codes, 1):
+    done = 0
+
+    if workers > 1 and total >= 16:
+        import multiprocessing as mp
+        from functools import partial
         try:
-            r = svc.analyze_one_stock(code, include_detail=include_detail)
-            d = r.to_dict()
-            d.update(classify(d))
-            if min_score is None or (d.get('score') is not None
-                                     and float(d['score']) >= min_score):
-                results.append(d)
+            ctx = mp.get_context('fork') if 'fork' in mp.get_all_start_methods() \
+                else mp.get_context()
+            # 切成小批（每批 16 只）再派发：任务数越多 worker 分配越均衡
+            # （实测 128 只：batch=16 四进程 1.7x vs batch=64 仅 1.35x），
+            # 进度条平滑推进，且每 worker 只建一次 AnalysisService。
+            batch = 16
+            chunks = [codes[i:i + batch] for i in range(0, len(codes), batch)]
+            with ctx.Pool(processes=workers) as pool:
+                for part, part_failed, part_filtered in pool.imap_unordered(
+                        partial(_scan_worker, cfg=cfg,
+                                include_detail=include_detail,
+                                min_score=min_score),
+                        chunks, chunksize=1):
+                    results.extend(part)
+                    failed += part_failed
+                    done += len(part) + part_failed + part_filtered
+                    if progress_cb is not None:
+                        try:
+                            progress_cb(done, total)
+                        except Exception:
+                            pass
+            logger.info(f"[scan] 完成 {len(results)} 只（失败 {failed} 只，"
+                        f"processes={workers}）")
+            results.sort(key=lambda x: (x.get('score') is not None,
+                                        float(x.get('score') or -1)), reverse=True)
+            return _persist_or_return(results, failed, no_persist, svc,
+                                      job_holder)
         except Exception as e:
-            failed += 1
-            logger.warning(f"[scan] {code} 分析失败跳过: {str(e)[:80]}")
-        if progress_cb is not None:
-            try:
-                progress_cb(i, total)
-            except Exception:
-                pass
+            logger.warning(f"[scan] 进程池不可用，回退线程池: {str(e)[:100]}")
+
+    # 线程池回退 / workers==1 / 小列表：共享 svc 单实例（W13 线程安全）
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        futs = {ex.submit(_scan_thread_worker, code, svc,
+                          include_detail, min_score): code for code in codes}
+        for fut in as_completed(futs):
+            done += 1
+            d, is_fail = fut.result()
+            if is_fail:
+                failed += 1
+            elif d is not None:
+                results.append(d)
+            if progress_cb is not None:
+                try:
+                    progress_cb(done, total)
+                except Exception:
+                    pass
+    logger.info(f"[scan] 完成 {len(results)} 只（失败 {failed} 只，"
+                f"threads={max(1, workers)}）")
     results.sort(key=lambda x: (x.get('score') is not None,
                                 float(x.get('score') or -1)), reverse=True)
+    return _persist_or_return(results, failed, no_persist, svc, job_holder)
+
+
+def _persist_or_return(results: List[Dict[str, Any]], failed: int,
+                       no_persist: bool, svc: AnalysisService,
+                       job_holder: Optional[list]) -> List[Dict[str, Any]]:
+    """扫描结果落库（scan_jobs/scan_results）或仅返回。与历史行为一致。"""
 
     if not no_persist and results:
         try:

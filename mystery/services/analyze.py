@@ -190,8 +190,10 @@ class AnalysisService:
         daily = self.market.fetch_bars(symbol, '1d')
         if not daily.bars:
             raise RuntimeError(f"[{symbol}] 无日K数据（本地库/在线源均失败）")
-        weekly = self.market.fetch_bars(symbol, '1w')
-        monthly = self.market.fetch_bars(symbol, '1M')
+        # W15：周/月由已取日 K 重采样派生（不再重复读库），口径与
+        # fetch_bars('1w'/'1M') 完全一致（同 resample 纯函数 + 同 source 标记）。
+        weekly = self.market.resample_bars(daily, '1w')
+        monthly = self.market.resample_bars(daily, '1M')
 
         internal = daily.symbol
         ctx = self.build_market_context(internal, daily)
