@@ -1,0 +1,30 @@
+[Unit]
+Description=czsc_mi Streamlit Web (Mistery 趋势交易)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ai/ai_runner/stock/czsc_mi
+Environment="MYSTERY_DB_PATH=/home/ai/ai_runner/stock/data/db/mystery_cache.db"
+Environment="MYSTERY_CHAN_ENABLED=1"
+Environment="THS_FUYAO_SCRIPT=/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py"
+Environment="THS_MARKETDB_DIR=/home/ai/ai_runner/stock/Financial-API/data"
+Environment="TDX_VIPDOC_DIR=/home/ai/ai_runner/stock/data/tdx_vipdoc"
+Environment="TDX_HOME=/mnt/new_tdx"
+Environment="HOME=/home/ai/ai_runner"
+# HITHINK key 由 config.yaml 顶层 hithink_api_key 注入（env 优先覆盖）
+ExecStart=/home/ai/ai_runner/venv/bin/python -m streamlit run mystery/apps/web/app.py --server.port 18501 --server.address :: --server.headless true --server.sslCertFile /home/ai/ai_runner/stock/ssl_fix/nextcloud.crt --server.sslKeyFile /home/ai/ai_runner/stock/ssl_fix/nextcloud.key
+Restart=always
+RestartSec=5
+RestartForceExitStatus=75
+RestartPreventExitStatus=78
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

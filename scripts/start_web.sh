@@ -76,26 +76,117 @@ start() {
   print_urls
 }
 
+# 收集要停止的进程：PIDFILE 记录 + 命令行匹配本端口的全部 streamlit 实例
+# （pgrep 兜底防 PIDFILE 失效/多实例残留——如 2026-09-13 PIDFILE 指向死 PID
+#  而真实进程还占着端口导致 restart 假成功）
+_collect_web_pids() {
+  local pids=() fpid
+  if [ -f "$PIDFILE" ]; then
+    fpid="$(cat "$PIDFILE" 2>/dev/null || true)"
+    [ -n "$fpid" ] && pids+=("$fpid")
+  fi
+  local p
+  while IFS= read -r p; do
+    [ -n "$p" ] && pids+=("$p")
+  done < <(pgrep -f "streamlit run mystery/apps/web/app.py.*--server.port ${PORT}" 2>/dev/null || true)
+  # 去重（保序）
+  local uniq=() seen=" "
+  for p in "${pids[@]}"; do
+    case "$seen" in
+      *" $p "*) ;;
+      *) uniq+=("$p"); seen="$seen$p " ;;
+    esac
+  done
+  printf '%s\n' "${uniq[@]}"
+}
+
+_any_alive() {
+  # 入参：进程 PID 列表（每行一个）；有任一存活返回 0
+  local p
+  while IFS= read -r p; do
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null && return 0
+  done
+  return 1
+}
+
 stop() {
-  if is_running; then
-    kill "$(cat "$PIDFILE")" 2>/dev/null || true
-    sleep 2
-    rm -f "$PIDFILE"
-    echo "已停止"
-  else
+  local pids=()
+  while IFS= read -r p; do pids+=("$p"); done < <(_collect_web_pids)
+  if [ "${#pids[@]}" -eq 0 ]; then
     rm -f "$PIDFILE"
     echo "未在运行"
+    return 0
   fi
+  echo "停止中（PID: ${pids[*]}）..."
+  # 1) 优雅 TERM，最多等 STOP_TIMEOUT 秒（默认 8）
+  local p waited=0
+  for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
+  while [ "$waited" -lt "${STOP_TIMEOUT:-8}" ]; do
+    printf '%s\n' "${pids[@]}" | _any_alive || break
+    sleep 1
+    waited=$((waited + 1))
+  done
+  # 2) 仍存活 → 强制 KILL -9（D 状态等 IO 恢复后即可杀）
+  if printf '%s\n' "${pids[@]}" | _any_alive; then
+    echo "进程未响应 TERM（可能 D 状态/IO 挂起），发送 KILL -9"
+    for p in "${pids[@]}"; do kill -9 "$p" 2>/dev/null || true; done
+    waited=0
+    while [ "$waited" -lt 5 ]; do
+      printf '%s\n' "${pids[@]}" | _any_alive || break
+      sleep 1
+      waited=$((waited + 1))
+    done
+  fi
+  # 3) 最终确认：还活着就报错并保留 PIDFILE（便于重试），不假成功
+  local still=()
+  for p in "${pids[@]}"; do
+    kill -0 "$p" 2>/dev/null && still+=("$p")
+  done
+  if [ "${#still[@]}" -gt 0 ]; then
+    echo "⚠️ 进程仍存活（${still[*]}，D 状态未恢复），端口 ${PORT} 可能仍被占用。" >&2
+    echo "   建议稍后重试 stop，或排查系统 IO（dmesg / 挂载 / 磁盘）。" >&2
+    return 1
+  fi
+  rm -f "$PIDFILE"
+  echo "已停止（PID: ${pids[*]}）"
 }
 
 status() {
   if is_running; then
     echo "运行中（PID $(cat "$PIDFILE")）"
     print_urls
-  else
-    echo "未运行"
+    return 0
   fi
+  # PIDFILE 失效但端口实际有进程 → 修复 PIDFILE（如 2026-09-13 事故场景）
+  local extra
+  extra="$(pgrep -f "streamlit run mystery/apps/web/app.py.*--server.port ${PORT}" | head -1 || true)"
+  if [ -n "$extra" ]; then
+    echo "⚠️ PIDFILE 失效：实际有 streamlit 进程（PID $extra）在运行，已修复 PIDFILE"
+    echo "$extra" > "$PIDFILE"
+    print_urls
+    return 0
+  fi
+  echo "未运行"
 }
+
+# systemd 用户服务接管检测：czsc-mi-web.service 启用后，启停操作提示走
+# systemctl（systemd 提供崩溃自动拉起 + 开机自启；本脚本旧逻辑会与其冲突——
+# 直接杀进程会被 systemd 的 Restart=always 立即拉起）。
+# 需要强制用脚本旧逻辑时设 SYSTEMD_FORCE_LEGACY=1。
+_systemd_managed() {
+  systemctl --user list-unit-files czsc-mi-web.service 2>/dev/null | grep -q enabled
+}
+
+case "${1:-start}" in
+  start|stop|restart)
+    if _systemd_managed && [ "${SYSTEMD_FORCE_LEGACY:-0}" != "1" ]; then
+      echo "⚠️ Web 已由 systemd 用户服务管理（czsc-mi-web.service：崩溃自动拉起 + 开机自启）。"
+      echo "   请用: systemctl --user ${1} czsc-mi-web"
+      echo "   强制使用本脚本旧逻辑: SYSTEMD_FORCE_LEGACY=1 $0 ${1}"
+      exit 0
+    fi
+    ;;
+esac
 
 case "${1:-start}" in
   start)   start ;;
