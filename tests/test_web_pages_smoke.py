@@ -141,25 +141,70 @@ def test_scan_table_shows_signal_flags():
          "advice": "观望（未通过年线滤网）", "chip_low": False, "chip_quiet": False,
          "price_pos": 0.05, "trade_date": "2026-09-07",
          "mystery": {"signal": {"年线滤网": False, "周线锚定": True,
-                                "破五反五": False},
-                     "checklist8": {"满足数量": 4}}},
+                                "破五反五": False,
+                                "年线条件": {"收盘价>MA250": False,
+                                            "收盘价>MA60": False,
+                                            "均线多头排列": False,
+                                            "MA5>MA250": False,
+                                            "MA10>MA250": False,
+                                            "MA20>MA250": False,
+                                            "MA60>MA250": True}},
+                     "checklist8": {"满足数量": 4,
+                                   "长期横盘3个月以上": True,
+                                   "60日均线开始向上": True,
+                                   "股价突破平台": False,
+                                   "放量超20日均量2倍": False,
+                                   "回踩不破+MACD零轴金叉": False,
+                                   "RSI>50继续走强": True,
+                                   "主力资金连续流入": True,
+                                   "行业板块同步走强": False}}},
         {"symbol": "600519.SH", "name": "贵州茅台", "score": 60.0,
          "advice": "关注", "chip_low": True, "chip_quiet": False,
          "price_pos": None, "trade_date": "2026-09-07",
          "mystery": {"signal": {"年线滤网": True, "周线锚定": True,
-                                "破五反五": True},
-                     "checklist8": {"满足数量": 8}}},
+                                "破五反五": True,
+                                "年线条件": {"收盘价>MA250": True,
+                                            "收盘价>MA60": True,
+                                            "均线多头排列": True,
+                                            "MA5>MA250": True,
+                                            "MA10>MA250": True,
+                                            "MA20>MA250": True,
+                                            "MA60>MA250": True}},
+                     "checklist8": {"满足数量": 8,
+                                   "长期横盘3个月以上": True,
+                                   "60日均线开始向上": True,
+                                   "股价突破平台": True,
+                                   "放量超20日均量2倍": True,
+                                   "回踩不破+MACD零轴金叉": True,
+                                   "RSI>50继续走强": True,
+                                   "主力资金连续流入": True,
+                                   "行业板块同步走强": True}}},
     ]
     data = _scan_table_data(rows, nav_key="scan")
     cols = list(data[0].keys())
     for c in ['年线滤网', '周线锚定', '破五反五', '主升浪8项', '筹码低位',
               '高位缩量', '回撤%', '详情']:
         assert c in cols, f"缺少列 {c}: {cols}"
+    # W16：年线系统 7 项 + 主升浪 8 项具体指标列
+    for c in ['年线·价>MA250', '年线·价>MA60', '年线·均线多头', '年线·MA5>250',
+              '年线·MA10>250', '年线·MA20>250', '年线·MA60>250']:
+        assert c in cols, f"缺少年线指标列 {c}: {cols}"
+    for c in ['主升浪·长期横盘', '主升浪·MA60向上', '主升浪·突破平台',
+              '主升浪·放量2倍', '主升浪·回踩+金叉', '主升浪·RSI>50',
+              '主升浪·资金流入', '主升浪·板块走强']:
+        assert c in cols, f"缺少主升浪指标列 {c}: {cols}"
     # 判定值正确映射（主升浪8项为数值，可过滤/排序）
     assert data[0]['年线滤网'] == '❌' and data[0]['周线锚定'] == '✅'
     assert data[0]['主升浪8项'] == 4
     assert data[1]['年线滤网'] == '✅' and data[1]['破五反五'] == '✅'
     assert data[1]['主升浪8项'] == 8
+    # 年线具体条件映射（600150 仅 MA60>MA250 达成）
+    assert data[0]['年线·价>MA250'] == '❌' and data[0]['年线·MA60>250'] == '✅'
+    assert data[0]['年线·均线多头'] == '❌'
+    assert data[1]['年线·价>MA250'] == '✅' and data[1]['年线·均线多头'] == '✅'
+    # 主升浪具体指标映射（600519 全 ✅；600150 仅 4 项 ✅）
+    assert data[1]['主升浪·长期横盘'] == '✅' and data[1]['主升浪·板块走强'] == '✅'
+    assert data[0]['主升浪·突破平台'] == '❌' and data[0]['主升浪·资金流入'] == '✅'
     # 详情链接带 nav 参数（nav_key 为进程缓存 key）
     assert data[0]['详情'] == "?stock=600150.SH&nav_key=scan&nav_idx=0"
 

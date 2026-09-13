@@ -188,6 +188,52 @@ def _sig_flag(row: dict, key: str):
     return ''
 
 
+def _yl_flag(row: dict, key: str):
+    """年线系统具体条件（mystery.signal['年线条件']）：✅/❌/''。"""
+    m = row.get('mystery') or {}
+    yl = (m.get('signal') or {}).get('年线条件') or {}
+    v = yl.get(key)
+    if v is True:
+        return '✅'
+    if v is False:
+        return '❌'
+    return ''
+
+
+def _mainwave_flag(row: dict, key: str):
+    """主升浪 8 项具体指标（mystery.checklist8）：✅/❌/''。"""
+    cl = (row.get('mystery') or {}).get('checklist8') or {}
+    v = cl.get(key)
+    if v is True:
+        return '✅'
+    if v is False:
+        return '❌'
+    return ''
+
+
+# 年线系统 7 项具体条件（src 键 → 展示列名）
+_YEARLINE_DISP = [
+    ("收盘价>MA250", "价>MA250"),
+    ("收盘价>MA60", "价>MA60"),
+    ("均线多头排列", "均线多头"),
+    ("MA5>MA250", "MA5>250"),
+    ("MA10>MA250", "MA10>250"),
+    ("MA20>MA250", "MA20>250"),
+    ("MA60>MA250", "MA60>250"),
+]
+# 主升浪 8 项具体指标（checklist8 键 → 展示列名）
+_MAINWAVE_DISP = [
+    ("长期横盘3个月以上", "长期横盘"),
+    ("60日均线开始向上", "MA60向上"),
+    ("股价突破平台", "突破平台"),
+    ("放量超20日均量2倍", "放量2倍"),
+    ("回踩不破+MACD零轴金叉", "回踩+金叉"),
+    ("RSI>50继续走强", "RSI>50"),
+    ("主力资金连续流入", "资金流入"),
+    ("行业板块同步走强", "板块走强"),
+]
+
+
 def _main_wave_count(row: dict):
     """主升浪8项满足数量：返回 int；checklist8 缺失时返回 None（数值列可过滤/排序）。"""
     cl = (row.get('mystery') or {}).get('checklist8') or {}
@@ -210,7 +256,7 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
     """
     table_data = []
     for idx, row in enumerate(rows):
-        table_data.append({
+        item = {
             '序号': idx + 1,
             '代码': row['symbol'],
             '名称': row.get('name') or '未知',
@@ -226,7 +272,13 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
                       else round(float(row['price_pos']) * 100, 1)),
             '日期': row.get('trade_date', ''),
             '详情': f"?stock={row['symbol']}&nav_key={nav_key}&nav_idx={idx}",
-        })
+        }
+        # W16：年线系统 7 项具体条件 + 主升浪 8 项具体指标（只展示不改判）
+        for src, disp in _YEARLINE_DISP:
+            item[f'年线·{disp}'] = _yl_flag(row, src)
+        for src, disp in _MAINWAVE_DISP:
+            item[f'主升浪·{disp}'] = _mainwave_flag(row, src)
+        table_data.append(item)
     return table_data
 
 
