@@ -121,16 +121,40 @@ def _cmd_daily(args: argparse.Namespace) -> int:
     return 0
 
 
+def _write_scan_report(results, args) -> None:
+    """扫描结果生成 Excel/HTML 日报（W17：定时任务 `scan --watchlist --report` 用）。
+
+    文件名与 daily 一致（每日股票分析报告_YYYYMMDD.xlsx/.html），
+    供飞书 xlsx 链接与 git push 复用，无需改 feishu_notify / 管线 git 段。
+    """
+    from ..apps.reports.excel_report import write_excel
+    from ..apps.reports.html_report import write_html
+
+    out = output_dir(args.cfg)
+    date_str = datetime.now().strftime("%Y%m%d")
+    xlsx = f"{out}/每日股票分析报告_{date_str}.xlsx"
+    html = f"{out}/每日股票分析报告_{date_str}.html"
+    write_excel(results, xlsx)
+    write_html(results, html)
+    print(f"报告已生成: {xlsx}")
+    print(f"报告已生成: {html}")
+
+
 def _cmd_scan(args: argparse.Namespace) -> int:
     from ..core.scan_signals import filter_by_signal
     from ..services import watchlist as _wl
     from ..services.scan import scan_market
 
+    # --watchlist 自选扫描默认不设 limit（全自选）；全市场防呆默认 100
+    if args.limit is None:
+        args.limit = None if args.watchlist else 100
     watchlist = _wl.load_watchlist() if args.watchlist else None
     results = scan_market(limit=args.limit, include_detail=True,
                           min_score=args.min_score, cfg=args.cfg,
                           no_persist=args.no_persist,
                           watchlist=watchlist)
+    if args.report and results:
+        _write_scan_report(results, args)
     if args.signal:
         results = filter_by_signal(results, args.signal)
     for r in results:
@@ -214,11 +238,14 @@ def main(argv: Optional[list] = None) -> int:
     p = sub.add_parser("scan", help="全市场扫描（写 scan_jobs/scan_results）")
     p.add_argument("--watchlist", action="store_true",
                    help="只扫自选股（避免全市场，daily 流程默认）")
-    p.add_argument("--limit", type=int, default=100)
+    p.add_argument("--limit", type=int, default=None,
+                   help="最多扫 N 只（--watchlist 时默认全自选；全市场默认 100）")
     p.add_argument("--min-score", type=float, default=None)
     p.add_argument("--signal", default=None,
                    choices=["vap_atr", "chip_low", "true_resonance"],
                    help="只保留该信号的结果")
+    p.add_argument("--report", action="store_true",
+                   help="扫描后生成 Excel/HTML 日报（定时任务用，文件名同 daily）")
     p.add_argument("--no-persist", action="store_true", help="只打印不写库")
     p.set_defaults(func=_cmd_scan)
 

@@ -23,8 +23,11 @@ export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-/home/ai/ai_runner/stock/Financial-
 echo "[daily_pipeline] 1/2 同步行情（日线 365 天）..."
 czsc-mi sync --period daily --days 365
 
-echo "[daily_pipeline] 2/2 生成日报（自选，Excel/HTML）..."
-czsc-mi daily --watchlist
+echo "[daily_pipeline] 2/2 后台扫描自选股（落 scan_jobs/scan_results）+ 生成日报（Excel/HTML）..."
+# W17：从 `daily --watchlist`（只出报告不落库）改为 `scan --watchlist --report`——
+# 自选股走 scan_market 落库，Web 真三振池/扫描页可查，同时生成 Excel/HTML 日报
+# （文件名与 daily 一致，飞书 xlsx 链接与 git push 段无需改动）。
+czsc-mi scan --watchlist --report
 
 # 全市场扫描（可选，默认关）：真三振池页面只读 latest_scan_job，
 # 不要用自选扫描冒充全市场；缺 job 时页面提示手动跑 scan --limit。
