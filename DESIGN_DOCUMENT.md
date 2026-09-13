@@ -123,9 +123,11 @@ analyze_one_stock(symbol):
   W6 起个股/自选输入改名称搜索 selectbox（`_stock_pick_options` 缓存全市场），
   全市场扫描与板块钻取支持后台扫描（线程任务 `_bg_launch`，进度自动刷新，
   结果落 `scan_jobs`/`scan_results`），系统状态与扫描页可查最近任务结果；
-  W7 起扫描结果表/真三振池下方可「下载 Excel 报告」（汇总+每只个股详情，
-  同 daily 格式；web 扫描落库缺明细，下载时按需补详情 `_enrich_scan_rows`，
-  `excel_bytes` 生成 bytes 经 `st.download_button` 下载）。
+  W7 起扫描结果表/真三振池下方可「下载 Excel 报告」（同 daily 格式；web
+  扫描落库缺明细，下载时按需补详情 `_enrich_scan_rows`，`excel_bytes`
+  生成 bytes 经 `st.download_button` 下载）；W14 起 Excel 为单「汇总报告」
+  页：取消个股详情 sheet，全部个股详情并入汇总列，并新增年线过滤系统
+  各条件达成情况列（来自 `mystery.signal['年线条件']`，analyze 阶段逐项判定）。
   W10 起扫描结果表「详情」列超链接带 `nav_key/nav_idx`，点击直达个股页并
   恢复「上一只/下一只/返回列表」导航；W10-fix4 起导航列表存进程级缓存
   `mystery/apps/web/nav_cache.py`（LinkColumn 新标签页 = 全新 session，
@@ -140,9 +142,9 @@ analyze_one_stock(symbol):
 
 ## 8. 测试与验收
 
-- `pytest -q -m "not integration"`：91 passed（models/core 合成 OHLC/czsc adapter
+- `pytest -q -m "not integration"`：99 passed（models/core 合成 OHLC/czsc adapter
   mock K 线/金标 ≤ 1/scan_signals 三类信号/缠论图 plot_figure/technical 快照/
-  web 页面冒烟 + 后台任务仓库跨 rerun 持久回归 + Excel 超链接导航回归 +
+  web 页面冒烟 + 后台任务仓库跨 rerun 持久回归 + Excel 单汇总页回归 +
   CLI 默认 THS 环境注入回归）。
 - 金标 fixtures：`tests/fixtures/gold_{sh600519,sz000001,sh600150}.json`
   （由旧系统 `unified_stock_analysis` 生成，2026-08-27）。
@@ -182,6 +184,7 @@ analyze_one_stock(symbol):
 | W12 | 18:00 管线提速（62min→约13min，冷场景实测）：①`_batch_presync_from_duckdb` 增量化——旧实现 5222 只逐股全历史拉取+全行 upsert 写 4.2GB SQLite（约50分钟黑盒，日志不可见），改为「DuckDB 一次 GROUP BY 全市场 MAX(date) 预筛 → 只对非最新票查增量行 `date > cache_last` → 只 upsert 增量行」，冷场景实测 10.6min，并加 INFO 耗时日志（写入只数/检查数/耗时）②修 `MysteryDB.get_financial` 永远返回空的 bug——`report_date`（'2026-2' 字符串）被塞进 `float()` 抛 ValueError 被 except 吞掉，86 只自选每天逐股 2 次在线补财务；修复后本地 ROE 直接命中（600938 roe=10.2 验证）③`fetch_index` 会话级缓存（`_index_cache`+锁，仅无 start/end 切片时）——daily 86 只逐股 build_market_context 共享一次指数获取；④`fetch_index` ths 分支改调新增 `ThsClient.get_index_daily`（fuyao `index-historical` 专用接口）——旧调 `get_daily`（prices-historical）对指数代码返回空，每天逐票白等 0.8s 后降级 tdx_local（指数停在 09-04 旧数据）；修复后 source=ths_official 且指数数据更新到最新交易日 | ✅ 0.9.13 |
 | W12b | 18:00 管线 sync 再提速（2026-09-11 生产实测 62min→7.3min）：`_batch_presync_from_duckdb` 从「逐股查 DuckDB 增量（~0.14s×5222≈12min 冷场景）→ 逐股 upsert_kline」改为「一次全市场增量查询（`WHERE date > 全局基准 min_last`，DuckDB 内聚合秒级）+ pandas groupby 按各票 cache_last 过滤增量 + `upsert_kline_many` 单大事务 executemany（5200 事务 7.9s→0.05s）」；db.py 新增 `upsert_kline_many`。生产实测 sync 32s + daily 86 只 6.5min（ThreadPool 4，CPU 175% 受 GIL 限制，为当前唯一瓶颈）+ git/飞书 11s；降级失败股（次新无数据）由行情链负缓存秒级返回 | ✅ 0.9.14 |
 | W13 | daily 提速（86 只 6.5min→68.7s，2026-09-11 实测）：①`czsc_adapter._to_df` dt 批量一次 `pd.to_datetime`——旧逐根调用 `pd.to_datetime(b.dt)` 约 2945 次/票、占单票分析 40%+ 耗时；列表一次性转换走 C 向量化，单只 sh600519 5.96s→0.76s（cProfile）②`czsc-mi daily` 共享 `AnalysisService` 实例——旧模块级 `analyze_one_stock` 每只 new service（重复初始化 SQLite 连接/指数/日历缓存），4 线程并发实测独立 svc 慢 3 倍+（10 只 27s→8.8s，86 只 390s→68.7s）。金标三只改前后分数/建议/价格逐字段一致；`_to_df` 字符串与 datetime 输入输出一致性单测通过 | ✅ 0.9.15 |
+| W14 | Excel 单汇总页：取消个股详情 sheet（原 `_detail_rows`/导航/代码列超链接删除），个股详情全部以列并入「汇总报告」（section 前缀防跨段同名冲突，与核心列同义项不重复，冻结首行+表头加粗）；新增年线过滤系统各条件达成情况列（收盘价>MA250 / 收盘价>MA60 / 均线多头排列 / MA5·10·20·60>MA250，来自 `signal['年线条件']`——`mystery_rules._basic_filter_checks` 逐项判定写入，`basic_filter` 旧签名与判定语义不变，报表只读不改判）；web 下载与 daily 落盘共用 `_build_buffer` 同时生效；`tests/test_excel_hyperlinks.py` → `test_excel_summary.py`（单 sheet/年线列/详情列/无超链接回归）；pytest.ini testpaths 修 JSON 列表写法（`["tests"]` → `tests`，消除 warning） | ✅ 0.9.16 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。

@@ -5,15 +5,16 @@
     def write_excel(results: list[dict], path: str) -> str
 
 results = ``[AnalysisResult.to_dict(), ...]``。生成器内禁止取数/调 analyze。
+
+W14：取消个股详情 sheet，全部个股详情以列补充进「汇总报告」单页；
+新增年线过滤系统各条件达成情况列（来自 ``mystery.signal['年线条件']``，
+analyze 阶段由 basic_filter 逐项判定写入，报表只读不改判）。
 """
 from __future__ import annotations
 
 import io
 import logging
-import re
 from typing import Any, Dict, List
-
-from openpyxl.worksheet.hyperlink import Hyperlink
 
 import pandas as pd
 
@@ -37,6 +38,36 @@ SUMMARY_COLS = [
     ("trade_date", "分析日期"),
 ]
 
+# 年线过滤系统各条件（与 basic_filter._basic_filter_checks 键一一对应，
+# 顺序即展示顺序；值为 ✅/❌/-）。
+YEARLINE_COND_KEYS = [
+    "收盘价>MA250", "收盘价>MA60", "均线多头排列",
+    "MA5>MA250", "MA10>MA250", "MA20>MA250", "MA60>MA250",
+]
+
+# 个股详情补充列：与 SUMMARY_COLS 完全同义的项不重复展示（值不同义的保留）。
+_DETAIL_SKIP = {
+    "股票代码", "股票名称", "分析日期", "最新价", "综合评分", "操作建议",
+    "真三振", "行业", "主升浪状态", "主升浪满足", "平台状态", "PE", "PB",
+}
+# section 前缀（避免「突破信号」等跨段同名冲突）
+_SECTION_PREFIX = {
+    "基础信息": "",
+    "三振共振": "三振.",
+    "主升浪": "主升浪.",
+    "平台突破": "平台.",
+    "自适应 VAP-ATR": "VAP.",
+    "财务": "财务.",
+    "缠论结构": "缠论.",
+}
+
+
+def _flag(v) -> str:
+    """布尔 → ✅/❌（None/缺失 → '-'）。"""
+    if v is None:
+        return "-"
+    return "✅" if v else "❌"
+
 
 def _flat(d: Dict[str, Any]) -> Dict[str, Any]:
     """把嵌套 to_dict() 拍平成汇总行（只读已有字段，不重算）。"""
@@ -48,12 +79,12 @@ def _flat(d: Dict[str, Any]) -> Dict[str, Any]:
     fin = d.get("financial", {}) or {}
     sec = d.get("sector", {}) or {}
     pr = vap.get("平台范围") or {}
-    return {
+    row: Dict[str, Any] = {
         "symbol": d.get("symbol", ""),
         "name": d.get("name") or "未知",
         "score": d.get("score"),
         "advice": d.get("advice", ""),
-        "true_resonance": "✅" if d.get("true_resonance") else "❌",
+        "true_resonance": _flag(d.get("true_resonance")),
         "sector_name": sec.get("行业名称", "未知"),
         "price": d.get("price"),
         "main_wave": main_wave.get("主升浪状态", "-"),
@@ -65,10 +96,22 @@ def _flat(d: Dict[str, Any]) -> Dict[str, Any]:
         "pb": fin.get("PB"),
         "trade_date": d.get("trade_date", ""),
     }
+    # 年线过滤系统各条件达成情况（W14）
+    sig = m.get("signal", {}) or {}
+    yl = sig.get("年线条件") or {}
+    for key in YEARLINE_COND_KEYS:
+        row[f"yl:{key}"] = _flag(yl.get(key))
+    # 个股详情补充列（W14：原个股详情 sheet 内容并入汇总页）
+    row.update(_detail_flat(d))
+    return row
 
 
-def _detail_rows(d: Dict[str, Any]) -> List[List[Any]]:
-    """个股明细键值对（002.md：主升浪/平台/VAP-ATR/财务，无则空）。"""
+def _detail_flat(d: Dict[str, Any]) -> Dict[str, Any]:
+    """个股详情键值对 → 扁平列 dict（只读已有字段，不重算）。
+
+    跳过 section 标题/空行/与 SUMMARY_COLS 同义重复项；列名带 section
+    前缀防跨段同名冲突。
+    """
     m = d.get("mystery", {}) or {}
     vap = m.get("vap_atr", {}) or {}
     plat = m.get("platform", {}) or {}
@@ -77,180 +120,149 @@ def _detail_rows(d: Dict[str, Any]) -> List[List[Any]]:
     sig = m.get("signal", {}) or {}
     fin = d.get("financial", {}) or {}
     sec = d.get("sector", {}) or {}
-    rows: List[List[Any]] = []
+    rows: List[tuple] = []
+    section = ""
 
-    def sec_row(title: str):
-        rows.append([title, "", ""])
-        rows.append(["", "", ""])
+    def add(title: str, val: Any):
+        rows.append((section, title, val))
 
-    sec_row("基础信息")
-    rows.append(["股票代码", d.get("symbol", ""), ""])
-    rows.append(["股票名称", d.get("name") or "未知", ""])
-    rows.append(["分析日期", d.get("trade_date", ""), ""])
-    rows.append(["最新价", d.get("price"), ""])
-    rows.append(["综合评分", d.get("score"), ""])
-    rows.append(["操作建议", d.get("advice", ""), ""])
-    rows.append(["真三振", "✅" if d.get("true_resonance") else "❌", ""])
-    rows.append(["行业", sec.get("行业名称", "未知"), ""])
-    rows.append(["行业趋势分", sec.get("行业趋势分"), ""])
+    add("股票代码", d.get("symbol", ""))
+    add("股票名称", d.get("name") or "未知")
+    add("分析日期", d.get("trade_date", ""))
+    add("最新价", d.get("price"))
+    add("综合评分", d.get("score"))
+    add("操作建议", d.get("advice", ""))
+    add("真三振", _flag(d.get("true_resonance")))
+    add("行业", sec.get("行业名称", "未知"))
+    add("行业趋势分", sec.get("行业趋势分"))
 
-    sec_row("三振共振")
-    rows.append(["个股趋势", "✅" if res.get("个股趋势") else "❌", ""])
-    rows.append(["行业趋势", "✅" if res.get("行业趋势") else "❌", ""])
-    rows.append(["大盘趋势", "✅" if res.get("大盘趋势") else "❌", ""])
-    rows.append(["共振评分", res.get("共振评分"), ""])
-    rows.append(["共振级别", res.get("共振级别", "-"), ""])
-    rows.append(["年线滤网", "✅" if sig.get("年线滤网") else "❌", ""])
+    def sec_rows(title: str, items: List[tuple]):
+        nonlocal section
+        section = title
+        for k, v in items:
+            rows.append((section, k, v))
+
+    sec_rows("三振共振", [
+        ("个股趋势", _flag(res.get("个股趋势"))),
+        ("行业趋势", _flag(res.get("行业趋势"))),
+        ("大盘趋势", _flag(res.get("大盘趋势"))),
+        ("共振评分", res.get("共振评分")),
+        ("共振级别", res.get("共振级别", "-")),
+        ("年线滤网", _flag(sig.get("年线滤网"))),
+    ])
     for i, line in enumerate((res.get("详情") or [])[:6], 1):
-        rows.append([f"共振详情{i}", line, ""])
+        rows.append((section, f"共振详情{i}", line))
 
-    sec_row("主升浪")
-    rows.append(["主升浪状态", main_wave.get("主升浪状态", "-"), ""])
-    rows.append(["持股状态", "✅" if main_wave.get("持股状态") else "❌", ""])
-    rows.append(["空中加油", "✅" if main_wave.get("空中加油") else "❌", ""])
-    rows.append(["MA5斜率", main_wave.get("MA5斜率"), ""])
+    sec_rows("主升浪", [
+        ("主升浪状态", main_wave.get("主升浪状态", "-")),
+        ("持股状态", _flag(main_wave.get("持股状态"))),
+        ("空中加油", _flag(main_wave.get("空中加油"))),
+        ("MA5斜率", main_wave.get("MA5斜率")),
+    ])
     cl = m.get("checklist8", {}) or {}
-    rows.append(["主升浪满足", f"{cl.get('满足数量', 0)}/8", ""])
-    rows.append(["主升浪综合判断", cl.get("综合判断", "-"), ""])
+    rows.append((section, "主升浪满足", f"{cl.get('满足数量', 0)}/8" if cl else "-"))
+    rows.append((section, "主升浪综合判断", cl.get("综合判断", "-")))
     for i, line in enumerate((main_wave.get("判定依据") or [])[:5], 1):
-        rows.append([f"判定依据{i}", line, ""])
+        rows.append((section, f"判定依据{i}", line))
 
-    sec_row("平台突破")
-    rows.append(["平台状态", plat.get("平台状态", "-"), ""])
-    rows.append(["突破信号", "✅" if plat.get("突破信号") else "❌", ""])
-    rows.append(["买横信号", "✅" if plat.get("买横信号") else "❌", ""])
+    sec_rows("平台突破", [
+        ("平台状态", plat.get("平台状态", "-")),
+        ("突破信号", _flag(plat.get("突破信号"))),
+        ("买横信号", _flag(plat.get("买横信号"))),
+    ])
     pr = plat.get("平台范围") or {}
     if pr:
-        rows.append(["平台箱体", f"{pr.get('下沿')} ~ {pr.get('上沿')}", ""])
+        rows.append((section, "平台箱体", f"{pr.get('下沿')} ~ {pr.get('上沿')}"))
     fixed = plat.get("固定箱体") or {}
     if fixed:
-        rows.append(["固定箱体(近20日)", f"{fixed.get('下沿')} ~ {fixed.get('上沿')}", ""])
-    rows.append(["多周期箱体状态", plat.get("多周期箱体状态", "-"), ""])
+        rows.append((section, "固定箱体(近20日)", f"{fixed.get('下沿')} ~ {fixed.get('上沿')}"))
+    rows.append((section, "多周期箱体状态", plat.get("多周期箱体状态", "-")))
 
-    sec_row("自适应 VAP-ATR")
-    rows.append(["POC(筹码控制点)", vap.get("POC"), ""])
-    rows.append(["自适应上轨", vap.get("自适应上轨"), ""])
-    rows.append(["自适应下轨", vap.get("自适应下轨"), ""])
-    rows.append(["ATR", vap.get("ATR"), ""])
-    rows.append(["突破信号", "✅" if vap.get("突破信号") else "❌", ""])
+    sec_rows("自适应 VAP-ATR", [
+        ("POC(筹码控制点)", vap.get("POC")),
+        ("自适应上轨", vap.get("自适应上轨")),
+        ("自适应下轨", vap.get("自适应下轨")),
+        ("ATR", vap.get("ATR")),
+        ("突破信号", _flag(vap.get("突破信号"))),
+    ])
     cyc = vap.get("自适应周期") or {}
     if cyc:
-        rows.append(["自适应周期", f"N={cyc.get('adaptive_n')} 快ATR={cyc.get('atr_m')} k={cyc.get('k')}", ""])
+        rows.append((section, "自适应周期",
+                     f"N={cyc.get('adaptive_n')} 快ATR={cyc.get('atr_m')} k={cyc.get('k')}"))
         if cyc.get("avg_turnover") is not None:
-            rows.append(["近20日均换手", f"{cyc.get('avg_turnover')}%", ""])
+            rows.append((section, "近20日均换手", f"{cyc.get('avg_turnover')}%"))
     for i, line in enumerate((vap.get("详情") or [])[:4], 1):
-        rows.append([f"VAP详情{i}", line, ""])
+        rows.append((section, f"VAP详情{i}", line))
 
-    sec_row("财务")
-    rows.append(["PE", fin.get("PE"), ""])
-    rows.append(["PB", fin.get("PB"), ""])
-    rows.append(["ROE", fin.get("roe"), ""])
-    rows.append(["股息", fin.get("divid_cash"), ""])
-    rows.append(["报告期", fin.get("report_date", ""), ""])
+    sec_rows("财务", [
+        ("PE", fin.get("PE")),
+        ("PB", fin.get("PB")),
+        ("ROE", fin.get("roe")),
+        ("股息", fin.get("divid_cash")),
+        ("报告期", fin.get("report_date", "")),
+    ])
 
     # 缠论摘要列（W3-A：chan 关时为空，不改变 score）
     chan = d.get("chan", {}) or {}
     if chan:
-        sec_row("缠论结构")
         c1 = chan.get("1d") or {}
         cw = chan.get("1w") or {}
-        rows.append(["日线末笔方向", "向上" if c1.get("last_bi_dir") == "up" else (
-            "向下" if c1.get("last_bi_dir") == "down" else "-"), ""])
-        rows.append(["日线末笔确认", "✅" if c1.get("last_bi_confirmed") else "❌", ""])
-        rows.append(["日线在中枢内", "✅" if c1.get("in_zs") else "❌", ""])
-        rows.append(["周线末笔方向", "向上" if cw.get("last_bi_dir") == "up" else (
-            "向下" if cw.get("last_bi_dir") == "down" else "-"), ""])
-        rows.append(["czsc 版本", d.get("czsc_ver", ""), ""])
-    return rows
+        sec_rows("缠论结构", [
+            ("日线末笔方向", "向上" if c1.get("last_bi_dir") == "up" else (
+                "向下" if c1.get("last_bi_dir") == "down" else "-")),
+            ("日线末笔确认", _flag(c1.get("last_bi_confirmed"))),
+            ("日线在中枢内", _flag(c1.get("in_zs"))),
+            ("周线末笔方向", "向上" if cw.get("last_bi_dir") == "up" else (
+                "向下" if cw.get("last_bi_dir") == "down" else "-")),
+            ("czsc 版本", d.get("czsc_ver", "")),
+        ])
 
-
-def _sheet_name(d: Dict[str, Any]) -> str:
-    """个股 sheet 名：`个股{名称}_{代码}`，清洗 Excel 非法字符（W13-fix：
-    ST 股名含 `*` 等字符会导致 openpyxl 抛 Invalid character，全市场扫描
-    5562 只生成失败降级汇总版）。"""
-    name = str(d.get("name", "") or "未知")
-    code = str(d.get("symbol", "")).replace(".", "")
-    s = re.sub(r"[\[\]:*?/\\\\]", "_", f"个股{name}_{code}")
-    return s[:31]
+    out: Dict[str, Any] = {}
+    for sec_name, item, val in rows:
+        if item in _DETAIL_SKIP:
+            continue
+        col = f"{_SECTION_PREFIX.get(sec_name, '')}{item}"
+        out[col] = val
+    return out
 
 
 def _build_buffer(results: List[Dict[str, Any]]) -> "io.BytesIO":
-    """生成 Excel 到内存 buffer（汇总 + 每只个股明细）。write_excel 与
-    excel_bytes 共用，保证 web 下载与 daily 落盘格式完全一致。
+    """生成 Excel 到内存 buffer（单「汇总报告」页，含全部个股详情列）。
 
-    W8（对齐 misteryanalyze fa1444ff）：
-    - 汇总报告「代码」列超链接 → 对应个股 sheet 的 A1（用 Hyperlink.location
-      内部引用，避免字符串赋值被存为外部 target 而补全文件路径）
-    - 个股 sheet 第 1 行导航：首页(→汇总报告A1) / 前一页 / 后一页
-      （跟随 results 顺序，首尾无对应链接）
+    W14：取消个股详情 sheet 与代码列超链接/导航（无目标 sheet）；
+    汇总报告 = 核心列 + 年线条件列 + 个股详情补充列。
+    write_excel 与 excel_bytes 共用，保证 web 下载与 daily 落盘格式一致。
     """
-    import io
     rows = [_flat(d) for d in results]
     if rows:
         rows.sort(key=lambda r: (r["score"] is not None, float(r["score"] or -1)),
                   reverse=True)
-    summary = pd.DataFrame(rows).rename(columns=dict(SUMMARY_COLS))
-    sheet_names = [_sheet_name(d) for d in results]
+    df = pd.DataFrame(rows)
+    # 固定列顺序：核心列 + 年线条件列 + 详情列（按出现顺序）
+    col_order = [k for k, _ in SUMMARY_COLS]
+    col_order += [f"yl:{k}" for k in YEARLINE_COND_KEYS]
+    for k in df.columns:
+        if k not in col_order:
+            col_order.append(k)
+    df = df[col_order]
+    rename = dict(SUMMARY_COLS)
+    rename.update({f"yl:{k}": f"年线:{k}" for k in YEARLINE_COND_KEYS})
+    df = df.rename(columns=rename)
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        summary.to_excel(writer, sheet_name="汇总报告", index=False)
+        df.to_excel(writer, sheet_name="汇总报告", index=False)
         ws = writer.sheets["汇总报告"]
-        for i, col in enumerate(summary.columns, 1):
-            width = max(len(str(col)), 10)
-            ws.column_dimensions[chr(64 + i)].width = width
-
-        # 汇总报告「代码」列超链接 → 个股 sheet A1。用原始 results 构建
-        # symbol→sheet 名映射（避免 summary 中 NaN/None 产生死链），
-        # 按分排序不影响匹配。
-        if "代码" in summary.columns:
-            sym_to_sheet = {}
-            for d in results:
-                s = d.get("symbol")
-                if s is not None:
-                    sym_to_sheet[str(s)] = _sheet_name(d)
-            code_col = summary.columns.get_loc("代码") + 1  # 1-based
-            for row_idx, (_, srow) in enumerate(summary.iterrows(), start=2):
-                sym = srow.get("代码")
-                sheet_name = sym_to_sheet.get(str(sym)) if sym is not None \
-                    else None
-                if not sheet_name:
-                    continue
-                cell = ws.cell(row=row_idx, column=code_col)
-                cell.hyperlink = Hyperlink(ref=cell.coordinate,
-                                           location=f"'{sheet_name}'!A1")
-                cell.style = "Hyperlink"
-
-        # 个股详情 sheet：第 1 行导航链接，明细数据从第 2 行开始
-        for idx, d in enumerate(results):
-            sheet_name = sheet_names[idx]
-            det = pd.DataFrame(_detail_rows(d), columns=["项目", "结果", "备注"])
-            det.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
-            ws2 = writer.sheets[sheet_name]
-            ws2.column_dimensions["A"].width = 20
-            ws2.column_dimensions["B"].width = 26
-            ws2.column_dimensions["C"].width = 40
-
-            # 首页 -> 汇总报告 A1
-            cell_home = ws2.cell(row=1, column=1, value="首页")
-            cell_home.hyperlink = Hyperlink(ref=cell_home.coordinate,
-                                            location="'汇总报告'!A1")
-            cell_home.style = "Hyperlink"
-            # 前一页（跟随 results 顺序）
-            if idx > 0:
-                cell_prev = ws2.cell(row=1, column=2, value="前一页")
-                cell_prev.hyperlink = Hyperlink(
-                    ref=cell_prev.coordinate,
-                    location=f"'{sheet_names[idx - 1]}'!A1")
-                cell_prev.style = "Hyperlink"
-            # 后一页
-            if idx + 1 < len(sheet_names):
-                cell_next = ws2.cell(row=1, column=3, value="后一页")
-                cell_next.hyperlink = Hyperlink(
-                    ref=cell_next.coordinate,
-                    location=f"'{sheet_names[idx + 1]}'!A1")
-                cell_next.style = "Hyperlink"
-
+        # 表头加粗 + 冻结首行，列宽取 表头/值 长度（上限 26，避免明细列无限撑宽）
+        from openpyxl.styles import Font
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+        ws.freeze_panes = "A2"
+        for col_idx, col in enumerate(df.columns, 1):
+            letter = ws.cell(row=1, column=col_idx).column_letter
+            max_len = max([len(str(col))] +
+                          [len(str(v)) for v in df[col].tolist() if v is not None])
+            ws.column_dimensions[letter].width = min(max(max_len, 8), 26)
     buf.seek(0)
     return buf
 
@@ -261,11 +273,11 @@ def excel_bytes(results: List[Dict[str, Any]]) -> bytes:
 
 
 def write_excel(results: List[Dict[str, Any]], path: str) -> str:
-    """汇总 + 每只个股明细。返回写入路径。"""
+    """单「汇总报告」页（含全部个股详情列 + 年线条件列）。返回写入路径。"""
     import os
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     buf = _build_buffer(results)
     with open(path, "wb") as f:
         f.write(buf.getvalue())
-    logger.info("✅ Excel 报告生成完成: %s（%d 只）", path, len(results))
+    logger.info("✅ Excel 报告生成完成: %s（%d 只，单汇总页）", path, len(results))
     return path

@@ -24,30 +24,46 @@ class MysteryLogic:
         self.logger = logger
 
     # ---------- 基础过滤 ----------
-    def basic_filter(self, data: pd.DataFrame) -> Tuple[bool, List[str]]:
-        """一票否决制：年线/60日线/均线多头。"""
-        errors = []
+    def _basic_filter_checks(self, data: pd.DataFrame) -> Tuple[bool, List[str], Dict[str, bool]]:
+        """基础过滤逐项判定（一票否决制：年线/60日线/均线多头/各均线站上年线）。
+
+        :return: (passed, errors, checks) — checks 为逐项达成情况（True=该条件达成），
+                 键名直接用于报表展示；判定语义与旧 basic_filter 完全一致。
+        """
+        errors: List[str] = []
+        checks: Dict[str, bool] = {
+            '收盘价>MA250': False, '收盘价>MA60': False,
+            '均线多头排列': False,
+            'MA5>MA250': False, 'MA10>MA250': False,
+            'MA20>MA250': False, 'MA60>MA250': False,
+        }
         passed = True
         try:
             required_cols = ['收盘价', 'MA5', 'MA10', 'MA20', 'MA60', 'MA250']
             missing_cols = [col for col in required_cols if col not in data.columns]
             if missing_cols:
                 errors.append(f'缺少必要技术指标列: {missing_cols}')
-                return (False, errors)
+                return (False, errors, checks)
             latest_data = data.iloc[-1]
+            # 1) 收盘价站上年线
             if pd.notna(latest_data['MA250']) and pd.notna(latest_data['收盘价']):
-                if latest_data['收盘价'] < latest_data['MA250']:
+                checks['收盘价>MA250'] = bool(latest_data['收盘价'] >= latest_data['MA250'])
+                if not checks['收盘价>MA250']:
                     errors.append('股价未运行在250日均线上方')
                     passed = False
             else:
                 errors.append('年线数据缺失')
                 passed = False
+            # 2) 收盘价站上60日线
             if pd.notna(latest_data['MA60']) and pd.notna(latest_data['收盘价']):
-                if latest_data['收盘价'] < latest_data['MA60']:
+                checks['收盘价>MA60'] = bool(latest_data['收盘价'] >= latest_data['MA60'])
+                if not checks['收盘价>MA60']:
                     errors.append('股价未运行在60日均线上方')
                     passed = False
+            # 3) 均线多头顺次排列
             if '均线排列' in data.columns and pd.notna(latest_data['均线排列']):
-                if latest_data['均线排列'] != 1:
+                checks['均线多头排列'] = bool(latest_data['均线排列'] == 1)
+                if not checks['均线多头排列']:
                     errors.append('均线未呈现多头顺次排列')
                     passed = False
             else:
@@ -60,23 +76,36 @@ class MysteryLogic:
                             and latest_data[ma_col1] <= latest_data[ma_col2]):
                         ma_check = False
                         break
+                checks['均线多头排列'] = ma_check
                 if not ma_check:
                     errors.append('均线未呈现多头顺次排列')
                     passed = False
+            # 4) 各均线站上年线（逐项记录，不因首项失败中断）
             if pd.notna(latest_data.get('MA250')):
                 for w in ['MA5', 'MA10', 'MA20', 'MA60']:
                     v = latest_data.get(w)
-                    if pd.notna(v) and v <= latest_data['MA250']:
+                    ok = pd.notna(v) and v > latest_data['MA250']
+                    checks[f'{w}>MA250'] = bool(ok)
+                    if not ok:
                         errors.append(f'{w}未运行在年线(MA250)上方')
                         passed = False
-                        break
             self.logger.info(f"{'✅' if passed else '❌'} 基础过滤 "
                              f"{'通过' if passed else '失败'}: {len(errors)} 个错误")
-            return (passed, errors)
+            return (passed, errors, checks)
         except Exception as e:
             self.logger.error(f'❌ 基础过滤异常: {e}')
             errors.append(f'基础过滤异常: {e}')
-            return (False, errors)
+            return (False, errors, checks)
+
+    def basic_filter(self, data: pd.DataFrame) -> Tuple[bool, List[str]]:
+        """一票否决制：年线/60日线/均线多头（旧签名，返回 passed/errors）。"""
+        passed, errors, _ = self._basic_filter_checks(data)
+        return (passed, errors)
+
+    def basic_filter_checks(self, data: pd.DataFrame) -> Dict[str, bool]:
+        """基础过滤逐项达成情况（供报表展示，只读不改判）。"""
+        _, _, checks = self._basic_filter_checks(data)
+        return checks
 
     # ---------- 三振共振 ----------
     def three_resonance_analysis(self, data: pd.DataFrame, market_data: Dict = None,
@@ -280,11 +309,13 @@ class MysteryLogic:
         """三大心法综合信号 → 综合评分/操作建议。评分 = 共振分*0.6 + 主升浪40*0.4。"""
         try:
             basic = self.basic_filter(data)
+            yl_checks = self.basic_filter_checks(data)
             if not basic[0]:
                 return {'综合评分': 0.0, '操作建议': '观望（未通过年线滤网）',
                         '主升浪信号': False, '真三振': False, '年线滤网': False,
                         '周线锚定': False, '破五反五': False, '共振评分': 0.0,
-                        '共振级别': '无共振', '详情': [f'年线滤网未通过: {basic[1][:3]}']}
+                        '共振级别': '无共振', '年线条件': yl_checks,
+                        '详情': [f'年线滤网未通过: {basic[1][:3]}']}
             main_wave = self.main_bull_wave_signal(data, weekly_data)
             resonance = self.three_resonance_analysis(data, market_data, industry_trend,
                                                       industry_data=industry_data)
@@ -305,6 +336,7 @@ class MysteryLogic:
                     '共振评分': r_score, '共振级别': resonance.get('共振级别', '无共振'),
                     '资金活跃': resonance.get('资金活跃', False),
                     '最强板块': resonance.get('最强板块', []),
+                    '年线条件': yl_checks,
                     '详情': main_wave['详情'] + resonance.get('详情', [])}
         except Exception as e:
             self.logger.error(f'❌ 综合信号分析异常: {e}')
