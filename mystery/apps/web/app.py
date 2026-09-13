@@ -139,12 +139,12 @@ def _bg_running_fragment():
 
 
 def _recent_jobs(limit: int = 20) -> list:
-    """最近扫描任务 [(id, trade_date, started_at, n_ok, n_fail), ...] 降序。"""
+    """最近扫描任务 [(id, trade_date, started_at, n_ok, n_fail, scan_type), ...] 降序。"""
     svc = _service()
     conn = svc.market.db._connect()
     try:
         return conn.execute(
-            "SELECT id, trade_date, started_at, n_ok, n_fail "
+            "SELECT id, trade_date, started_at, n_ok, n_fail, scan_type "
             "FROM scan_jobs ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
     finally:
         conn.close()
@@ -888,7 +888,7 @@ def view_scan():
     if not jobs:
         st.caption("暂无扫描记录（前台或后台扫描后出现）")
         return
-    opts = {f"job#{j[0]} {j[1] or ''} 成功{j[3]} 失败{j[4]} {j[2] or ''}": j[0]
+    opts = {f"job#{j[0]} [{j[5] or 'market'}] {j[1] or ''} 成功{j[3]} 失败{j[4]} {j[2] or ''}": j[0]
             for j in jobs}
     pick = st.selectbox("选择扫描任务查看结果", list(opts.keys()), key="scan_job_pick")
     job_id = opts[pick]
@@ -934,7 +934,8 @@ def view_sector():
                 "或改用板块强度表/全市场扫描。")
         else:
             with st.spinner(f"分析 {len(stocks)} 只成分股..."):
-                rows = scan_market(universe=stocks, include_detail=False)
+                rows = scan_market(universe=stocks, include_detail=False,
+                                   scan_type=f"sector:{s_name}")
                 st.session_state['sector_results'] = rows
     if c_all.button("🚀 后台扫描全部成分股", use_container_width=True):
         stocks = svc.market.db.get_sector_stocks(s_code)
@@ -944,9 +945,10 @@ def view_sector():
                 f"执行 `czsc-mi sector-sync --sector {s_code}` 同步后重试。")
         else:
             _bg_launch(f"板块:{s_name}({len(stocks)})",
-                       lambda cb, holder, _st=stocks: scan_market(
+                       lambda cb, holder, _st=stocks, _nm=s_name: scan_market(
                            universe=_st, include_detail=True,
-                           progress_cb=cb, job_holder=holder))
+                           progress_cb=cb, job_holder=holder,
+                           scan_type=f"sector:{_nm}"))
             st.rerun()
     _render_bg_tasks()
     rows = st.session_state.get('sector_results')

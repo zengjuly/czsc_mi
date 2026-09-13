@@ -106,10 +106,11 @@ CREATE TABLE IF NOT EXISTS chan_cache (
   PRIMARY KEY(symbol, freq, trade_date, czsc_ver)
 );
 
--- 10. 扫描任务（002.md W1-B：同日重复扫描默认新 job，不覆盖历史）
+-- 10. 扫描任务（W18：同类型扫描只保留最新一份——全市场/自选/板块各一份）
 CREATE TABLE IF NOT EXISTS scan_jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  trade_date TEXT, started_at TEXT, finished_at TEXT, n_ok INTEGER, n_fail INTEGER
+  trade_date TEXT, started_at TEXT, finished_at TEXT, n_ok INTEGER, n_fail INTEGER,
+  scan_type TEXT DEFAULT 'market'
 );
 
 -- 11. 扫描结果（三类信号 + 完整 payload）

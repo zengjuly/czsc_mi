@@ -1,5 +1,6 @@
 """test_store_upsert — W4 schema 自举 + upsert 换手保护（临时 sqlite，不碰生产库）。"""
 import os
+import sqlite3
 import tempfile
 
 import pandas as pd
@@ -172,3 +173,66 @@ def test_ths_sector_code_normalize():
     assert ThsClient._to_sector_ti('886015') == '886015.TI'
     assert ThsClient._to_sector_ti('886015.TI') == '886015.TI'
 
+
+
+# ---------------- W18：scan_jobs 同类型只保留最新一份 ----------------
+def test_scan_job_same_type_overwrite():
+    """同 scan_type 连续写库 → 只保留最新一份（旧 job 及其 results 被删）。"""
+    from mystery.services.scan import _write_scan_batch
+
+    db = _fresh_db()
+    _write_scan_batch(db, [{"symbol": "600519.SH", "trade_date": "2026-09-01",
+                            "score": 1.0}], 0, "2026-09-01", "watchlist")
+    _write_scan_batch(db, [{"symbol": "000001.SZ", "trade_date": "2026-09-02",
+                            "score": 2.0}], 1, "2026-09-02", "watchlist")
+    conn = db._connect()
+    try:
+        jobs = conn.execute(
+            "SELECT id, scan_type, n_ok, n_fail FROM scan_jobs").fetchall()
+        assert len(jobs) == 1, f"同类型应只留 1 条: {jobs}"
+        assert jobs[0][1] == "watchlist" and jobs[0][2] == 1 and jobs[0][3] == 1
+        syms = [r[0] for r in conn.execute(
+            "SELECT symbol FROM scan_results").fetchall()]
+        assert syms == ["000001.SZ"], f"旧 results 未清: {syms}"
+    finally:
+        conn.close()
+
+
+def test_scan_job_type_isolated():
+    """不同 scan_type 各保留一份，互不覆盖。"""
+    from mystery.services.scan import _write_scan_batch
+
+    db = _fresh_db()
+    for t, sym in [("watchlist", "A"), ("market", "B"), ("sector:创新药", "C")]:
+        _write_scan_batch(db, [{"symbol": sym}], 0, "2026-09-01", t)
+    conn = db._connect()
+    try:
+        types = [r[0] for r in conn.execute(
+            "SELECT scan_type FROM scan_jobs ORDER BY id").fetchall()]
+        assert types == ["watchlist", "market", "sector:创新药"], types
+    finally:
+        conn.close()
+
+
+def test_scan_type_migration():
+    """旧库（scan_jobs 无 scan_type 列）初始化后自动补列。"""
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE scan_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                 "trade_date TEXT, started_at TEXT, finished_at TEXT, "
+                 "n_ok INTEGER, n_fail INTEGER)")
+    conn.execute("CREATE TABLE scan_results (job_id INTEGER, symbol TEXT, "
+                 "trade_date TEXT, score REAL, true_resonance INTEGER, "
+                 "vap_atr_break INTEGER, chip_low INTEGER, payload_json TEXT, "
+                 "PRIMARY KEY (job_id, symbol))")
+    conn.commit()
+    conn.close()
+    MysteryDB(db_path=path)
+    conn = sqlite3.connect(path)
+    try:
+        cols = [r[1] for r in conn.execute(
+            "PRAGMA table_info(scan_jobs)").fetchall()]
+        assert "scan_type" in cols, f"迁移未加列: {cols}"
+    finally:
+        conn.close()

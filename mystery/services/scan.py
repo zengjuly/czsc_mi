@@ -19,16 +19,25 @@ logger = logging.getLogger(__name__)
 
 
 def _write_scan_batch(db, results: List[Dict[str, Any]], failed: int,
-                      trade_date: Optional[str] = None) -> Optional[int]:
-    """写一笔 scan_jobs + 全量 scan_results，返回 job_id。"""
+                      trade_date: Optional[str] = None,
+                      scan_type: str = "market") -> Optional[int]:
+    """写一笔 scan_jobs + 全量 scan_results，返回 job_id。
+
+    W18：同类型扫描只保留最新一份——先删该 scan_type 的旧 job 及其
+    scan_results，再插新（全市场/自选/板块各一份，历史不无限累积）。
+    """
     import sqlite3
     conn = db._connect()
     try:
         started = datetime.now().isoformat(timespec="seconds")
+        conn.execute(
+            "DELETE FROM scan_results WHERE job_id IN "
+            "(SELECT id FROM scan_jobs WHERE scan_type=?)", (scan_type,))
+        conn.execute("DELETE FROM scan_jobs WHERE scan_type=?", (scan_type,))
         cur = conn.execute(
             "INSERT INTO scan_jobs (trade_date, started_at, finished_at, "
-            "n_ok, n_fail) VALUES (?,?,?,?,?)",
-            (trade_date or "", started, started, len(results), failed))
+            "n_ok, n_fail, scan_type) VALUES (?,?,?,?,?,?)",
+            (trade_date or "", started, started, len(results), failed, scan_type))
         job_id = cur.lastrowid
         for r in results:
             conn.execute(
@@ -100,7 +109,8 @@ def scan_market(limit: Optional[int] = None,
                 min_score: Optional[float] = None,
                 no_persist: bool = False,
                 progress_cb=None,
-                job_holder: Optional[list] = None) -> List[Dict[str, Any]]:
+                job_holder: Optional[list] = None,
+                scan_type: Optional[str] = None) -> List[Dict[str, Any]]:
     """扫描市场，返回 AnalysisResult.to_dict() 列表（按分数降序）。
 
     :param watchlist: 指定代码列表（优先）
@@ -111,7 +121,16 @@ def scan_market(limit: Optional[int] = None,
     :param no_persist: True 只打印不写库
     :param progress_cb: 可选回调 progress_cb(done, total)，每处理一只调用一次（后台扫描进度）
     :param job_holder: 可选 list，落库后把 job_id append 进去（后台扫描捕获任务号）
+    :param scan_type: 落库类型（W18 同类型只保留最新一份）；None 自动推断：
+           watchlist→'watchlist'、universe→'sector'、否则 'market'
     """
+    if scan_type is None:
+        if watchlist:
+            scan_type = "watchlist"
+        elif universe is not None:
+            scan_type = "sector"
+        else:
+            scan_type = "market"
     svc = AnalysisService(cfg)
     if watchlist:
         codes = list(watchlist)
@@ -165,7 +184,7 @@ def scan_market(limit: Optional[int] = None,
             results.sort(key=lambda x: (x.get('score') is not None,
                                         float(x.get('score') or -1)), reverse=True)
             return _persist_or_return(results, failed, no_persist, svc,
-                                      job_holder)
+                                      job_holder, scan_type)
         except Exception as e:
             logger.warning(f"[scan] 进程池不可用，回退线程池: {str(e)[:100]}")
 
@@ -190,19 +209,22 @@ def scan_market(limit: Optional[int] = None,
                 f"threads={max(1, workers)}）")
     results.sort(key=lambda x: (x.get('score') is not None,
                                 float(x.get('score') or -1)), reverse=True)
-    return _persist_or_return(results, failed, no_persist, svc, job_holder)
+    return _persist_or_return(results, failed, no_persist, svc, job_holder,
+                              scan_type)
 
 
 def _persist_or_return(results: List[Dict[str, Any]], failed: int,
                        no_persist: bool, svc: AnalysisService,
-                       job_holder: Optional[list]) -> List[Dict[str, Any]]:
+                       job_holder: Optional[list],
+                       scan_type: str = "market") -> List[Dict[str, Any]]:
     """扫描结果落库（scan_jobs/scan_results）或仅返回。与历史行为一致。"""
 
     if not no_persist and results:
         try:
             trade_date = max((str(r.get('trade_date', '')) for r in results),
                              default='')
-            job_id = _write_scan_batch(svc.market.db, results, failed, trade_date)
+            job_id = _write_scan_batch(svc.market.db, results, failed,
+                                       trade_date, scan_type=scan_type)
             if job_holder is not None:
                 try:
                     job_holder.append(job_id)

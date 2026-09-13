@@ -68,6 +68,13 @@ class MysteryDB:
             conn = self._connect()
             try:
                 conn.executescript(ddl)
+                # W18：旧库迁移——scan_jobs 缺 scan_type 列时补列（幂等）
+                cols = {r[1] for r in conn.execute(
+                    "PRAGMA table_info(scan_jobs)").fetchall()}
+                if "scan_type" not in cols:
+                    conn.execute(
+                        "ALTER TABLE scan_jobs ADD COLUMN scan_type TEXT "
+                        "DEFAULT 'market'")
                 conn.commit()
             finally:
                 conn.close()
