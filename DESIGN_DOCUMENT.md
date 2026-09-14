@@ -48,9 +48,9 @@ analyze_one_stock(symbol):
   weekly = market.fetch_bars(symbol, "1w")      # 日K重采样（W-FRI, keep_latest）
   monthly= market.fetch_bars(symbol, "1M")      # 日K重采样（ME, min 10根）
   ctx    = build_market_context()               # 上证指数 + 主行业分 + 财务
-  chan   = {}                                   # MYSTERY_CHAN_ENABLED=1 时
+  chan   = {}                                   # MYSTERY_CHAN_ENABLED=1 时（默认开，仅结构展示）
   bd     = run_rules(daily_df, weekly, monthly, ctx, chan)   # 指标加工→规则
-  score, advice, true_res = scorer.combine(bd, chan)         # P1/P2 恒用 Mystery 原公式
+  score, advice, true_res = scorer.combine(bd, chan)         # 默认 Mystery 原公式；混合分需另开 MYSTERY_CHAN_SCORE=1
 ```
 
 - 指标加工：`core/indicators.enrich_indicators`（复刻 main.py `_calculate_all_indicators`
@@ -90,10 +90,11 @@ analyze_one_stock(symbol):
   low/close/**vol**/amount）→ `CZSC(bars, min_bi_len)` → `bi_list/zs_list/fx_list`。
 - BI：`direction`（中文"向上/向下"）、sdt/edt（datetime）、high/low；
   ZS：zg/zd/gg/dd/sdt/edt/is_valid/bis；`c.finished_bis` 判最后一笔是否确认。
-- 只进 `AnalysisResult.chan`（freq→ChanStructure），**P4 起参与评分**：
+- 只进 `AnalysisResult.chan`（freq→ChanStructure）。**P4 公式已落地**：
   `S = 0.55*S_mystery + 0.25*S_resonance + 0.20*S_chan`；S_chan 缺省 50，
   有 1d 结构时按最新笔方向 ±10、中枢内 +5；**年线滤网未通过 → 混合分强制 0**
-  （一票否决语义）。
+  （一票否决语义）。**生产默认 `chan.score: false`（MYSTERY_CHAN_SCORE 缺省 0），
+  综合分 = Mystery 1.22.30 原公式**；混合分仅结构开+分开关同时为 1 才生效。
 - chan_cache：`store.chan_cache` 表（symbol/freq/trade_date/czsc_ver PK），
   行情日或 czsc 版本变化才失效。
 - **缠论图 W4 起 plotly 自绘**：`CzscAdapter.plot_figure(series)` → plotly Figure
@@ -159,7 +160,7 @@ analyze_one_stock(symbol):
 | P1 | 规则迁入+金标（chan 关，分差≤1） | ✅ 0.2.0 |
 | P2 | CzscAdapter 只展示（不进评分） | ✅ 0.2.0 |
 | P3 | CLI/scan/sync/verify/Web 收口 | ✅ 0.3.0 |
-| P4 | 小权重缠论分（0.55/0.25/0.20，年线滤网否决保护） | ✅ 0.4.0 |
+| P4 | 小权重缠论分公式（0.55/0.25/0.20，年线滤网否决保护；生产默认关 `score: false`） | ✅ 0.4.0 |
 | W1 | 报表（Excel/HTML，daily 落盘）+ 扫描三类信号写库 | ✅ 0.5.0 |
 | W2 | sync 断点/多周期 + tdx_api 接入 + Web 真三振池/系统状态/板块强度表 | ✅ 0.5.0 |
 | W3 | plot_czsc 嵌入个股页 + Excel 缠论列 + daily_pipeline.sh + 去绝对路径 | ✅ 0.5.0 |
@@ -190,6 +191,7 @@ analyze_one_stock(symbol):
 | W17 | 每日任务改「定时触发后台扫描自选股 + 生成 Excel 报告」：`czsc-mi scan` 新增 `--report`（扫描落库后生成 Excel/HTML 日报，文件名与 daily 一致 `每日股票分析报告_YYYYMMDD.xlsx/.html`，飞书 xlsx 链接与 git push 段零改动）；`--limit` 默认逻辑改为 `--watchlist` 时全自选（原默认 100 会截断自选）、全市场仍防呆 100；`daily_pipeline.sh` 的 2/2 由 `daily --watchlist`（只出报告不落库）改为 `scan --watchlist --report`——自选股走 scan_market 落 `scan_jobs/scan_results`（Web 真三振池/扫描页可查，feishu_notify 本就读 scan_jobs + 最新 xlsx）。真实验证：86 只自选落库 job#27、Excel 单汇总页 65 列/87 行 | ✅ 0.9.19 |
 | W18 | 扫描历史同类型只保留最新一份：`scan_jobs` 加 `scan_type` 列（schema.sql + `_init_db` 旧库自动 ALTER 补列，幂等）；`_write_scan_batch` 先删同类型旧 job 及其 results 再插新；`scan_market` 加 `scan_type` 参数（None 自动推断：watchlist→'watchlist'、universe→'sector'、否则 'market'）；Web 板块钻取传 `sector:{板块名}`（不同板块各一份）；「最近扫描任务」显示 `[类型]` 标签。存量历史 28 条 market（迁移默认值）在下次全市场扫描时自动收敛为 1 条；新增 3 个离线测试（同类型覆盖/类型隔离/旧库迁移） | ✅ 0.9.20 |
 | W19 | Web 稳定性：①`start_web.sh` stop 加固——TERM → 等 `STOP_TIMEOUT`（默认 8s）→ 仍存活 KILL -9 → 最终确认失败报错并保留 PIDFILE 不假成功；按命令行 pgrep 兜底收集进程（PIDFILE 失效/多实例残留也能杀干净）；status 遇 PIDFILE 失效自动修复。②systemd 用户服务 `czsc-mi-web.service`（崩溃自动拉起 Restart=always + 开机自启 enable+linger；环境变量对齐 start_web.sh+.stockrc；模板同步 scripts/）——事故复盘：2026-09-13 Web 被 SIGKILL（约 6h 运行后）导致无法访问，旧进程 D 状态占端口致 restart 假成功。③`start_web.sh` 检测 systemd 已启用时提示改用 `systemctl --user`（`SYSTEMD_FORCE_LEGACY=1` 可强制旧逻辑）。实测：kill 主进程后 NRestarts=1 自动拉起、HTTP 200 | ✅ 0.9.21 |
+| W20 | 文档与开关对齐（006.md 阶段 0）：明确两个独立开关——结构展示 `MYSTERY_CHAN_ENABLED` 默认开、混合分 `MYSTERY_CHAN_SCORE` 默认关（综合分 = Mystery 1.22.30）。README 环境变量拆两个、删「CHAN_ENABLED=0 即关分」；DESIGN §4/§6/§9/§10、AGENTS §2.5、scorer.py docstring 统一为「P4 公式已落地、生产默认 score:false」；`daily_pipeline.sh`/`daily_feishu.sh`/`start_web.sh`/systemd service 显式 export 两个开关。验收：未设 env 时 chan_enabled()=True、chan_score_enabled()=False（实测通过），102 离线测试全过 | ✅ 0.9.22 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。
@@ -206,7 +208,8 @@ P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序�
 ```bash
 source /home/ai/ai_runner/venv/bin/activate   # 原机示例；任意 venv 均可
 export MYSTERY_DB_PATH=/home/ai/ai_runner/stock/data/db/mystery_cache.db
-export MYSTERY_CHAN_ENABLED=0        # 1=开启缠论混合分（默认关）
+export MYSTERY_CHAN_ENABLED=1        # 1=缠论结构展示（默认开）
+export MYSTERY_CHAN_SCORE=0          # 1=缠论混合分（默认关，综合分=Mystery 1.22.30）
 export HITHINK_FINANCE_API_KEY=...   # 环境已有；不入库
 export THS_FUYAO_SCRIPT=/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py
 export THS_MARKETDB_DIR=/home/ai/ai_runner/stock/Financial-API/data

@@ -9,6 +9,7 @@ Type=simple
 WorkingDirectory=/home/ai/ai_runner/stock/czsc_mi
 Environment="MYSTERY_DB_PATH=/home/ai/ai_runner/stock/data/db/mystery_cache.db"
 Environment="MYSTERY_CHAN_ENABLED=1"
+Environment="MYSTERY_CHAN_SCORE=0"
 Environment="THS_FUYAO_SCRIPT=/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py"
 Environment="THS_MARKETDB_DIR=/home/ai/ai_runner/stock/Financial-API/data"
 Environment="TDX_VIPDOC_DIR=/home/ai/ai_runner/stock/data/tdx_vipdoc"

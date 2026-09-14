@@ -1,8 +1,10 @@
 """mystery.core.scorer — 综合评分。
 
 一期（P1/P2）：只用 Mystery 原公式，与 stock_analyzer 1.22.30 兼容。
-P4（2026-08-28 用户确认开启）：MYSTERY_CHAN_ENABLED=1 时
+P4 公式已落地：MYSTERY_CHAN_ENABLED=1 且 MYSTERY_CHAN_SCORE=1 时
 S = 0.55*S_mystery + 0.25*S_resonance + 0.20*S_chan（S_chan 缺省 50）。
+生产默认 chan.score=false（混合分关），综合分 = Mystery 1.22.30；
+与 analyze.py 的 chan_enabled()/chan_score_enabled() 两个开关一致。
 """
 from __future__ import annotations
 

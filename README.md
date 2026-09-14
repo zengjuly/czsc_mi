@@ -32,7 +32,8 @@ pip install -e ".[dev]"          # 开发（pytest）
 
 ```bash
 export MYSTERY_DB_PATH=/path/to/mystery_cache.db   # 默认 <repo>/data/mystery_cache.db
-export MYSTERY_CHAN_ENABLED=0                       # 缠论分默认关
+export MYSTERY_CHAN_ENABLED=1                      # 缠论结构展示（图/摘要），默认开
+export MYSTERY_CHAN_SCORE=0                        # 混合分另开关，默认关（综合分 = Mystery 1.22.30）
 export HITHINK_FINANCE_API_KEY=...                  # 扶摇在线源（可选，本地 MarketDB 不需要）
 ```
 
@@ -67,8 +68,9 @@ pytest -m integration                   # 原机集成（需 MYSTERY_DB_PATH + T
 - P3 入口收口（CLI / daily / scan / verify_unified_analysis）✅
   - czsc-mi analyze/daily/scan/sync + Web 三视图（个股/扫描/板块钻取，只调 Service）
   - verify_unified_analysis.py：三路径 score 差 ≤ 1 + 金标对比（PASS）
-- P4 小权重缠论分 ✅（2026-08-28 用户确认开启）
+- P4 小权重缠论分 ✅（公式已落地；生产默认 `score: false` 关混合分）
   - S = 0.55×Mystery + 0.25×共振 + 0.20×缠论；年线滤网未过 → 混合分强制 0
+  - 仅当 `MYSTERY_CHAN_ENABLED=1` **且** `MYSTERY_CHAN_SCORE=1` 时生效；默认综合分 = Mystery 1.22.30
   - 20 只样本漂移验证：Top5 排序不变，up 笔股票分小幅上移
 - W4 个股页缠论图增强 ✅（0.6.0）
   - plotly 自绘缠论图（弃 czsc plot_czsc：其不画中枢、SMA 固定 5/20）

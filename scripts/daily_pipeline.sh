@@ -17,6 +17,9 @@ source "${VENV:-/home/ai/ai_runner/venv}/bin/activate"
 cd "${CZSC_MI_ROOT:-$(dirname "$0")/..}"
 
 export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-/home/ai/ai_runner/stock/data/db/mystery_cache.db}"
+# 两个缠论开关显式声明（W20）：结构展示默认开，混合分默认关（综合分=Mystery 1.22.30）
+export MYSTERY_CHAN_ENABLED="${MYSTERY_CHAN_ENABLED:-1}"
+export MYSTERY_CHAN_SCORE="${MYSTERY_CHAN_SCORE:-0}"
 export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
 export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-/home/ai/ai_runner/stock/Financial-API/data}"
 
