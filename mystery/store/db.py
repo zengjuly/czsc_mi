@@ -34,6 +34,38 @@ def to_cn_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out.rename(columns=rename)
 
 
+def _dot(code: str) -> str:
+    """任意库内代码（sh.600519 / 600519.SH / thscode）→ 点号格式 600519.SH。
+
+    与 adapters.codes.normalize_symbol 同逻辑（此处本地实现避免 import 环）。
+    """
+    import re as _re
+    s = str(code).strip().lower()
+    m = _re.match(r'^(?:(sh|sz|bj)\.?)?(\d{6})(?:\.(sh|sz|bj))?$', s)
+    if not m:
+        return str(code).strip().upper()
+    prefix, digits, suffix = m.group(1), m.group(2), m.group(3)
+    exch = (suffix or prefix or '').upper()
+    if not exch:
+        exch = 'BJ' if digits.startswith('92') else (
+            'SH' if digits[0] in '569' else 'SZ')
+    return f"{digits}.{exch}"
+
+
+def _invalidate_analysis(conn: sqlite3.Connection, codes) -> None:
+    """W23：sync 更新 K 线 → 删除该票 analysis_cache（006.md 阶段 3）。
+
+    与 K 线写入同一连接/事务；表缺失（未迁移）时静默跳过。
+    在 commit 之前调用，随同一事务提交。
+    """
+    try:
+        conn.executemany(
+            "DELETE FROM analysis_cache WHERE symbol=?",
+            [(_dot(c),) for c in codes])
+    except sqlite3.Error:
+        pass
+
+
 class MysteryDB:
     """本地库客户端（读为主，写带锁）。"""
 
@@ -174,6 +206,7 @@ class MysteryDB:
                          _f(r.get('开盘价')), _f(r.get('最高价')), _f(r.get('最低价')),
                          _f(r.get('收盘价')), _f(r.get('成交量')), _f(r.get('成交额')),
                          _f(r.get('换手率')), _f(r.get('涨跌幅'))))
+                _invalidate_analysis(conn, [code])
                 conn.commit()
             finally:
                 conn.close()
@@ -211,6 +244,7 @@ class MysteryDB:
                     "amount=excluded.amount, "
                     "turn=COALESCE(excluded.turn, turn), "
                     "pctChg=COALESCE(excluded.pctChg, pctChg)", data)
+                _invalidate_analysis(conn, {d[0] for d in data})
                 conn.commit()
             finally:
                 conn.close()

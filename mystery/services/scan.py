@@ -66,12 +66,16 @@ def _scan_worker(codes_batch: List[str], cfg: Optional[Dict],
               （进度统计用，主进程不重算）。
     """
     svc = AnalysisService(cfg)
+    # W23：scan 链缓存开关（env MYSTERY_SCAN_CACHE，默认开）。
+    from ..store.cache import scan_cache_enabled
+    use_cache = scan_cache_enabled()
     out: List[Dict[str, Any]] = []
     failed = 0
     filtered = 0
     for code in codes_batch:
         try:
-            r = svc.analyze_one_stock(code, include_detail=include_detail)
+            r = svc.analyze_one_stock(code, include_detail=include_detail,
+                                      use_cache=use_cache)
             d = r.to_dict()
             d.update(classify(d))
             if min_score is None or (d.get('score') is not None
@@ -89,7 +93,9 @@ def _scan_thread_worker(code: str, svc: AnalysisService,
                         include_detail: bool, min_score: Optional[float]):
     """线程池 worker（共享 svc）：返回 (dict or None, is_failed)。"""
     try:
-        r = svc.analyze_one_stock(code, include_detail=include_detail)
+        from ..store.cache import scan_cache_enabled
+        r = svc.analyze_one_stock(code, include_detail=include_detail,
+                                  use_cache=scan_cache_enabled())
         d = r.to_dict()
         d.update(classify(d))
         if min_score is not None and (d.get('score') is None

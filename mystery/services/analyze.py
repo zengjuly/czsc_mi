@@ -72,6 +72,41 @@ def _high_120(daily: BarSeries) -> Optional[float]:
     return round(max(vals), 4)
 
 
+# ---------------- W23 分析结果缓存（006.md 阶段 3） ----------------
+
+def cache_allowed(daily: BarSeries) -> bool:
+    """只缓存「收盘后本地日 K」结果：在线源（ths/tdx_api/tdx_local）多为
+    盘中或降级实时数据，指纹虽能兜底，但按 006「收盘后日级有效」保守不写。"""
+    return str(getattr(daily, 'source', '') or '') in ('db', 'sqlite', 'duckdb')
+
+
+def _result_from_payload(data: dict) -> AnalysisResult:
+    """analysis_cache payload（AnalysisResult.to_dict 形态）→ AnalysisResult。
+
+    chan 结构用 chan_from_dict 还原；任何组件缺失按默认值容错（缓存是加速
+    层，宁可弱还原也不抛——消费方实际只用 to_dict 字段）。
+    """
+    from ..adapters.czsc_adapter import chan_from_dict
+    chan = {f: chan_from_dict(d) for f, d in (data.get('chan') or {}).items()}
+    return AnalysisResult(
+        symbol=data.get('symbol', ''),
+        name=data.get('name', ''),
+        trade_date=data.get('trade_date', ''),
+        price=data.get('price'),
+        score=data.get('score'),
+        advice=data.get('advice', ''),
+        true_resonance=bool(data.get('true_resonance', False)),
+        turnover_20=data.get('turnover_20'),
+        high_120=data.get('high_120'),
+        mystery=MysteryBreakdown(**(data.get('mystery') or {})),
+        chan=chan,
+        sector=data.get('sector') or {},
+        financial=data.get('financial') or {},
+        rule_ver=data.get('rule_ver', ''),
+        czsc_ver=data.get('czsc_ver', ''),
+    )
+
+
 class AnalysisService:
     """分析服务（持有客户端与规则实例，线程安全可复用）。"""
 
@@ -185,11 +220,37 @@ class AnalysisService:
         return out
 
     def analyze_one_stock(self, symbol: str,
-                          include_detail: bool = True) -> AnalysisResult:
-        """单票完整分析（CLAUDE.md §7.4 伪代码）。"""
+                          include_detail: bool = True,
+                          use_cache: bool = True) -> AnalysisResult:
+        """单票完整分析（CLAUDE.md §7.4 伪代码）。
+
+        W23：use_cache=True 时头尾走 analysis_cache（键含开关/版本/K线指纹，
+        改任何一项必 miss；sync 写该票 K 线时同事务删除旧缓存）。
+        """
         daily = self.market.fetch_bars(symbol, '1d')
         if not daily.bars:
             raise RuntimeError(f"[{symbol}] 无日K数据（本地库/在线源均失败）")
+        trade_date = str(daily.bars[-1].dt)[:10]
+        # ---- 缓存读（W23）----
+        ck = None
+        if use_cache and cache_allowed(daily):
+            try:
+                from ..store.cache import AnalysisCache, bars_fingerprint, \
+                    make_cache_key
+                from ..adapters.czsc_adapter import czsc_version
+                ver = czsc_version() if chan_enabled() else ''
+                flags = (f"D{int(include_detail)}|C{int(chan_enabled())}"
+                         f"|S{int(chan_score_enabled())}")
+                ck = make_cache_key(
+                    daily.adjust, 'mystery-1.22.30-compat', flags, ver,
+                    bars_fingerprint(daily.bars))
+                hit = AnalysisCache(self.market.db).get(
+                    daily.symbol, trade_date, ck)
+                if hit is not None:
+                    return _result_from_payload(hit)
+            except Exception as e:
+                logger.debug(f"[cache] 读缓存失败({symbol}): {str(e)[:80]}")
+                ck = None
         # W15：周/月由已取日 K 重采样派生（不再重复读库），口径与
         # fetch_bars('1w'/'1M') 完全一致（同 resample 纯函数 + 同 source 标记）。
         weekly = self.market.resample_bars(daily, '1w')
@@ -234,10 +295,25 @@ class AnalysisService:
             rule_ver='mystery-1.22.30-compat',
             czsc_ver=czsc_ver,
         )
+        # ---- 缓存写（W23）----
+        if ck is not None:
+            try:
+                from ..store.cache import AnalysisCache, bars_fingerprint
+                AnalysisCache(self.market.db).put(
+                    result.symbol, result.trade_date, ck, result.to_dict(),
+                    adjust=daily.adjust, rule_ver=result.rule_ver,
+                    chan_enabled=chan_enabled(),
+                    chan_score=chan_score_enabled(),
+                    czsc_ver=czsc_ver, include_detail=include_detail,
+                    fingerprint=bars_fingerprint(daily.bars))
+            except Exception as e:
+                logger.debug(f"[cache] 写缓存失败({symbol}): {str(e)[:80]}")
         return result
 
 
 def analyze_one_stock(symbol: str, include_detail: bool = True,
-                      cfg: Optional[Dict] = None) -> AnalysisResult:
+                      cfg: Optional[Dict] = None,
+                      use_cache: bool = True) -> AnalysisResult:
     """唯一分析入口（模块级便捷函数）。"""
-    return AnalysisService(cfg).analyze_one_stock(symbol, include_detail=include_detail)
+    return AnalysisService(cfg).analyze_one_stock(
+        symbol, include_detail=include_detail, use_cache=use_cache)
