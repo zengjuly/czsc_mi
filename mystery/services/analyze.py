@@ -197,8 +197,10 @@ class AnalysisService:
         out: Dict[str, ChanStructure] = {}
         for freq in freqs:
             try:
-                series = daily if freq == daily.freq else self.market.fetch_bars(
-                    daily.symbol, freq)
+                # W24（006.md 阶段4）：周/月一律由已取日 K 重采样派生，
+                # 禁止再 fetch_bars 重复读库（口径同 resample_bars 纯函数）。
+                series = daily if freq == daily.freq else \
+                    self.market.resample_bars(daily, freq)
                 if not series.bars:
                     continue
                 cached_raw = self.market.db.get_chan_cache(
