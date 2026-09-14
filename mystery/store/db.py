@@ -53,9 +53,13 @@ class MysteryDB:
         return conn
 
     def _init_db(self) -> None:
-        """库不存在或缺表时执行 schema.sql（幂等 CREATE TABLE IF NOT EXISTS）。
+        """库不存在或缺表时执行 schema.sql（幂等 CREATE TABLE IF NOT EXISTS），
+        再按文件名顺序执行 migrations/*.sql（W21，006.md 阶段 1）。
 
         schema 单一事实来源：mystery/store/schema.sql（与现网库兼容）。
+        迁移记账表 schema_migrations(id TEXT PK, applied_at)：每个 .sql 只执行一次；
+        语句级执行并容忍 "duplicate column name"（新库经 schema.sql 已带该列，
+        迁移中的 ALTER 属重复，跳过即可——如 001_scan_type 对全新库）。
         """
         schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    "schema.sql")
@@ -68,16 +72,43 @@ class MysteryDB:
             conn = self._connect()
             try:
                 conn.executescript(ddl)
-                # W18：旧库迁移——scan_jobs 缺 scan_type 列时补列（幂等）
-                cols = {r[1] for r in conn.execute(
-                    "PRAGMA table_info(scan_jobs)").fetchall()}
-                if "scan_type" not in cols:
-                    conn.execute(
-                        "ALTER TABLE scan_jobs ADD COLUMN scan_type TEXT "
-                        "DEFAULT 'market'")
+                self._run_migrations(conn)
                 conn.commit()
             finally:
                 conn.close()
+
+    def _run_migrations(self, conn: sqlite3.Connection) -> None:
+        """按序执行未应用的 migrations/*.sql（幂等，单事务每文件）。"""
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations ("
+            "id TEXT PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        done = {r[0] for r in conn.execute(
+            "SELECT id FROM schema_migrations").fetchall()}
+        mig_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "migrations")
+        if not os.path.isdir(mig_dir):
+            return
+        for fname in sorted(os.listdir(mig_dir)):
+            if not fname.endswith(".sql"):
+                continue
+            if fname in done:
+                continue
+            with open(os.path.join(mig_dir, fname), encoding="utf-8") as f:
+                sql = f.read()
+            # 语句级执行：拆掉注释行后按分号分段（迁移文件均无触发器/存储过程）
+            body = "\n".join(
+                ln for ln in sql.splitlines() if not ln.strip().startswith("--"))
+            for stmt in [s.strip() for s in body.split(";") if s.strip()]:
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError as e:
+                    # 新库 schema.sql 已建好列时 ALTER 重复 —— 视为已应用
+                    if "duplicate column name" in str(e).lower():
+                        continue
+                    raise
+            conn.execute("INSERT OR REPLACE INTO schema_migrations (id) VALUES (?)",
+                         (fname,))
+            logger.info(f"[db] 已应用迁移 {fname}")
 
     # ---------------- 行情 ----------------
     def load_kline(self, code: str, period: str = 'daily',
