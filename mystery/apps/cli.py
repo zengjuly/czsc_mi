@@ -194,6 +194,33 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sync_shares(args: argparse.Namespace) -> int:
+    from ..services.sync_shares import sync_shares
+
+    codes = None
+    if args.watchlist:
+        from ..services.watchlist import load_watchlist
+        codes = load_watchlist()
+    out = sync_shares(codes=codes, force=args.force)
+    print(json.dumps(out, ensure_ascii=False))
+    return 0 if out.get('fetched') else 1
+
+
+def _cmd_sync_turnover(args: argparse.Namespace) -> int:
+    from datetime import datetime
+
+    from ..services.sync_turnover import sync_turnover
+    from ..services.watchlist import load_watchlist
+    from ..store.db import MysteryDB
+
+    db = MysteryDB()
+    trade_date = args.date or datetime.now().strftime('%Y-%m-%d')
+    codes = load_watchlist() if args.watchlist else None
+    out = sync_turnover(trade_date, codes=codes, db=db)
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
 def _cmd_sector_sync(args: argparse.Namespace) -> int:
     from ..services.sync import sync_sector_constituents
 
@@ -258,6 +285,21 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--symbols", nargs="*", default=None)
     p.add_argument("--limit", type=int, default=None)
     p.set_defaults(func=_cmd_sync)
+
+    p = sub.add_parser("sync-shares",
+                       help="流通股本快照刷新（低频：初始化/每周对账，W22）")
+    p.add_argument("--force", action="store_true",
+                   help="强制全量重拉并写快照（跳过 3% 跳变过滤）")
+    p.add_argument("--watchlist", action="store_true",
+                   help="只刷自选股（每周对账必跑）")
+    p.set_defaults(func=_cmd_sync_shares)
+
+    p = sub.add_parser("sync-turnover",
+                       help="每日空 turn 回算（纯本地派生，不打 HTTP，W22）")
+    p.add_argument("--date", default=None, help="交易日 YYYY-MM-DD（默认今天）")
+    p.add_argument("--watchlist", action="store_true",
+                   help="只处理自选股（默认全市场）")
+    p.set_defaults(func=_cmd_sync_turnover)
 
     p = sub.add_parser("sector-sync", help="同步板块成分股 → stock_sector_rel")
     p.add_argument("--sector", required=True,

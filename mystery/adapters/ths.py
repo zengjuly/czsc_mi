@@ -333,6 +333,31 @@ class ThsClient:
             s = f'{s}.TI'
         return s
 
+    def get_auction_snapshot(self, thscodes: List[str],
+                             stage: str = 'final') -> List[Dict]:
+        """集合竞价快照（auction-snapshot，W22 股本推算源）。
+
+        thscodes 每批 ≤100（接口上限）；stage='final' 收盘定稿（生产用，
+        不用盘中 live）。返回 [{thscode, float_market_cap, last_price, ...}]，
+        失败返回 []。auction_turnover_pct 是竞价换手，禁止当全天 turn。
+        """
+        out: List[Dict] = []
+        for i in range(0, len(thscodes), 100):
+            batch = thscodes[i:i + 100]
+            raw = self._run_fuyao(['auction-snapshot',
+                                   '--thscodes', ','.join(batch),
+                                   '--stage', stage], timeout=60)
+            items: List = []
+            for x in raw:
+                if isinstance(x, dict) and isinstance(x.get('item'), list):
+                    items.extend(x['item'])
+                elif isinstance(x, dict):
+                    items.append(x)
+            for it in items:
+                if isinstance(it, dict) and it.get('thscode'):
+                    out.append(it)
+        return out
+
     def fetch_constituents(self, sector_code: str,
                            timeout: int = 120) -> List[Dict]:
         """板块成分股 [{thscode, ticker, name}]（index-constituents）。

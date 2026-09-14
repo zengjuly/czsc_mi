@@ -481,6 +481,122 @@ class MysteryDB:
                 conn.close()
 
 
+    # ---------------- 换手治理（W22，006.md 阶段 2） ----------------
+    def upsert_float_share(self, thscode: str, as_of: str,
+                           float_market_cap: Optional[float],
+                           last_price: Optional[float],
+                           float_shares: Optional[float],
+                           source: str = 'auction_final') -> None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO float_share_snapshot "
+                    "(thscode, as_of, float_market_cap, last_price, "
+                    " float_shares, source) VALUES (?,?,?,?,?,?)",
+                    (thscode, as_of, _f(float_market_cap), _f(last_price),
+                     _f(float_shares), source))
+                conn.commit()
+            finally:
+                conn.close()
+
+    def get_float_share(self, thscode: str,
+                        as_of_max: Optional[str] = None) -> Optional[Dict]:
+        """取 as_of <= as_of_max 的最新股本快照（低频快照，事件才更新）。"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                if as_of_max:
+                    row = conn.execute(
+                        "SELECT as_of, float_shares, float_market_cap, last_price "
+                        "FROM float_share_snapshot "
+                        "WHERE thscode=? AND as_of<=? "
+                        "ORDER BY as_of DESC LIMIT 1",
+                        (thscode, as_of_max)).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT as_of, float_shares, float_market_cap, last_price "
+                        "FROM float_share_snapshot "
+                        "WHERE thscode=? "
+                        "ORDER BY as_of DESC LIMIT 1",
+                        (thscode,)).fetchone()
+                if not row:
+                    return None
+                return {'as_of': row[0], 'float_shares': row[1],
+                        'float_market_cap': row[2], 'last_price': row[3]}
+            finally:
+                conn.close()
+
+    def null_turn_rows(self, trade_date: str,
+                       codes: Optional[List[str]] = None) -> List[Dict]:
+        """指定交易日 turn IS NULL 且 volume 有效的日K行 [{code,date,volume}]。"""
+        sql = ("SELECT code, substr(date,1,10) d, volume FROM stock_kline_data "
+               "WHERE period='daily' AND substr(date,1,10)=? "
+               "AND turn IS NULL AND volume > 0")
+        args: List = [trade_date]
+        if codes:
+            sql += f" AND code IN ({','.join('?' * len(codes))})"
+            args += list(codes)
+        with self._lock:
+            conn = self._connect()
+            try:
+                return [{'code': r[0], 'date': r[1], 'volume': r[2]}
+                        for r in conn.execute(sql, args).fetchall()]
+            finally:
+                conn.close()
+
+    def set_turn(self, code: str, date: str, turn: float,
+                 source: str) -> None:
+        """仅当该行 turn 仍为空时写入（legacy/official 绝不覆盖）。"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE stock_kline_data SET turn=?, turn_source=? "
+                    "WHERE code=? AND period='daily' AND substr(date,1,10)=? "
+                    "AND turn IS NULL",
+                    (turn, source, code, date))
+                conn.commit()
+            finally:
+                conn.close()
+
+    def turnover_coverage(self, days: int = 20,
+                          codes: Optional[List[str]] = None) -> Dict:
+        """近 N 个自然交易日的 turn 覆盖率 QA（按最新日期回退窗口）。"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                where, args = "period='daily'", []
+                if codes:
+                    where += f" AND code IN ({','.join('?' * len(codes))})"
+                    args = list(codes)
+                # 以库内最新日期为锚回退 30 天窗口（覆盖 ~20 交易日）
+                anchor = conn.execute(
+                    f"SELECT MAX(substr(date,1,10)) FROM stock_kline_data "
+                    f"WHERE {where}", args).fetchone()[0]
+                if not anchor:
+                    return {'anchor': None, 'rows': 0, 'with_turn': 0,
+                            'coverage': None, 'by_source': {}}
+                from datetime import datetime, timedelta
+                start = (datetime.strptime(anchor, '%Y-%m-%d')
+                         - timedelta(days=int(days * 1.7) + 3)).strftime('%Y-%m-%d')
+                rows = conn.execute(
+                    f"SELECT COALESCE(turn_source,'null'), COUNT(*), "
+                    f"SUM(CASE WHEN turn IS NOT NULL THEN 1 ELSE 0 END) "
+                    f"FROM stock_kline_data WHERE {where} "
+                    f"AND substr(date,1,10)>=? AND substr(date,1,10)<=? "
+                    f"GROUP BY 1", args + [start, anchor]).fetchall()
+                total = sum(r[1] for r in rows)
+                # 覆盖以 turn 值为准（历史行 turn_source 为 NULL 但值在）
+                with_turn = sum(r[2] for r in rows)
+                return {'anchor': anchor, 'window_start': start,
+                        'rows': total, 'with_turn': with_turn,
+                        'coverage': round(with_turn / total, 4) if total else None,
+                        'by_source': {r[0]: r[1] for r in rows}}
+            finally:
+                conn.close()
+
+
 def _f(v: Any) -> Optional[float]:
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return None
