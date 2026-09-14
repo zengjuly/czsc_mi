@@ -856,10 +856,15 @@ def view_scan():
         min_score = st.number_input("最低分", 0.0, 100.0, 0.0)
     if c3.button("开始前台扫描", type="primary"):
         with st.spinner("扫描中（单票失败自动跳过）..."):
-            rows = scan_market(limit=int(limit), include_detail=True,
-                               min_score=min_score or None)
-            st.session_state['scan_results'] = rows
-            st.session_state['scan_ts'] = len(rows)
+            try:
+                # W25：与 cron/后台扫描互斥，并发时被拒绝（不排队）
+                rows = scan_market(limit=int(limit), include_detail=True,
+                                   min_score=min_score or None)
+            except RuntimeError as e:
+                st.error(str(e))
+            else:
+                st.session_state['scan_results'] = rows
+                st.session_state['scan_ts'] = len(rows)
 
     st.divider()
     st.subheader("后台扫描任务")

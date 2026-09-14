@@ -152,7 +152,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     results = scan_market(limit=args.limit, include_detail=True,
                           min_score=args.min_score, cfg=args.cfg,
                           no_persist=args.no_persist,
-                          watchlist=watchlist)
+                          watchlist=watchlist,
+                          force=getattr(args, 'force', False))
     if args.report and results:
         _write_scan_report(results, args)
     if args.signal:
@@ -274,6 +275,8 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--report", action="store_true",
                    help="扫描后生成 Excel/HTML 日报（定时任务用，文件名同 daily）")
     p.add_argument("--no-persist", action="store_true", help="只打印不写库")
+    p.add_argument("--force", action="store_true",
+                   help="跳过 W25 扫描互斥锁（并发危险，仅调试用）")
     p.set_defaults(func=_cmd_scan)
 
     p = sub.add_parser("sync", help="行情同步（断点续跑，支持多周期）")

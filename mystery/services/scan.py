@@ -6,6 +6,7 @@ scan_jobs / scan_results 落库；``no_persist=True`` 只打印不写库。
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -13,6 +14,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from ..core.scan_signals import classify
+from ..store.db import MysteryDB
 from .analyze import AnalysisService
 
 logger = logging.getLogger(__name__)
@@ -107,6 +109,51 @@ def _scan_thread_worker(code: str, svc: AnalysisService,
         return None, True
 
 
+def _scan_lock_path(db_path: str) -> str:
+    return db_path + '.scanlock'
+
+
+@contextlib.contextmanager
+def _hold_scan_lock(db_path: str, enabled: bool = True):
+    """W25（006.md 阶段5）：扫描写库职责单一——同一时刻只允许一个持久化
+    扫描（cron 18:00 与 Web「点扫描」互斥，拒绝并发，不排队）。
+
+    用 flock 文件锁：进程退出/崩溃自动释放，无残留 running 状态。
+    锁文件记录持有者 pid+时间，便于冲突时报错定位。
+    """
+    if not enabled:
+        yield
+        return
+    import fcntl
+    import os as _os
+    path = _scan_lock_path(db_path)
+    fh = open(path, 'a+')
+    try:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e:
+            import errno
+            if e.errno in (errno.EACCES, errno.EAGAIN):
+                fh.seek(0)
+                who = (fh.read() or '').strip() or '其他进程'
+                raise RuntimeError(
+                    f"已有扫描在运行（{who}）。W25 约定：每日 18:00 cron 为"
+                    "自选扫描固定写手；并发扫描被拒绝，请等其结束后重试。"
+                ) from e
+            raise
+        fh.seek(0)
+        fh.truncate()
+        fh.write(f"pid={_os.getpid()} scan_started={datetime.now().isoformat(timespec='seconds')}")
+        fh.flush()
+        yield
+    finally:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        fh.close()
+
+
 def scan_market(limit: Optional[int] = None,
                 watchlist: Optional[List[str]] = None,
                 include_detail: bool = False,
@@ -116,7 +163,32 @@ def scan_market(limit: Optional[int] = None,
                 no_persist: bool = False,
                 progress_cb=None,
                 job_holder: Optional[list] = None,
-                scan_type: Optional[str] = None) -> List[Dict[str, Any]]:
+                scan_type: Optional[str] = None,
+                force: bool = False) -> List[Dict[str, Any]]:
+    """扫描入口（W25：持久化扫描全程持互斥锁；--force/no_persist 不加锁）。
+
+    实现见 _scan_market_impl。db_path 解析口径与 MarketDataClient 一致。
+    """
+    db_path = MysteryDB(db_path=(cfg or {}).get('db_path')).db_path
+    with _hold_scan_lock(db_path, enabled=(not force and not no_persist)):
+        return _scan_market_impl(
+            limit=limit, watchlist=watchlist, include_detail=include_detail,
+            cfg=cfg, universe=universe, min_score=min_score,
+            no_persist=no_persist, progress_cb=progress_cb,
+            job_holder=job_holder, scan_type=scan_type, force=force)
+
+
+def _scan_market_impl(limit: Optional[int] = None,
+                watchlist: Optional[List[str]] = None,
+                include_detail: bool = False,
+                cfg: Optional[Dict] = None,
+                universe: Optional[List[str]] = None,
+                min_score: Optional[float] = None,
+                no_persist: bool = False,
+                progress_cb=None,
+                job_holder: Optional[list] = None,
+                scan_type: Optional[str] = None,
+                force: bool = False) -> List[Dict[str, Any]]:
     """扫描市场，返回 AnalysisResult.to_dict() 列表（按分数降序）。
 
     :param watchlist: 指定代码列表（优先）
@@ -129,6 +201,7 @@ def scan_market(limit: Optional[int] = None,
     :param job_holder: 可选 list，落库后把 job_id append 进去（后台扫描捕获任务号）
     :param scan_type: 落库类型（W18 同类型只保留最新一份）；None 自动推断：
            watchlist→'watchlist'、universe→'sector'、否则 'market'
+    :param force: 跳过 W25 扫描互斥锁（仅脚本调试用）
     """
     if scan_type is None:
         if watchlist:
