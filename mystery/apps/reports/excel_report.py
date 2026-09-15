@@ -33,6 +33,8 @@ SUMMARY_COLS = [
     ("platform", "平台状态"),
     ("vap_upper", "VAP-ATR上轨"),
     ("vap_break", "VAP-ATR突破"),
+    ("turnover_tag", "换手分档"),
+    ("style_tag", "风格"),
     ("pe", "PE"),
     ("pb", "PB"),
     ("trade_date", "分析日期"),
@@ -96,6 +98,9 @@ def _flat(d: Dict[str, Any]) -> Dict[str, Any]:
         "pb": fin.get("PB"),
         "trade_date": d.get("trade_date", ""),
     }
+    # W32b：换手分档 + 风格标签（只读 core 纯函数，缺 turn → 未知）
+    from ...core.turnover_tag import tags_from_result
+    row.update(tags_from_result(d))
     # 年线过滤系统各条件达成情况（W14）
     sig = m.get("signal", {}) or {}
     yl = sig.get("年线条件") or {}

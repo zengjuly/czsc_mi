@@ -96,6 +96,9 @@ def _stock_card(d: Dict[str, Any]) -> str:
     cyc = vap.get("自适应周期") or {}
     if cyc.get("avg_turnover") is not None and float(cyc["avg_turnover"]) < 2.0:
         labels.append('<span class="signal-tag">筹码低位</span>')
+    # W32b：换手分档 + 风格标签（只读 core 纯函数，缺 turn → 未知）
+    from ...core.turnover_tag import tags_from_result
+    _tg = tags_from_result(d)
     tags = "".join(labels)
 
     metrics = [
@@ -107,6 +110,8 @@ def _stock_card(d: Dict[str, Any]) -> str:
         ("主升浪满足", f"{cl.get('满足数量', 0)}/8"),
         ("平台", _esc(plat.get("平台状态", "-"))),
         ("VAP-ATR上轨", _fmt(vap.get("自适应上轨") or pr.get("上沿"))),
+        ("换手分档", _esc(_tg["turnover_tag"])),
+        ("风格", _esc(_tg["style_tag"])),
         ("POC", _fmt(vap.get("POC"))),
         ("PE", _fmt(fin.get("PE"))),
         ("PB", _fmt(fin.get("PB"))),

@@ -176,6 +176,14 @@ def _render_bg_tasks():
             _render_scan_table(t["results"], key=f"bg_{view_id}")
 
 
+def _turn_tags(row: dict) -> dict:
+    """W32b：换手分档/风格两列（只读 core.turnover_tag，不重算规则）。
+    注意：app.py 以顶层脚本运行，只能绝对导入（文件头 sys.path 已兜底）。"""
+    from mystery.core.turnover_tag import tags_from_result
+    tg = tags_from_result(row)
+    return {'换手分档': tg['turnover_tag'], '风格': tg['style_tag']}
+
+
 def _sig_flag(row: dict, key: str):
     """从扫描行取 mystery.signal 判定字段：返回 '✅'/'❌'/''（缺失时 ''）。"""
     m = row.get('mystery') or {}
@@ -268,6 +276,8 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
             '主升浪8项': _main_wave_count(row),
             '筹码低位': '是' if row.get('chip_low') else '否',
             '高位缩量': '是' if row.get('chip_quiet') else '否',
+            # W32b：换手分档 + 风格（只读 core 纯函数，缺 turn → 未知）
+            **_turn_tags(row),
             '回撤%': (None if row.get('price_pos') is None
                       else round(float(row['price_pos']) * 100, 1)),
             '日期': row.get('trade_date', ''),
