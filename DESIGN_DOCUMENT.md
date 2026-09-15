@@ -143,10 +143,10 @@ analyze_one_stock(symbol):
 
 ## 8. 测试与验收
 
-- `pytest -q -m "not integration"`：99 passed（models/core 合成 OHLC/czsc adapter
+- `pytest -q -m "not integration"`：141 passed（models/core 合成 OHLC/czsc adapter
   mock K 线/金标 ≤ 1/scan_signals 三类信号/缠论图 plot_figure/technical 快照/
   web 页面冒烟 + 后台任务仓库跨 rerun 持久回归 + Excel 单汇总页回归 +
-  CLI 默认 THS 环境注入回归）。
+  CLI 默认 THS 环境注入回归 + 换手覆盖率 QA + 除权事件股本重拉）。
 - 金标 fixtures：`tests/fixtures/gold_{sh600519,sz000001,sh600150}.json`
   （由旧系统 `unified_stock_analysis` 生成，2026-08-27）。
 - 三只票 score：0.0 / 49.0 / 0.0，与旧系统 0 分差（价格/日期/行业分全一致）。
@@ -197,6 +197,7 @@ analyze_one_stock(symbol):
 | W23 | 分析结果缓存（006.md 阶段 3）：`store/cache.py`——`bars_fingerprint`（根数+末根 dt/close/volume 的 sha1）、`make_cache_key`（adjust+rule_ver+归因串 D/C/S+czsc_ver 的 sha1）、`AnalysisCache.get/put`（payload=to_dict JSON）；`analyze_one_stock(use_cache)` 头读尾写、`_result_from_payload` 还原 AnalysisResult（含 MysteryBreakdown/嵌套 dict 明细，综合分经 combine 复算一致）；sync 写 K 线（`upsert_kline`/`upsert_kline_many`）同事务 DELETE 该票 analysis_cache（点号格式归一）；scan 链 env `MYSTERY_SCAN_CACHE` 门控（默认开）。设计修正：epoch 曾入键，因 analyze 在线降级自动落库会自触发失效抖动而移除，改为写入即删。实测：现网二次调用 0 次重算（命中）、关键字段一致、125 离线测试全过（新增 11 项缓存回归） | ✅ 0.9.23 |
 | W24 | 扫描提速（006.md 阶段 4，不改年线语义）：`_analyze_chan` 非日频 series 由 `fetch_bars`（重复读日 K 再 resample）改为 `resample_bars(daily)` 复用主流程已取日 K；主流程 W15 起已 resample、scan worker 复用 AnalysisService+W23 缓存、不增线程池（GIL 无收益）。实测（scripts/w24_bench.py，50 只样本）：resample 路 vs fetch 路规则分差 max=0.000（验收 ≤1）；每票非日频数据获取 0.206s→0.056s，省 ~0.15s/票 ≈ 全市场 5562 只省 ~14min；125 离线测试全过 | ✅ 0.9.24 |
 | W25 | 扫描写库职责单一（006.md 阶段 5）：角色分工——① sync/每日管线写 kline/财务/板块/turn 派生+失效 analysis_cache；② sync-shares（周日 cron）仅股本快照；③ `czsc-mi scan`（**18:00 cron 为扫描写库固定写手**）写 scan_jobs/scan_results（同类型只留最新）；④ Web 默认只读 job，点「扫描」与 cron 互斥——`scan_market` 入口 flock 文件锁（`<db>.scanlock` 记录持有者 pid+时间），并发第二方**拒绝不排队**（进程退出/崩溃自动释放，无残留状态）；`--force`/`no_persist` 不加锁；Web 前台按钮捕获 RuntimeError 显示原因。实测：5 项锁语义测试全过（外部进程探测拒绝/崩溃自动释放/no_persist 与 force 旁路）、130 离线测试全过 | ✅ 0.9.25 |
+| W26 | 007.md 三项：a) 规范/文档对齐代码现状（AGENTS 核对无需改、DESIGN §11 两句旧文案更新、README 补 sync-shares/sync-turnover 命令、migrations/README.txt 更新为迁移框架已落地——纯文档）；b) 换手覆盖率可观测：`turnover_coverage()` QA（近 20 交易日 turn 覆盖/股本可派生率）+ 日报 Excel 页脚行与 HTML 头部 `.qa` 行 + `sync-turnover --backfill-days`（回填仅 CLI，不进管线）+ scan 摘要日志结构化；不改 chip_low 判定与综合分；c) `sync-shares --from-adjustments [--since]`：本地 MarketDB `raw_adjustment_events` 筛送转/增发事件票（无事件零 HTTP 秒回），事件票 ≤3% 也写新 as_of 锚点（unchanged_event 计数），对账状态文件 `<db>.shares_state` 供 since 默认值，插入 daily_pipeline 2/4 步。实测：新增 11 项离线测试、141 全过、金标三只分差 0 | ✅ 0.9.26 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。

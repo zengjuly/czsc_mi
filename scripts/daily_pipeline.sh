@@ -23,17 +23,24 @@ export MYSTERY_CHAN_SCORE="${MYSTERY_CHAN_SCORE:-0}"
 export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
 export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-/home/ai/ai_runner/stock/Financial-API/data}"
 
-echo "[daily_pipeline] 1/3 同步行情（日线 365 天）..."
+echo "[daily_pipeline] 1/4 同步行情（日线 365 天）..."
 czsc-mi sync --period daily --days 365
+
+# W26c（007.md）股本事件触发重拉：本地 MarketDB raw_adjustment_events 筛
+# 送转/增发事件票，无事件零 HTTP 秒回（可安全每日跑）；有事件只重拉命中票，
+# 事件票即使股本变化 ≤3% 也写新 as_of 锚点。周对账（3% 门槛）仍单独 cron。
+echo "[daily_pipeline] 2/4 除权事件股本重拉（无事件零 HTTP）..."
+czsc-mi sync-shares --from-adjustments || \
+  echo "[daily_pipeline] ⚠️ sync-shares --from-adjustments 失败（不阻塞主流程）"
 
 # W22 换手派生：纯本地（读股本快照 → 回算当日空 turn + ≤5日洞），不打 HTTP。
 # 股本快照本身低频：每周单独 cron 跑 `czsc-mi sync-shares --watchlist`
-#（全市场加 --force），不进 18:00 主链。
-echo "[daily_pipeline] 2/3 回算换手率（turn IS NULL → calc_float/ffill）..."
+#（全市场加 --force），不进 18:00 主链。`--backfill-days` 只挂 CLI 手动，不进管线。
+echo "[daily_pipeline] 3/4 回算换手率（turn IS NULL → calc_float/ffill）..."
 czsc-mi sync-turnover --date "$(date '+%F')" || \
   echo "[daily_pipeline] ⚠️ sync-turnover 失败（不阻塞主流程）"
 
-echo "[daily_pipeline] 3/3 后台扫描自选股（落 scan_jobs/scan_results）+ 生成日报（Excel/HTML）..."
+echo "[daily_pipeline] 4/4 后台扫描自选股（落 scan_jobs/scan_results）+ 生成日报（Excel/HTML）..."
 # W17：从 `daily --watchlist`（只出报告不落库）改为 `scan --watchlist --report`——
 # 自选股走 scan_market 落库，Web 真三振池/扫描页可查，同时生成 Excel/HTML 日报
 # （文件名与 daily 一致，飞书 xlsx 链接与 git push 段无需改动）。

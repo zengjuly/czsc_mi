@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -272,12 +272,31 @@ def excel_bytes(results: List[Dict[str, Any]]) -> bytes:
     return _build_buffer(results).getvalue()
 
 
-def write_excel(results: List[Dict[str, Any]], path: str) -> str:
-    """单「汇总报告」页（含全部个股详情列 + 年线条件列）。返回写入路径。"""
+def write_excel(results: List[Dict[str, Any]], path: str,
+                qa_line: Optional[str] = None) -> str:
+    """单「汇总报告」页（含全部个股详情列 + 年线条件列）。返回写入路径。
+
+    qa_line：W26b 换手覆盖率 QA，写入表格下方一行（只读观测，不加列、不改排序）。
+    """
     import os
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     buf = _build_buffer(results)
     with open(path, "wb") as f:
         f.write(buf.getvalue())
+    if qa_line:
+        _append_qa_row(path, qa_line)
     logger.info("✅ Excel 报告生成完成: %s（%d 只，单汇总页）", path, len(results))
     return path
+
+
+def _append_qa_row(path: str, qa_line: str) -> None:
+    """在「汇总报告」sheet 表格末行下方空一行写 QA（openpyxl 追加）。"""
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(path)
+        ws = wb["汇总报告"]
+        row = ws.max_row + 2
+        ws.cell(row=row, column=1, value=qa_line)
+        wb.save(path)
+    except Exception as e:  # noqa: BLE001 QA 观测失败不阻塞报告
+        logger.warning("Excel QA 行写入失败（不影响报告主体）: %s", e)

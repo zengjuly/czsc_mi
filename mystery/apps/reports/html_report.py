@@ -11,7 +11,7 @@ from __future__ import annotations
 import html as _html
 import logging
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,7 @@ th { background: #f0f2f9; }
 .signal-tag { display: inline-block; background: #e8f5e9; color: #2e7d32;
               border-radius: 12px; padding: 2px 10px; margin-right: 6px; font-size: .82em; }
 footer { color: #aaa; font-size: .8em; text-align: center; margin-top: 20px; }
+.qa { color: #667; font-size: .85em; background: #f4f5fb; border-radius: 6px; padding: 6px 10px; }
 </style>
 """
 
@@ -155,8 +156,12 @@ def _stock_card(d: Dict[str, Any]) -> str:
 </div>"""
 
 
-def write_html(results: List[Dict[str, Any]], path: str) -> str:
-    """汇总 HTML（按分降序，每只一张卡片）。返回写入路径。"""
+def write_html(results: List[Dict[str, Any]], path: str,
+               qa_line: Optional[str] = None) -> str:
+    """汇总 HTML（按分降序，每只一张卡片）。返回写入路径。
+
+    qa_line：W26b 换手覆盖率 QA，展示在头部统计行（只读观测）。
+    """
     import os
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     ordered = sorted(results,
@@ -165,12 +170,14 @@ def write_html(results: List[Dict[str, Any]], path: str) -> str:
                      reverse=True)
     cards = "".join(_stock_card(d) for d in ordered)
     n_true = sum(1 for d in ordered if d.get("true_resonance"))
+    qa_html = (f'<p class="qa">{qa_line}</p>' if qa_line else "")
     doc = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><title>每日股票分析报告</title>{_CSS}</head>
 <body><div class="container">
 <div class="header"><h1>📈 每日股票分析报告</h1>
-<p>{len(ordered)} 只 · 真三振 {n_true} 只 · 生成于 {datetime.now().strftime('%Y-%m-%d %H:%M')}</p></div>
+<p>{len(ordered)} 只 · 真三振 {n_true} 只 · 生成于 {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+{qa_html}</div>
 {cards}
 <footer>Mistery 趋势交易分析 · czsc_mi · 分数来自 mystery.services.analyze.analyze_one_stock</footer>
 </div></body></html>"""

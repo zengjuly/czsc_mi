@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from datetime import datetime
 from typing import Optional
 
 from ..config import load_config, output_dir
+
+logger = logging.getLogger(__name__)
 
 
 def _ensure_default_ths_env() -> None:
@@ -113,8 +116,15 @@ def _cmd_daily(args: argparse.Namespace) -> int:
     date_str = datetime.now().strftime("%Y%m%d")
     xlsx = f"{out}/每日股票分析报告_{date_str}.xlsx"
     html = f"{out}/每日股票分析报告_{date_str}.html"
-    write_excel(results, xlsx)
-    write_html(results, html)
+    try:  # W26b QA 行（只读观测）
+        from ..store.db import MysteryDB
+        qa_line = _turnover_qa_line(
+            MysteryDB(), results,
+            (results[0].get('trade_date') or '')[:10] or date_str)
+    except Exception:  # noqa: BLE001
+        qa_line = ""
+    write_excel(results, xlsx, qa_line=qa_line or None)
+    write_html(results, html, qa_line=qa_line or None)
     print(f"共 {len(results)} 只（失败 {failed}）")
     print(xlsx)
     print(html)
@@ -126,18 +136,30 @@ def _write_scan_report(results, args) -> None:
 
     文件名与 daily 一致（每日股票分析报告_YYYYMMDD.xlsx/.html），
     供飞书 xlsx 链接与 git push 复用，无需改 feishu_notify / 管线 git 段。
+    W26b：附换手覆盖率 QA 行（只读观测，不改排序、不改 2%/低位门）。
     """
     from ..apps.reports.excel_report import write_excel
     from ..apps.reports.html_report import write_html
+    from ..store.db import MysteryDB
 
     out = output_dir(args.cfg)
     date_str = datetime.now().strftime("%Y%m%d")
     xlsx = f"{out}/每日股票分析报告_{date_str}.xlsx"
     html = f"{out}/每日股票分析报告_{date_str}.html"
-    write_excel(results, xlsx)
-    write_html(results, html)
+    try:
+        trade_date = (results[0].get('trade_date') or '')[:10] \
+            if results else ''
+        qa_line = _turnover_qa_line(MysteryDB(), results,
+                                     trade_date or date_str) \
+            if results else ""
+    except Exception:  # noqa: BLE001 QA 失败不阻塞报告
+        qa_line = ""
+    write_excel(results, xlsx, qa_line=qa_line or None)
+    write_html(results, html, qa_line=qa_line or None)
     print(f"报告已生成: {xlsx}")
     print(f"报告已生成: {html}")
+    if qa_line:
+        print(f"[换手QA] {qa_line}")
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
@@ -198,6 +220,12 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 def _cmd_sync_shares(args: argparse.Namespace) -> int:
     from ..services.sync_shares import sync_shares
 
+    if getattr(args, 'from_adjustments', False):
+        from ..services.sync_shares import sync_shares_from_adjustments
+        out = sync_shares_from_adjustments(since=args.since)
+        print(json.dumps(out, ensure_ascii=False))
+        return 0    # 无事件/表缺失均为正常路径（周对账兜底），不阻塞管线
+
     codes = None
     if args.watchlist:
         from ..services.watchlist import load_watchlist
@@ -217,9 +245,34 @@ def _cmd_sync_turnover(args: argparse.Namespace) -> int:
     db = MysteryDB()
     trade_date = args.date or datetime.now().strftime('%Y-%m-%d')
     codes = load_watchlist() if args.watchlist else None
-    out = sync_turnover(trade_date, codes=codes, db=db)
+    out = sync_turnover(trade_date, codes=codes, db=db,
+                        backfill_days=args.backfill_days)
     print(json.dumps(out, ensure_ascii=False))
     return 0
+
+
+def _turnover_qa_line(db, results, trade_date: str) -> str:
+    """W26b 日报 QA 行：换手20日覆盖率 + chip_low 低位未知只数（只读，不改判）。"""
+    try:
+        import math
+
+        codes = [r.get('symbol') for r in results if r.get('symbol')]
+        stats = db.turnover_qa_stats(trade_date, codes=codes or None)
+        cov = stats.get('coverage')
+        cov_s = f"{cov * 100:.1f}%" if cov is not None else "无数据"
+        n_unknown = sum(1 for r in results if r.get('chip_low_unknown'))
+        n_turn = sum(1 for r in results
+                     if r.get('turnover_20') is not None
+                     or (isinstance(r.get('turnover_20'), float)
+                         and not math.isnan(r['turnover_20'])))
+        return (f"换手20日覆盖率 {cov_s}"
+                f"（窗口 {stats.get('window_start')}~{trade_date}，"
+                f"{stats.get('n_symbols')} 只中 {stats.get('n_with_shares')} 只有股本）"
+                f" · 本次报告 chip_low 未知 {n_unknown}/{len(results)} 只"
+                f"（近20日均换手可得 {n_turn} 只）")
+    except Exception as e:  # noqa: BLE001 QA 失败不阻塞日报
+        logger.debug(f"turnover QA 行生成失败: {e}")
+        return ""
 
 
 def _cmd_sector_sync(args: argparse.Namespace) -> int:
@@ -290,11 +343,16 @@ def main(argv: Optional[list] = None) -> int:
     p.set_defaults(func=_cmd_sync)
 
     p = sub.add_parser("sync-shares",
-                       help="流通股本快照刷新（低频：初始化/每周对账，W22）")
+                       help="流通股本快照刷新（低频：初始化/每周对账/除权事件，W22/W26c）")
     p.add_argument("--force", action="store_true",
-                   help="强制全量重拉并写快照（跳过 3% 跳变过滤）")
+                   help="强制全量重拉并写快照（跳过 3%% 跳变过滤）")
     p.add_argument("--watchlist", action="store_true",
                    help="只刷自选股（每周对账必跑）")
+    p.add_argument("--from-adjustments", action="store_true",
+                   help="W26c：只重拉 MarketDB 除权事件（送转/增发）命中的票；"
+                        "无事件零 HTTP 秒回，可安全进每日管线")
+    p.add_argument("--since", default=None,
+                   help="事件窗口起点 YYYY-MM-DD（默认上次成功对账日，否则近 7 天）")
     p.set_defaults(func=_cmd_sync_shares)
 
     p = sub.add_parser("sync-turnover",
@@ -302,6 +360,9 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--date", default=None, help="交易日 YYYY-MM-DD（默认今天）")
     p.add_argument("--watchlist", action="store_true",
                    help="只处理自选股（默认全市场）")
+    p.add_argument("--backfill-days", type=int, default=None,
+                   help="W26b 策略 B：额外回填近 N 自然日内的空 turn"
+                        "（不越过各票快照 as_of；仅手动，勿入每日管线）")
     p.set_defaults(func=_cmd_sync_turnover)
 
     p = sub.add_parser("sector-sync", help="同步板块成分股 → stock_sector_rel")

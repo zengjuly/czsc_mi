@@ -579,6 +579,29 @@ class MysteryDB:
             finally:
                 conn.close()
 
+    def null_turn_rows_between(self, start_date: str, end_date: str,
+                               codes: Optional[List[str]] = None) -> List[Dict]:
+        """[start_date, end_date) 区间 turn IS NULL 且 volume 有效的日K行。
+
+        W26b 策略 B 回填用；右开（不含 end_date，当日由主路径处理，不重复计）。
+        """
+        sql = ("SELECT code, substr(date,1,10) d, volume FROM stock_kline_data "
+               "WHERE period='daily' AND substr(date,1,10)>=? "
+               "AND substr(date,1,10)<? "
+               "AND turn IS NULL AND volume > 0 ")
+        args: List = [start_date, end_date]
+        if codes:
+            sql += f"AND code IN ({','.join('?' * len(codes))}) "
+            args += list(codes)
+        sql += "ORDER BY code, date"
+        with self._lock:
+            conn = self._connect()
+            try:
+                return [{'code': r[0], 'date': r[1], 'volume': r[2]}
+                        for r in conn.execute(sql, args).fetchall()]
+            finally:
+                conn.close()
+
     def set_turn(self, code: str, date: str, turn: float,
                  source: str) -> None:
         """仅当该行 turn 仍为空时写入（legacy/official 绝不覆盖）。"""
@@ -627,6 +650,67 @@ class MysteryDB:
                         'rows': total, 'with_turn': with_turn,
                         'coverage': round(with_turn / total, 4) if total else None,
                         'by_source': {r[0]: r[1] for r in rows}}
+            finally:
+                conn.close()
+
+    def turnover_qa_stats(self, trade_date: str,
+                          codes: Optional[List[str]] = None,
+                          window_days: int = 33) -> Dict:
+        """W26b QA：窗口 [trade_date-window_days, trade_date] 内按票统计。
+
+        universe 口径：窗口内有日 K 行的票才算分母（无 K 不摊薄覆盖率）。
+        n_with_shares：存在 as_of <= trade_date 股本快照的票（可派生票）。
+        by_source 含 null 键 = 窗口内仍无 turn 的行数（chip_low_unknown 根源）。
+        """
+        from datetime import datetime, timedelta
+        start = (datetime.strptime(trade_date, '%Y-%m-%d')
+                 - timedelta(days=window_days)).strftime('%Y-%m-%d')
+        with self._lock:
+            conn = self._connect()
+            try:
+                where = ("period='daily' AND substr(date,1,10)>=? "
+                         "AND substr(date,1,10)<=?")
+                args: List = [start, trade_date]
+                if codes:
+                    where += f" AND code IN ({','.join('?' * len(codes))})"
+                    args += list(codes)
+                uni = ('' if codes else
+                       " AND code IN (SELECT code FROM stock_industry_info"
+                       " WHERE type='1' OR type IS NULL)")
+                rows = conn.execute(
+                    f"SELECT code, COALESCE(turn_source,'null'), COUNT(*), "
+                    f"SUM(CASE WHEN turn IS NOT NULL THEN 1 ELSE 0 END) "
+                    f"FROM stock_kline_data WHERE {where}{uni} "
+                    f"GROUP BY code, 2", args).fetchall()
+                stats = {'as_of': trade_date, 'window_start': start,
+                         'n_symbols': 0, 'n_with_shares': 0,
+                         'rows': 0, 'with_turn': 0, 'coverage': None,
+                         'by_source': {}, 'n_symbols_full': 0}
+                by_code: Dict[str, tuple] = {}
+                for code, src, n, w in rows:
+                    prev = by_code.get(code, (0, 0))
+                    by_code[code] = (prev[0] + n, prev[1] + w)
+                    stats['by_source'][src] = stats['by_source'].get(src, 0) + n
+                if codes:
+                    stats['n_symbols'] = len(set(codes))
+                else:
+                    stats['n_symbols'] = len(by_code)
+                for code, (n, w) in by_code.items():
+                    stats['rows'] += n
+                    stats['with_turn'] += w
+                    if n and w == n:
+                        stats['n_symbols_full'] += 1
+                snaps = conn.execute(
+                    "SELECT DISTINCT thscode FROM float_share_snapshot "
+                    "WHERE as_of<=?", (trade_date,)).fetchall()
+                snap_set = {r[0] for r in snaps}
+                targets = set(codes) if codes else set(by_code)
+                stats['n_with_shares'] = sum(
+                    1 for c in targets if _dot(c) in snap_set)
+                if stats['rows']:
+                    stats['coverage'] = round(
+                        stats['with_turn'] / stats['rows'], 4)
+                return stats
             finally:
                 conn.close()
 
