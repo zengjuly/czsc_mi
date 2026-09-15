@@ -148,6 +148,30 @@ def sync_shares(codes: Optional[List[str]] = None,
     return out
 
 
+def adjustment_event_columns(marketdb_path: str) -> Optional[List[str]]:
+    """W28d（009.md）：探测 raw_adjustment_events 列集（只读）。
+
+    表不存在/文件缺失 → None。当前业务口径只认
+    per_share_bonus/allotment_ratio（送转/增发），回购注销、解禁**无列不猜**；
+    若上游加了 event_type 类列，tests 会红并提示扩 find_adjustment_events。
+    """
+    if not marketdb_path or not os.path.exists(marketdb_path):
+        return None
+    try:
+        import duckdb
+        con = duckdb.connect(marketdb_path, read_only=True)
+        try:
+            rows = con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name='raw_adjustment_events' "
+                "ORDER BY ordinal_position").fetchall()
+            return [r[0] for r in rows] or None
+        finally:
+            con.close()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def find_adjustment_events(marketdb_path: str, since: str) -> Optional[List[str]]:
     """从本地 MarketDB raw_adjustment_events 筛 [since, ∞) 股本类事件票。
 

@@ -188,3 +188,55 @@ def test_fresh_skip_days_zero_http(tmp_path, monkeypatch):
                           event_codes={'600519.SH'})
     assert sorted(called[0]) == ['000001.SZ', '600519.SH']
     assert out2['skipped_recent'] == 0
+
+
+def test_event_table_schema_probe(tmp_path):
+    """W28d（009.md）：事件表列集守护——现口径只认送转 per_share_bonus /
+    增发 allotment_ratio（+ 原始列）。上游若新增事件类型/回购注销/解禁列，
+    本测试变红提示扩 find_adjustment_events（原则：不猜列名硬筛）。"""
+    import duckdb
+
+    from mystery.services.sync_shares import adjustment_event_columns
+    # 文件缺失 → None（调用方 warn 跳过，周对账兜底）
+    assert adjustment_event_columns(str(tmp_path / 'nope.duckdb')) is None
+    p = str(tmp_path / 'adj.duckdb')
+    con = duckdb.connect(p)
+    con.execute(
+        "CREATE TABLE raw_adjustment_events (thscode VARCHAR, ticker VARCHAR,"
+        " ex_date DATE, dividend_per_share DOUBLE, per_share_bonus DOUBLE,"
+        " allotment_ratio DOUBLE, allotment_price DOUBLE, currency VARCHAR,"
+        " source_batch_id VARCHAR)")
+    con.close()
+    cols = set(adjustment_event_columns(p))
+    known = {'thscode', 'ticker', 'ex_date', 'dividend_per_share',
+             'per_share_bonus', 'allotment_ratio', 'allotment_price',
+             'currency', 'source_batch_id'}
+    new_cols = cols - known
+    assert not new_cols, (
+        f"raw_adjustment_events 新增列 {sorted(new_cols)} —— 若为事件类型/"
+        "回购注销/解禁字段，请扩 find_adjustment_events 的 WHERE 口径并"
+        "更新本守护 + DESIGN §11")
+    # 纯现金分红列存在但业务上不触发（不改流通盘）——口径测试已覆盖：
+    # test_find_events_filter 中仅 dividend_per_share>0 的票不入选
+
+
+def test_real_event_table_guard():
+    """对真实 MarketDB（若本机存在）跑同一守护；无库则 skip（CI 友好）。"""
+    import os
+
+    import pytest
+
+    from mystery.services.sync_shares import adjustment_event_columns
+    db = os.environ.get('MARKETDB_DB_PATH',
+                        '/home/ai/ai_runner/stock/Financial-API/data/'
+                        'market.duckdb')
+    if not os.path.exists(db):
+        pytest.skip('本机无 MarketDB')
+    cols = adjustment_event_columns(db)
+    assert cols is not None
+    known = {'thscode', 'ticker', 'ex_date', 'dividend_per_share',
+             'per_share_bonus', 'allotment_ratio', 'allotment_price',
+             'currency', 'source_batch_id'}
+    assert not set(cols) - known, (
+        f"真实事件表出现新列 {sorted(set(cols) - known)}，"
+        "需评估是否扩事件口径（见 009.md W28d）")

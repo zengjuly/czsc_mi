@@ -701,15 +701,56 @@ class MysteryDB:
                     if n and w == n:
                         stats['n_symbols_full'] += 1
                 snaps = conn.execute(
-                    "SELECT DISTINCT thscode FROM float_share_snapshot "
-                    "WHERE as_of<=?", (trade_date,)).fetchall()
+                    "SELECT thscode, MAX(as_of) FROM float_share_snapshot "
+                    "WHERE as_of<=? GROUP BY thscode",
+                    (trade_date,)).fetchall()
                 snap_set = {r[0] for r in snaps}
+                # W28a：票级 as_of 表（thscode '600519.SH' → db code 'sh600519'）
+                as_of_by_db = {}
+                for t, a in snaps:
+                    if '.' in t:
+                        num, ex = t.rsplit('.', 1)
+                        # db code 形如 sh.600001（带点）
+                        as_of_by_db[f"{ex.lower()}.{num}"] = a
                 targets = set(codes) if codes else set(by_code)
                 stats['n_with_shares'] = sum(
                     1 for c in targets if _dot(c) in snap_set)
+                stats['no_shares'] = stats['n_symbols'] - stats['n_with_shares']
                 if stats['rows']:
                     stats['coverage'] = round(
                         stats['with_turn'] / stats['rows'], 4)
+                # W28a（009.md）：fillable 口径 —— 只统计「有快照且
+                # date >= as_of」且 volume 有效的 K 根（这些行才是派生
+                # 「有资格填」的根）；覆盖率低但可填覆盖率高 = 快照新、
+                # 窗口前半段依法不填，不是派生失败。只读，不改任何写入。
+                dated = conn.execute(
+                    f"SELECT code, substr(date,1,10), turn, volume "
+                    f"FROM stock_kline_data WHERE {where}{uni}",
+                    args).fetchall()
+                fillable = filled = skipped = 0
+                as_of_list = sorted(v for k, v in as_of_by_db.items()
+                                    if k in targets)
+                for code, d, turn, vol in dated:
+                    a = as_of_by_db.get(code)
+                    if not a:
+                        continue
+                    if d < a:
+                        if turn is None:
+                            skipped += 1
+                        continue
+                    if vol is not None and vol > 0:
+                        fillable += 1
+                        if turn is not None:
+                            filled += 1
+                stats['fillable_rows'] = fillable
+                stats['filled_rows'] = filled
+                stats['fillable_coverage'] = (round(filled / fillable, 4)
+                                               if fillable else None)
+                stats['skipped_before_asof'] = skipped
+                if as_of_list:
+                    stats['as_of_min'] = as_of_list[0]
+                    stats['as_of_max'] = as_of_list[-1]
+                    stats['as_of_p50'] = as_of_list[len(as_of_list) // 2]
                 return stats
             finally:
                 conn.close()

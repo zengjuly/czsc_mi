@@ -138,11 +138,15 @@ def test_dual_scope_qa_line(qa_db, tmp_path, monkeypatch):
 
     line = _turnover_qa_line(qa_db, [], '2026-09-11')
     rows = line.split('\n')
-    assert len(rows) == 2, line
-    assert rows[0].startswith('自选 换手20日覆盖率')
-    assert rows[1].startswith('全市场 换手20日覆盖率')
+    # W28a：每口径首行 + 可填明细行（有 fillable 时）；行首缩进两空格
+    heads = [r for r in rows if r.startswith('自选 换手20日覆盖率')]
+    mkt = [r for r in rows if r.startswith('全市场 换手20日覆盖率')]
+    assert len(heads) == 1 and len(mkt) == 1
+    details = [r for r in rows if r.startswith('  ')]
+    assert len(details) == 2, line
+    assert all('可填覆盖率' in d and 'as_of' in d for d in details)
     # 自选口径分母 = 2 只有 K 的自选票（全市场 = 4 只）
-    assert '2 只中' in rows[0] and '4 只中' in rows[1]
+    assert '2 只中' in heads[0] and '4 只中' in mkt[0]
     # 双口径独立计算：自选分母只含自选票（本 fixture 里 with-turn 行都在
     # 600002/600003，自选覆盖率 0 < 全市场 0.25 属预期——证明口径确实拆开、
     # 全市场数字不再冒充自选健康度）
@@ -166,3 +170,33 @@ def test_coverage_denominator_excludes_no_k(qa_db):
                                             'sh.999999'])
     assert stats2['rows'] == 16 and stats2['coverage'] == before
     assert stats2['n_symbols'] == 5      # universe 口径保留
+
+
+def test_fillable_coverage_qa(qa_db):
+    """W28a（009.md）：可填覆盖率与覆盖率分离——as_of 落在窗口末日的票，
+    覆盖率被「依法不填」的 date<as_of 行拉低，但 fillable 口径应显示健康。
+    只读口径，不得产生新 turn（回填后 fillable 才升到 100%）。"""
+    # 回填前：全市场（4 只票）——600003 legacy 4 行带 turn → coverage 4/16
+    s0 = qa_db.turnover_qa_stats('2026-09-11')
+    assert s0['coverage'] == 0.25
+    # fillable = 有快照且 date>=as_of 且 volume>0：600000×4 + 600001×1(09-11)
+    assert s0['fillable_rows'] == 5
+    assert s0['filled_rows'] == 0
+    assert s0['fillable_coverage'] == 0.0
+    assert s0['skipped_before_asof'] == 3          # 600001 的 09-08..09-10
+    assert s0['no_shares'] == 2                   # 600002/600003
+    assert s0['as_of_min'] == '2026-09-08' and s0['as_of_max'] == '2026-09-11'
+    assert s0['as_of_p50'] == '2026-09-11'         # 票级 MAX(as_of) 排序取中位
+    # 单票 600001（as_of=窗口末日）：覆盖率 0%，可填口径同样 0/1——
+    # 但 as_of 前空 turn 行数解释了缺口来源
+    s1 = qa_db.turnover_qa_stats('2026-09-11', codes=['sh.600001'])
+    assert s1['coverage'] == 0.0
+    assert s1['fillable_rows'] == 1 and s1['skipped_before_asof'] == 3
+    # 合法近端回填后：fillable → 100%，coverage 升到 9/16；as_of 前仍空
+    sync_turnover('2026-09-11', db=qa_db, backfill_days=20)
+    s2 = qa_db.turnover_qa_stats('2026-09-11')
+    assert s2['fillable_coverage'] == 1.0
+    assert s2['filled_rows'] == 5 and s2['fillable_rows'] == 5
+    assert s2['coverage'] == round(9 / 16, 4)
+    t1 = _turns(qa_db, 'sh.600001')
+    assert t1['2026-09-10'][0] is None            # 回填未越 as_of

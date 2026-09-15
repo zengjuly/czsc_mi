@@ -269,9 +269,24 @@ def _turnover_qa_line(db, results, trade_date: str) -> str:
         def _cov_str(stats) -> str:
             cov = stats.get('coverage')
             cov_s = f"{cov * 100:.1f}%" if cov is not None else "无数据"
-            return (f"{cov_s}（{stats.get('n_symbols')} 只中 "
-                    f"{stats.get('n_with_shares')} 只有股本快照，"
-                    f"窗口 {stats.get('window_start')}~{trade_date}）")
+            fc = stats.get('fillable_coverage')
+            fc_s = (f"{fc * 100:.1f}%" if fc is not None else "—")
+            seg = (f"{cov_s}（{stats.get('n_symbols')} 只中 "
+                   f"{stats.get('n_with_shares')} 只有股本快照，"
+                   f"窗口 {stats.get('window_start')}~{trade_date}）")
+            # W28a：可填口径 —— as_of 落在窗口中后段时覆盖率被「依法不填」
+            # 的前半段拉低；可填覆盖率才反映派生健康度（目标自选 ≥95%）
+            if stats.get('fillable_rows'):
+                extra = (f" | 可填覆盖率 {fc_s}"
+                         f"（{stats.get('filled_rows')}/"
+                         f"{stats.get('fillable_rows')} 根）")
+                if stats.get('as_of_min'):
+                    extra += (f" | 快照 as_of {stats['as_of_min']}"
+                              f"~{stats['as_of_max']}")
+                if stats.get('skipped_before_asof'):
+                    extra += f" | as_of前空turn {stats['skipped_before_asof']} 根"
+                seg += "\n  " + extra.strip(" |")
+            return seg
 
         n_unknown = sum(1 for r in results if r.get('chip_low_unknown'))
         n_turn = sum(1 for r in results
@@ -310,6 +325,21 @@ def _turnover_qa_line(db, results, trade_date: str) -> str:
                 if st.get('date') == datetime.now().strftime('%Y-%m-%d'):
                     lines.append(f"管线状态：股本刷新={st.get('shares_refresh')}"
                                  f"；换手派生={st.get('turnover_derive')}")
+            # W28b（009.md）：周日铺盘验收行（7 日内有效）
+            wp = os.path.join(output_dir(), 'weekly_shares_status.json')
+            if os.path.exists(wp):
+                import time as _t
+                with open(wp, encoding='utf-8') as f:
+                    ws = json.load(f)
+                age = (_t.time() - os.path.getmtime(wp)) / 86400
+                if age <= 7:
+                    mark = "✅" if ws.get('exit') == 0 else "❌"
+                    lines.append(
+                        f"上周铺盘 {mark}：market_with_shares="
+                        f"{ws.get('market_with_shares')}/"
+                        f"{ws.get('market_symbols')} "
+                        f"(watchlist {ws.get('watchlist_with_shares')}/"
+                        f"{ws.get('watchlist_symbols')})")
         except Exception:  # noqa: BLE001 状态缺失不影响 QA
             pass
         return "\n".join(lines)
