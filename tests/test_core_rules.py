@@ -109,13 +109,16 @@ def _mk_breakdown(score=49.0, resonance=55.0, vetoed=False) -> MysteryBreakdown:
     return MysteryBreakdown(signal=signal)
 
 
-def _mk_chan(last_bi_dir='up', in_zs=False, confirmed=True, weekly_dir=None):
+def _mk_chan(last_bi_dir='up', in_zs=False, confirmed=True, weekly_dir=None,
+             zs_position='', bs_flag='', divergence=''):
     from mystery.core.models import ChanBi, ChanStructure
 
     chan = {'1d': ChanStructure(freq='1d', bis=[ChanBi('up', '2026-01-01',
                                                        '2026-02-01', 10, 9)],
                                 last_bi_dir=last_bi_dir,
                                 last_bi_confirmed=confirmed, in_zs=in_zs,
+                                zs_position=zs_position, bs_flag=bs_flag,
+                                divergence=divergence,
                                 engine='czsc', engine_ver='1.0.1')}
     if weekly_dir:
         chan['1w'] = ChanStructure(
@@ -126,41 +129,66 @@ def _mk_chan(last_bi_dir='up', in_zs=False, confirmed=True, weekly_dir=None):
 
 
 def test_chan_score_defaults():
+    """6C 规则表：末笔 ±12；无 zs_position 时老 in_zs 回退 +5。"""
     from mystery.core.scorer import chan_score
 
     assert chan_score(None) == 50.0
     assert chan_score({}) == 50.0
-    assert chan_score(_mk_chan('up')) == 60.0
-    assert chan_score(_mk_chan('up', in_zs=True)) == 65.0
-    assert chan_score(_mk_chan('down')) == 40.0
+    assert chan_score(_mk_chan('up')) == 62.0
+    assert chan_score(_mk_chan('up', in_zs=True)) == 67.0
+    assert chan_score(_mk_chan('down')) == 38.0
     # 未确认笔不给方向分
     assert chan_score(_mk_chan('up', confirmed=False)) == 50.0
 
 
 def test_chan_score_weekly_same_opposite():
-    """W6：日周同向 +8 / 反向 -8。"""
+    """W6：日周同向 +8 / 反向 -8（6C 末笔基准改 ±12）。"""
     from mystery.core.scorer import chan_score
 
-    assert chan_score(_mk_chan('up', weekly_dir='up')) == 68.0
-    assert chan_score(_mk_chan('up', weekly_dir='down')) == 52.0
-    assert chan_score(_mk_chan('down', weekly_dir='down')) == 48.0
-    assert chan_score(_mk_chan('down', weekly_dir='up')) == 32.0
+    assert chan_score(_mk_chan('up', weekly_dir='up')) == 70.0
+    assert chan_score(_mk_chan('up', weekly_dir='down')) == 54.0
+    assert chan_score(_mk_chan('down', weekly_dir='down')) == 46.0
+    assert chan_score(_mk_chan('down', weekly_dir='up')) == 30.0
 
 
 def test_chan_score_clamped():
     from mystery.core.scorer import chan_score
 
-    # up + 中枢 + 同向 = 50+10+5+8 = 73；夹紧上界
-    assert chan_score(_mk_chan('up', in_zs=True, weekly_dir='up')) == 73.0
+    # up + 老口径中枢 + 同向 = 50+12+5+8 = 75；夹紧上界
+    assert chan_score(_mk_chan('up', in_zs=True, weekly_dir='up')) == 75.0
+    # 全负因子（6C 表理论下界）：down - 12 / below - 8 / 反向 - 8 / 三卖 - 10 / 顶背驰 - 10 = 2
+    assert chan_score(_mk_chan('down', zs_position='below',
+                               weekly_dir='up', bs_flag='三卖',
+                               divergence='顶背驰')) == 2.0
+    # 全正因子上界：up + 12 / above + 8 / 同向 + 8 / 一买 + 10 / 底背驰 + 10 = 98
+    assert chan_score(_mk_chan('up', zs_position='above', weekly_dir='up',
+                               bs_flag='一买', divergence='底背驰')) == 98.0
+
+
+def test_chan_score_6c_new_factors():
+    """6C：价格口径中枢位置、买卖点、背驰标签各自生效。"""
+    from mystery.core.scorer import chan_score
+
+    # 基准 up(+12)：above+8 / in+2 / below-8
+    assert chan_score(_mk_chan('up', zs_position='above')) == 70.0
+    assert chan_score(_mk_chan('up', zs_position='in')) == 64.0
+    assert chan_score(_mk_chan('up', zs_position='below')) == 54.0
+    # 买卖点 ±10、背驰 顶-10/底+10；无标签 0
+    assert chan_score(_mk_chan('up', bs_flag='二买')) == 72.0
+    assert chan_score(_mk_chan('up', bs_flag='三卖')) == 52.0
+    assert chan_score(_mk_chan('up', divergence='底背驰')) == 72.0
+    assert chan_score(_mk_chan('up', divergence='顶背驰')) == 52.0
 
 
 def test_combine_p4_blend():
-    """P4：0.55*49 + 0.25*55 + 0.20*60 = 43.95 → 44.0。"""
-    from mystery.core.scorer import combine
+    """P4：0.55*49 + 0.25*55 + 0.20*S_chan(up=62) —— 权重不变，S_chan 换 6C 表。"""
+    from mystery.core.scorer import combine, chan_score
 
     bd = _mk_breakdown()
-    score, advice, true_res = combine(bd, _mk_chan('up'), chan_enabled=True)
-    assert score == round(0.55 * 49 + 0.25 * 55 + 0.20 * 60, 1)
+    chan = _mk_chan('up')
+    score, advice, true_res = combine(bd, chan, chan_enabled=True)
+    assert score == round(0.55 * 49 + 0.25 * 55 + 0.20 * chan_score(chan), 1)
+    assert score == round(0.55 * 49 + 0.25 * 55 + 0.20 * 62, 1)
     assert advice == '可关注'
 
 

@@ -3,6 +3,9 @@
 一期（P1/P2）：只用 Mystery 原公式，与 stock_analyzer 1.22.30 兼容。
 P4 公式已落地：MYSTERY_CHAN_ENABLED=1 且 MYSTERY_CHAN_SCORE=1 时
 S = 0.55*S_mystery + 0.25*S_resonance + 0.20*S_chan（S_chan 缺省 50）。
+0.10.0（010.md 阶段6C）：S_chan 换 6B 标定规则表（价格口径中枢位置 +
+czsc 买卖点/背驰标签），仅「结构开 + 分开关」路径生效；分关路径与
+rule_ver 常量 mystery-1.22.30-compat 不变。
 生产默认 chan.score=false（混合分关），综合分 = Mystery 1.22.30；
 与 analyze.py 的 chan_enabled()/chan_score_enabled() 两个开关一致。
 """
@@ -14,12 +17,17 @@ from .models import ChanStructure, MysteryBreakdown
 
 
 def chan_score(chan: Optional[Dict[str, ChanStructure]]) -> float:
-    """缠论分（可解释规则，权重 0.20，仅用 ChanStructure，core 不碰 czsc 对象）：
+    """缠论分 S_chan（010.md 6B 标定规则表；只用 ChanStructure，
+    core 不碰 czsc 对象；30 只快照标定，分布见 docs/010.md）：
 
-    - 无日线结构：50
-    - 日线末笔 up 且已确认：+10；down 且已确认：-10
-    - 日线当前在中枢内：+5
-    - 有周线且周线末笔与日线同向：+8；反向：-8
+    - 无日线结构：50（基准不变）
+    - 日线末笔确认 up / down：+12 / −12
+    - 收盘价 vs 末中枢（价格口径 zs_position）：above +8 / in +2 / below −8；
+      老缓存缺该字段时回退旧时间口径 in_zs +5（与 1.22.30 行为兼容）
+    - 周线末笔与日线同向 / 反向：+8 / −8
+    - czsc 买卖点标签 bs_flag：一买/二买/三买 +10；一卖/二卖/三卖 −10
+      （无标签 → 0，禁止在 core 猜）
+    - czsc 背驰标签 divergence：顶背驰 −10 / 底背驰 +10（无标签 → 0）
     - 分数夹紧 [0, 100]
     """
     if not chan or '1d' not in chan:
@@ -27,10 +35,18 @@ def chan_score(chan: Optional[Dict[str, ChanStructure]]) -> float:
     c1 = chan['1d']
     s = 50.0
     if c1.last_bi_dir == 'up' and c1.last_bi_confirmed:
-        s += 10
+        s += 12
     elif c1.last_bi_dir == 'down' and c1.last_bi_confirmed:
-        s -= 10
-    if c1.in_zs:
+        s -= 12
+    pos = getattr(c1, 'zs_position', '')
+    if pos == 'above':
+        s += 8
+    elif pos == 'in':
+        s += 2
+    elif pos == 'below':
+        s -= 8
+    elif c1.in_zs:
+        # 老缓存（无 6A 字段）：回退时间口径，保持旧契约加分
         s += 5
     w = chan.get('1w')
     if w and c1.last_bi_dir and w.last_bi_dir:
@@ -38,6 +54,16 @@ def chan_score(chan: Optional[Dict[str, ChanStructure]]) -> float:
             s += 8
         else:
             s -= 8
+    bs = getattr(c1, 'bs_flag', '')
+    if bs in ('一买', '二买', '三买'):
+        s += 10
+    elif bs in ('一卖', '二卖', '三卖'):
+        s -= 10
+    div = getattr(c1, 'divergence', '')
+    if '顶背驰' in div:
+        s -= 10
+    elif '底背驰' in div:
+        s += 10
     return min(100.0, max(0.0, s))
 
 

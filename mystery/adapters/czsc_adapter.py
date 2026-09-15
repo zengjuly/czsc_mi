@@ -9,7 +9,7 @@ import importlib.metadata
 import json
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -366,6 +366,50 @@ class CzscAdapter:
                                    source=f"{daily.source}:resample")
             out[freq] = self.analyze(series)
         return out
+
+    def signal_flags(self, series: BarSeries) -> Tuple[str, str]:
+        """czsc 买卖点/背驰标签（010.md 6A/6C；仅混合分路径调用，分关零开销）。
+
+        实测 czsc 1.0.1：`_native.call_signal(name, c, params=...)` 直调最新
+        信号值（非滚动生成，成本低）。返回 (bs_flag, divergence)：
+        - bs_flag: "一买"/"二买"/"三买"/"三卖" 等（value 首段含买卖），无则 ""
+        - divergence: "顶背驰"/"底背驰"（tas_macd_bc_V230803），无则 ""
+        任何异常（版本漂移/数据不足）→ ("", "")，调用方当无标签。
+        """
+        try:
+            from czsc import _native as n
+        except ImportError:
+            return "", ""
+        c = self._build_czsc(series)
+        if c is None:
+            return "", ""
+        bs, div = "", ""
+        try:
+            for name, params in (("cxt_first_buy_V221126", {"di": 1}),
+                                 ("cxt_second_bs_V240524",
+                                  {"di": 1, "big_gap_factor": 0.95,
+                                   "window": 8}),
+                                 ("cxt_third_bs_V230319",
+                                  {"di": 1, "window": 8, "bm": 20,
+                                   "fast": 5, "slow": 20, "vols_ma": 5})):
+                for s in n.call_signal(name, c, params=params):
+                    tok = str(s.value).split("_", 1)[0]
+                    if ("买" in tok or "卖" in tok) and "任意" not in tok:
+                        bs = tok
+                        break
+                if bs:
+                    break
+        except Exception as e:
+            logger.debug(f"买卖点信号失败({series.symbol}): {str(e)[:80]}")
+        try:
+            for s in n.call_signal("tas_macd_bc_V230803", c, params={}):
+                tok = str(s.value).split("_", 1)[0]
+                if "背驰" in tok:
+                    div = tok
+                    break
+        except Exception as e:
+            logger.debug(f"背驰信号失败({series.symbol}): {str(e)[:80]}")
+        return bs, div
 
     # ---------------- 抽取 ----------------
     def _extract(self, c, freq: str) -> ChanStructure:

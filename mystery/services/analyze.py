@@ -14,7 +14,9 @@ from typing import Dict, Optional
 from ..adapters import market as _market
 from ..adapters import sector as _sector
 from ..config import load_config
-from ..core.models import AnalysisResult, BarSeries, ChanStructure, MarketContext, MysteryBreakdown
+from ..core.models import (AnalysisResult, BarSeries, ChanStructure,
+                           MarketContext, MysteryBreakdown,
+                           RULE_VER, RULE_VER_CHAN)
 from ..core.mystery_rules import MysteryLogic
 from ..core.patterns import PatternRecognition
 from ..core import scorer as _scorer
@@ -182,10 +184,16 @@ class AnalysisService:
                                  include_detail=include_detail, logic=self.logic,
                                  patterns=self.patterns)
 
-    def _analyze_chan(self, daily: BarSeries) -> Dict[str, ChanStructure]:
+    def _analyze_chan(self, daily: BarSeries,
+                      with_signals: bool = False) -> Dict[str, ChanStructure]:
         """缠论多周期分析（按配置 freqs，默认 1d/1w；日/周都走 chan_cache）。
 
         004.md：只算 config.chan.freqs（不无配置就算 1M）；行情日/版本变化才失效。
+        010.md 6C：with_signals=True（仅混合分路径）时对日线附 czsc
+        买卖点/背驰标签（adapter.signal_flags，失败当无标签）。
+        注意：标签在 adapter.analyze 结果上补齐后再写 chan_cache，
+        缓存键 ver 不含 score 开关——分关先跑过的票命中缓存时无标签，
+        故这里对缓存命中的日线结构也按需补标签（标签本身幂等、成本低）。
         """
         from ..adapters.czsc_adapter import CzscAdapter, chan_from_dict, czsc_version
         import json as _json
@@ -207,16 +215,22 @@ class AnalysisService:
                     daily.symbol, freq, trade_date, ver)
                 if cached_raw:
                     out[freq] = chan_from_dict(_json.loads(cached_raw))
-                    continue
-                s = adapter.analyze(series)
-                out[freq] = s
-                if s.engine_ver == "unavailable":
-                    logger.error(
-                        f"MYSTERY_CHAN_ENABLED=1 但 czsc 未安装："
-                        f"pip install -e '.[chan]' 后重启（{daily.symbol}）")
-                self.market.db.set_chan_cache(
-                    daily.symbol, freq, trade_date, ver,
-                    _json.dumps(s.to_dict(), ensure_ascii=False))
+                else:
+                    s = adapter.analyze(series)
+                    if s.engine_ver == "unavailable":
+                        logger.error(
+                            f"MYSTERY_CHAN_ENABLED=1 但 czsc 未安装："
+                            f"pip install -e '.[chan]' 后重启（{daily.symbol}）")
+                    out[freq] = s
+                    self.market.db.set_chan_cache(
+                        daily.symbol, freq, trade_date, ver,
+                        _json.dumps(s.to_dict(), ensure_ascii=False))
+                if with_signals and freq == '1d':
+                    st = out[freq]
+                    if not st.bs_flag and not st.divergence:
+                        bs, div = adapter.signal_flags(series)
+                        if bs or div:
+                            st.bs_flag, st.divergence = bs, div
             except Exception as e:
                 logger.warning(f"缠论 {freq} 分析失败({daily.symbol}): {str(e)[:100]}")
         return out
@@ -235,6 +249,9 @@ class AnalysisService:
         trade_date = str(daily.bars[-1].dt)[:10]
         # ---- 缓存读（W23）----
         ck = None
+        # 010.md 6C：混合分路径（结构开+分开关）用新规则口径 ver；分关不变
+        mix = chan_enabled() and chan_score_enabled()
+        rule = RULE_VER_CHAN if mix else RULE_VER
         if use_cache and cache_allowed(daily):
             try:
                 from ..store.cache import AnalysisCache, bars_fingerprint, \
@@ -244,7 +261,7 @@ class AnalysisService:
                 flags = (f"D{int(include_detail)}|C{int(chan_enabled())}"
                          f"|S{int(chan_score_enabled())}")
                 ck = make_cache_key(
-                    daily.adjust, 'mystery-1.22.30-compat', flags, ver,
+                    daily.adjust, rule, flags, ver,
                     bars_fingerprint(daily.bars))
                 hit = AnalysisCache(self.market.db).get(
                     daily.symbol, trade_date, ck)
@@ -262,15 +279,15 @@ class AnalysisService:
         ctx = self.build_market_context(internal, daily)
 
         # 缠论（P2：只展示不进评分；MYSTERY_CHAN_ENABLED=0 时 Service 不调用 Adapter）
+        # 010.md 6C：mix（结构开+分开关）时才生成买卖点/背驰标签，分关零开销
         chan: Dict[str, ChanStructure] = {}
         if chan_enabled():
-            chan = self._analyze_chan(daily)
+            chan = self._analyze_chan(daily, with_signals=mix)
 
         bd = self.run_rules(daily, weekly, monthly, ctx, include_detail)
         # 混合分开关：chan_enabled AND chan_score_enabled（结构展示 ≠ 混合分）
-        mix_enabled = chan_enabled() and chan_score_enabled()
         score, advice, true_res = _scorer.combine(bd, chan,
-                                                  chan_enabled=mix_enabled)
+                                                  chan_enabled=mix)
         last = daily.bars[-1]
         name = self.market.db.get_stock_name(internal) or ''
         turnover_20 = _avg_turnover_20(daily)
@@ -294,7 +311,7 @@ class AnalysisService:
             sector={'行业名称': ctx.industry_name, '行业趋势分': ctx.industry_score,
                     '行业趋势': ctx.industry_up},
             financial=ctx.financial,
-            rule_ver='mystery-1.22.30-compat',
+            rule_ver=rule,
             czsc_ver=czsc_ver,
         )
         # ---- 缓存写（W23）----
