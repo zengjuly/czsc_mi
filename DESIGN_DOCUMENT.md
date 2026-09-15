@@ -229,10 +229,12 @@ czsc-mi analyze --stock sh600519
 
 - 金标集成测依赖原机实盘数据（THS/TDX/生产 DB），已拆双层：离线 fixture 锁分（test_score_offline），
   集成测打标 @integration 默认跳过。
-- `schema.sql` 已自举（幂等建表）；改列/迁移策略未实现（migrations/ 仅说明）。
+- 迁移框架已落地（W21）：`_init_db` 按文件名序执行 `mystery/store/migrations/001–003`，
+  记账表 `schema_migrations`，语句级执行、容忍重复列。改列/加表一律走迁移文件。
 - 缠论分仍较浅（末笔方向/中枢/日周同向，±10/±5/±8），非完整买卖点/背驰体系；默认关闭。
 - 无 CI 之外的发布管道（无 wheel 构建/发布配置）。
-- scan 三类信号中 `chip_low` 依赖近20日均换手：ths/tdx 数据换手率常缺 → 大多标
-  `chip_low_unknown`（不伪造）；tdx 数据按 SQLite 日期补齐后可恢复。
+- scan 三类信号中 `chip_low` 依赖近20日均换手：turn 来源 = 官方/legacy 原值优先，
+  空值由本地股本快照派生（`sync-turnover`，W22/W26b）；无有效分母保持
+  `chip_low_unknown`（不伪造）。覆盖率 QA 见日报「换手20日覆盖率/低位未知只数」。
 - tdx_api（tdx-api 容器）已实现并挂进 fallback，但容器未运行时会快速失败降级，
   不影响主链（db → ths_official 正常时不会触达）。

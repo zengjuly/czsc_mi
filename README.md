@@ -47,6 +47,8 @@ czsc-mi analyze --stock sh600519
 czsc-mi daily --watchlist
 czsc-mi scan --limit 100
 czsc-mi sync --period daily --days 365
+czsc-mi sync-shares --watchlist
+czsc-mi sync-turnover --watchlist --date YYYY-MM-DD
 ```
 
 ## 测试
