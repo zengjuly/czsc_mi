@@ -162,11 +162,24 @@ def _write_scan_report(results, args) -> None:
         print(f"[换手QA] {qa_line}")
 
 
+def _print_db_fingerprint() -> None:
+    """W31b（012.md）：scan/sync-turnover 启动先打一行数据指纹，
+    防止忘 export MYSTERY_DB_PATH 打到仓内旧库还当成治理回退。"""
+    try:
+        from ..store.db import MysteryDB
+        fp = MysteryDB().data_fingerprint()
+        print(f"db={fp.get('db_path')} kline_max={fp.get('kline_max')}"
+              f" as_of_max={fp.get('as_of_max')}", flush=True)
+    except Exception as e:  # noqa: BLE001 指纹失败不阻塞主流程
+        print(f"[warn] db 指纹读取失败: {e}", file=sys.stderr)
+
+
 def _cmd_scan(args: argparse.Namespace) -> int:
     from ..core.scan_signals import filter_by_signal
     from ..services import watchlist as _wl
     from ..services.scan import scan_market
 
+    _print_db_fingerprint()
     # --watchlist 自选扫描默认不设 limit（全自选）；全市场防呆默认 100
     if args.limit is None:
         args.limit = None if args.watchlist else 100
@@ -244,6 +257,7 @@ def _cmd_sync_turnover(args: argparse.Namespace) -> int:
     from ..store.db import MysteryDB
 
     db = MysteryDB()
+    _print_db_fingerprint()  # W31b：换手派生同样先亮库
     trade_date = args.date or datetime.now().strftime('%Y-%m-%d')
     codes = load_watchlist() if args.watchlist else None
     out = sync_turnover(trade_date, codes=codes, db=db,
@@ -317,25 +331,42 @@ def _turnover_qa_line(db, results, trade_date: str) -> str:
                      if r.get('turnover_20') is not None
                      or (isinstance(r.get('turnover_20'), float)
                          and not math.isnan(r['turnover_20'])))
+        # W31b（012.md）：第一行固定标明数据指纹——手动 scan 打到旧库/仓内
+        # 空库时，「0 只有股本快照」是库不对，不是快照丢了。
+        fp = db.data_fingerprint()
+        head = (f"db={fp.get('db_path')} kline_max={fp.get('kline_max')}"
+                f" as_of_max={fp.get('as_of_max')}")
+        warns = []
+        if fp.get('kline_max') is None:
+            warns.append("WARN: 库内无日K——空库/库不对（检查 MYSTERY_DB_PATH）")
+        elif trade_date and fp['kline_max'] < trade_date:
+            warns.append(f"WARN: K线止于 {fp['kline_max']}，早于分析日 "
+                         f"{trade_date}（未跑当日 sync？）")
+        if fp.get('as_of_max') is None:
+            warns.append("WARN: 股本快照表为空——可能未用 MYSTERY_DB_PATH "
+                         "指向生产库")
+        if warns:
+            head += "\n  " + "；".join(warns)
         chip_seg = (f" · 本次报告 chip_low 未知 {n_unknown}/{len(results)} 只"
                     f"（近20日均换手可得 {n_turn} 只）") if results else ""
-
-        lines = []
+        lines = [head]
         wl_db = []
         try:
             wl_db = [db_code_of(c) for c in load_watchlist()]
         except Exception:  # noqa: BLE001 自选清单缺失不算 QA 失败
             wl_db = []
         report_symbols = {r.get('symbol') for r in results if r.get('symbol')}
+        chip_seg_used = False
         if wl_db:
             seg = chip_seg if report_symbols and \
                 {db_code_of(s) for s in report_symbols} == set(wl_db) else ""
+            chip_seg_used = bool(seg)
             lines.append("自选 换手20日覆盖率 "
                          + _cov_str(db.turnover_qa_stats(trade_date,
                                                          codes=wl_db)) + seg)
         lines.append("全市场 换手20日覆盖率 "
                      + _cov_str(db.turnover_qa_stats(trade_date))
-                     + ("" if lines and chip_seg else chip_seg))
+                     + ("" if chip_seg_used else chip_seg))
         # W27b（008.md P3）：管线 2/3 步状态行（daily_pipeline 写 status json；
         # 手动跑报告时文件不存在/过期 → 跳过，不误导）
         try:

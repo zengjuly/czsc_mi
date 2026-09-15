@@ -653,6 +653,28 @@ class MysteryDB:
             finally:
                 conn.close()
 
+    def data_fingerprint(self) -> Dict:
+        """W31b（012.md）：QA/报表第一行标明「打的是哪套库」。
+
+        手动 scan 若忘了 export MYSTERY_DB_PATH 会打到仓内空库/旧库，
+        页脚「0 只有股本快照」被误判成治理回退。本方法只读三条指纹：
+        db 路径 / 日K 末日 / 股本快照最新 as_of。
+        """
+        out = {'db_path': self.db_path, 'kline_max': None, 'as_of_max': None}
+        try:
+            with self._lock:
+                conn = self._connect()
+                r = conn.execute(
+                    "SELECT MAX(substr(date,1,10)) FROM stock_kline_data "
+                    "WHERE period='daily'").fetchone()
+                out['kline_max'] = r[0] if r and r[0] else None
+                r = conn.execute(
+                    "SELECT MAX(as_of) FROM float_share_snapshot").fetchone()
+                out['as_of_max'] = r[0] if r and r[0] else None
+        except Exception:  # noqa: BLE001 指纹失败不阻塞 QA
+            pass
+        return out
+
     def turnover_qa_stats(self, trade_date: str,
                           codes: Optional[List[str]] = None,
                           window_days: int = 33) -> Dict:

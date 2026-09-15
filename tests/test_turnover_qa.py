@@ -200,3 +200,44 @@ def test_fillable_coverage_qa(qa_db):
     assert s2['coverage'] == round(9 / 16, 4)
     t1 = _turns(qa_db, 'sh.600001')
     assert t1['2026-09-10'][0] is None            # 回填未越 as_of
+
+
+def test_db_fingerprint_line(qa_db, tmp_path):
+    """W31b（012.md）：QA 第一行固定 db= / kline_max= / as_of_max=，
+    手动 scan 打到旧库时一眼可辨（消灭「0 只快照 = 治理回退」误判）。"""
+    from mystery.apps.cli import _turnover_qa_line
+
+    line = _turnover_qa_line(qa_db, [], '2026-09-11')
+    head = line.split('\n')[0]
+    assert head.startswith('db=')
+    assert str(tmp_path) in head or 'qa.db' in head
+    assert 'kline_max=2026-09-11' in head
+    assert 'as_of_max=2026-09-11' in head
+    assert 'WARN' not in line          # 数据齐 → 不告警
+
+
+def test_db_fingerprint_warns_on_stale_and_empty(tmp_path):
+    """旧库（K线止于过去）与空库（无日K、无快照）都必须出 WARN。"""
+    from mystery.apps.cli import _turnover_qa_line
+
+    # 旧库：fixture 数据止于 09-11，分析日 09-15 → WARN K线滞后
+    db_path = str(tmp_path / 'prod.db')
+    db = MysteryDB(db_path)
+    # 直接复制 qa_db 语义：插 4 行日K 止于 09-11
+    conn = sqlite3.connect(db_path)
+    for d in ('2026-09-08', '2026-09-09', '2026-09-10', '2026-09-11'):
+        conn.execute(
+            "INSERT INTO stock_kline_data (code,date,period,open,high,low,"
+            "close,volume,amount,turn) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ('sh.600000', d, 'daily', 1, 1, 1, 1, 2e6, 1e7, None))
+    conn.commit()
+    conn.close()
+    line = _turnover_qa_line(db, [], '2026-09-15')
+    assert 'WARN' in line and 'K线止于 2026-09-11' in line
+    assert '股本快照表为空' in line
+    # 空库：无日K → WARN 空库
+    empty = MysteryDB(str(tmp_path / 'empty.db'))
+    line2 = _turnover_qa_line(empty, [], '2026-09-15')
+    assert line2.startswith('db=')
+    assert 'kline_max=None' in line2.split('\n')[0]
+    assert '空库' in line2
