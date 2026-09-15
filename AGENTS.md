@@ -53,7 +53,7 @@
 
 - 跨层契约以 `mystery/core/models.py` 为准：`Bar`、`BarSeries`、`ChanBi`、`ChanZs`、`ChanStructure`、`MarketContext`、`MysteryBreakdown`、`AnalysisResult`。
 - `AnalysisResult.to_dict()` 必须 JSON 可序列化。
-- `rule_ver` 在兼容旧口径期间固定为 `mystery-1.22.30-compat`。变更评分公式或规则语义必须同时变更 `rule_ver`，并重出金标。
+- 变更评分公式或规则语义必须同时变更 `rule_ver`，并重出金标。
 
 ### 2.5 评分
 
