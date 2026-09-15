@@ -90,5 +90,12 @@ print(f"[weekly_shares] 状态已写 {sp}")
 raise SystemExit(exit_code)
 PYEOF
 rc=$?
+# 观测补丁（009 后续）：铺盘达标后自动做一次合法近端回填（纯本地计算，
+# 不越 as_of、无 HTTP），省掉「周日铺完还得人工 backfill」一步。
+if [ "$rc" -eq 0 ]; then
+  echo "[weekly_shares] 3/3 近端回填 turn（backfill-days 20，不越 as_of）..."
+  czsc-mi sync-turnover --backfill-days 20 | tail -c 300 \
+    || echo "[weekly_shares] ⚠️ 回填步骤失败（不影响铺盘结果，可人工重跑）"
+fi
 echo "===== $(date '+%F %T') weekly_shares 结束 exit=$rc ====="
 exit $rc

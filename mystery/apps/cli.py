@@ -249,6 +249,25 @@ def _cmd_sync_turnover(args: argparse.Namespace) -> int:
     out = sync_turnover(trade_date, codes=codes, db=db,
                         backfill_days=args.backfill_days)
     print(json.dumps(out, ensure_ascii=False))
+    # 观测补丁：可填的根存在却一根没写 → 派生环节故障（as_of/量单位/
+    # code 映射问题），stderr 打 ERROR 且非零退出，让 pipeline_status
+    # 的 turnover_derive=fail 可见。回填模式（backfill_days）跳过此判：
+    # 回填合法地可能一根都不填（全部 date<as_of 属预期 skipped）。
+    if not args.backfill_days and out.get('calc_float', 0) == 0:
+        try:
+            from ..adapters.codes import db_code_of
+            db_codes = ([db_code_of(c) for c in codes]
+                        if codes is not None else None)
+            stats = db.turnover_qa_stats(trade_date, codes=db_codes)
+            unfilled = ((stats.get('fillable_rows') or 0)
+                        - (stats.get('filled_rows') or 0))
+            if unfilled > 0:
+                print(f"ERROR: sync-turnover {trade_date} "
+                      f"calc_float=0 但可填未写 {unfilled} 根 —— "
+                      f"查 as_of/量单位/code 映射", file=sys.stderr)
+                return 1
+        except Exception:
+            pass  # 自检本身故障不打断正常派生结果
     return 0
 
 
@@ -283,6 +302,11 @@ def _turnover_qa_line(db, results, trade_date: str) -> str:
                 if stats.get('as_of_min'):
                     extra += (f" | 快照 as_of {stats['as_of_min']}"
                               f"~{stats['as_of_max']}")
+                # 观测补丁：把「窗口只有 N 根可填」说成人话，防止把
+                # 覆盖率 46% 当成派生故障（可填日从 as_of 起才数得着）
+                if stats.get('shortfall_to_20'):
+                    extra += (f" | 可填日从 as_of 起还差 "
+                              f"{stats['shortfall_to_20']} 个交易日才满 20 根")
                 if stats.get('skipped_before_asof'):
                     extra += f" | as_of前空turn {stats['skipped_before_asof']} 根"
                 seg += "\n  " + extra.strip(" |")

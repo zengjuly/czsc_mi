@@ -728,6 +728,7 @@ class MysteryDB:
                     f"FROM stock_kline_data WHERE {where}{uni}",
                     args).fetchall()
                 fillable = filled = skipped = 0
+                all_dates = {d for _, d, _, _ in dated}
                 as_of_list = sorted(v for k, v in as_of_by_db.items()
                                     if k in targets)
                 for code, d, turn, vol in dated:
@@ -747,10 +748,17 @@ class MysteryDB:
                 stats['fillable_coverage'] = (round(filled / fillable, 4)
                                                if fillable else None)
                 stats['skipped_before_asof'] = skipped
+                # 人话口径（W28+1 观测补丁）：从最晚 as_of 起到 trade_date
+                # 窗口内实际有几个交易日根 = 可填根的最大长度；距满 20 根
+                # 还差多少，用来解释「覆盖率低但可填率高」不是故障。
                 if as_of_list:
                     stats['as_of_min'] = as_of_list[0]
                     stats['as_of_max'] = as_of_list[-1]
                     stats['as_of_p50'] = as_of_list[len(as_of_list) // 2]
+                    dates_since = sum(1 for d in all_dates
+                                      if d >= as_of_list[-1])
+                    stats['fillable_days'] = dates_since
+                    stats['shortfall_to_20'] = max(0, 20 - dates_since)
                 return stats
             finally:
                 conn.close()
