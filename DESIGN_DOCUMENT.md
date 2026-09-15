@@ -90,11 +90,15 @@ analyze_one_stock(symbol):
   low/close/**vol**/amount）→ `CZSC(bars, min_bi_len)` → `bi_list/zs_list/fx_list`。
 - BI：`direction`（中文"向上/向下"）、sdt/edt（datetime）、high/low；
   ZS：zg/zd/gg/dd/sdt/edt/is_valid/bis；`c.finished_bis` 判最后一笔是否确认。
-- 只进 `AnalysisResult.chan`（freq→ChanStructure）。**P4 公式已落地**：
-  `S = 0.55*S_mystery + 0.25*S_resonance + 0.20*S_chan`；S_chan 缺省 50，
-  有 1d 结构时按最新笔方向 ±10、中枢内 +5；**年线滤网未通过 → 混合分强制 0**
-  （一票否决语义）。**生产默认 `chan.score: false`（MYSTERY_CHAN_SCORE 缺省 0），
-  综合分 = Mystery 1.22.30 原公式**；混合分仅结构开+分开关同时为 1 才生效。
+- 只进 `AnalysisResult.chan`（freq→ChanStructure）。**混合分 S_chan 已于 0.10.0（6C）
+  替换为标定规则表（docs/010.md §9）**：无日线结构 50；末笔确认 up/down ±12；
+  收盘价 vs 末中枢 above+8/in+2/below−8（老缓存回退 `in_zs`+5）；日周同向 ±8；
+  czsc 买卖点标签 一/二/三买 +10、一/二/三卖 −10（「其他」/无标签 0，不猜）；
+  底背驰 +10 / 顶背驰 −10；夹紧 [0,100]。权重 `0.55/0.25/0.20` 不变。
+  **年线滤网未通过 → 混合分强制 0**（一票否决语义）。**生产默认 `chan.score: false`
+  （MYSTERY_CHAN_SCORE 缺省 0），综合分 = Mystery 1.22.30 原公式**；混合分仅结构开+
+  分开关同时为 1 才生效，该路径 `rule_ver=mystery-0.10.0-chan`（勿与 1.22.30 金标比
+  绝对值）。买卖点/背驰标签仅由 `CzscAdapter.signal_flags` 在混合分路径生成，分关零开销。
 - chan_cache：`store.chan_cache` 表（symbol/freq/trade_date/czsc_ver PK），
   行情日或 czsc 版本变化才失效。
 - **缠论图 W4 起 plotly 自绘**：`CzscAdapter.plot_figure(series)` → plotly Figure
@@ -237,7 +241,10 @@ czsc-mi analyze --stock sh600519
   集成测打标 @integration 默认跳过。
 - 迁移框架已落地（W21）：`_init_db` 按文件名序执行 `mystery/store/migrations/001–003`，
   记账表 `schema_migrations`，语句级执行、容忍重复列。改列/加表一律走迁移文件。
-- 缠论分仍较浅（末笔方向/中枢/日周同向，±10/±5/±8），非完整买卖点/背驰体系；默认关闭。
+- 缠论混合分（0.10.0/6C 起）已用 30 只快照标定规则表替换旧浅规则（±10/±5/±8），
+  含 czsc 买卖点/背驰标签（仅 `MYSTERY_CHAN_SCORE=1` 路径进分，「其他」标签计 0）；
+  生产默认关，综合分仍 Mystery 1.22.30。打开后 `rule_ver=mystery-0.10.0-chan`，
+  勿与 1.22.30 金标比绝对值。权重 0.55/0.25/0.20 冻结。
 - 无 CI 之外的发布管道（无 wheel 构建/发布配置）。
 - scan 三类信号中 `chip_low` 依赖近20日均换手：turn 来源 = 官方/legacy 原值优先，
   空值由本地股本快照派生（`sync-turnover`，W22/W26b）；无有效分母保持

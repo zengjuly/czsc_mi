@@ -34,6 +34,8 @@ pip install -e ".[dev]"          # 开发（pytest）
 export MYSTERY_DB_PATH=/path/to/mystery_cache.db   # 默认 <repo>/data/mystery_cache.db
 export MYSTERY_CHAN_ENABLED=1                      # 缠论结构展示（图/摘要），默认开
 export MYSTERY_CHAN_SCORE=0                        # 混合分另开关，默认关（综合分 = Mystery 1.22.30）
+# 打开 MYSTERY_CHAN_SCORE=1 后输出 rule_ver=mystery-0.10.0-chan（010 §9 标定表），
+# 勿与 mystery-1.22.30-compat 金标比绝对值。
 export HITHINK_FINANCE_API_KEY=...                  # 扶摇在线源（可选，本地 MarketDB 不需要）
 ```
 
