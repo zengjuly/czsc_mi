@@ -396,6 +396,29 @@ class CzscAdapter:
         if zss and c.bars_raw:
             last_dt = str(c.bars_raw[-1].dt)[:10]
             in_zs = zss[-1].sdt <= last_dt <= zss[-1].edt
+        # ---- 阶段6A 加深（010.md）：纯展示派生，不进 chan_score ----
+        close = float(c.bars_raw[-1].close) if getattr(c, "bars_raw", None) else None
+        zs_position = ""
+        leave_zs = ""
+        bi_stretch = None
+        last_zs_finished = False
+        if zss and close is not None:
+            z = zss[-1]
+            last_zs_finished = bool(z.finished)
+            if close > z.zg:
+                zs_position = "above"
+            elif close < z.zd:
+                zs_position = "below"
+            else:
+                zs_position = "in"
+            # 离开方向：价出边界且末笔同向才算真离开（向下破位后走平不算离开向上）
+            if zs_position == "above" and last_bi and last_bi.direction == "up":
+                leave_zs = "up"
+            elif zs_position == "below" and last_bi and last_bi.direction == "down":
+                leave_zs = "down"
+            zs_h = z.zg - z.zd
+            if last_bi and zs_h > 0:
+                bi_stretch = round(abs(last_bi.high - last_bi.low) / zs_h, 2)
         return ChanStructure(
             freq=freq,
             n_fx=len(getattr(c, "fx_list", []) or []),
@@ -406,6 +429,11 @@ class CzscAdapter:
             in_zs=in_zs,
             engine="czsc",
             engine_ver=czsc_version(),
+            zs_position=zs_position,
+            leave_zs=leave_zs,
+            bi_stretch=bi_stretch,
+            n_zs=len(zss),
+            last_zs_finished=last_zs_finished,
         )
 
 
@@ -430,4 +458,12 @@ def chan_from_dict(data: dict) -> ChanStructure:
         in_zs=data.get("in_zs", False),
         engine=data.get("engine", "czsc"),
         engine_ver=data.get("engine_ver", ""),
+        # 阶段6A 新字段：老缓存缺键 → 取 dataclass 默认（展示为 -），不失效重算
+        zs_position=data.get("zs_position", ""),
+        leave_zs=data.get("leave_zs", ""),
+        bi_stretch=data.get("bi_stretch", None),
+        n_zs=data.get("n_zs", len(zss)),
+        last_zs_finished=data.get("last_zs_finished", False),
+        bs_flag=data.get("bs_flag", ""),
+        divergence=data.get("divergence", ""),
     )

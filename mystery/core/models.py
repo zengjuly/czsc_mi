@@ -119,9 +119,17 @@ class ChanStructure:
     zss: List[ChanZs] = field(default_factory=list)
     last_bi_dir: str = ""       # "up" | "down" | ""
     last_bi_confirmed: bool = False
-    in_zs: bool = False         # 当前是否位于中枢内
+    in_zs: bool = False         # 当前是否位于中枢内（时间口径，保留兼容 1.22.30 分关行为）
     engine: str = "czsc"
     engine_ver: str = ""
+    # ---- 阶段6A（010.md）：结构摘要加深，只展示不进分（默认全空，老缓存兼容）----
+    zs_position: str = ""       # 现价相对末中枢：below | in | above（价格口径，close vs zd/zg）
+    leave_zs: str = ""          # 离开末中枢方向：up | down | ""（末笔方向 + 价出 zg/zd）
+    bi_stretch: Optional[float] = None   # 末笔幅度 / 末中枢高度（None=不可算）
+    n_zs: int = 0               # 中枢个数（=len(zss)，直接暴露）
+    last_zs_finished: bool = False       # 末中枢是否完成
+    bs_flag: str = ""           # czsc 买卖点标签（一买/二买/三买）；6A 恒空，6C 门控生成
+    divergence: str = ""        # czsc 背驰标签（top|bottom）；6A 恒空，6C 门控生成
 
     def to_dict(self) -> Dict[str, Any]:
         return _todict(self)

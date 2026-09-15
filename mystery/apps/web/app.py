@@ -613,12 +613,19 @@ def render_stock(d: dict):
                 zss = cs.get('zss', [])
                 last_bi = f"{'向上' if cs.get('last_bi_dir') == 'up' else '向下'}" \
                     if cs.get('last_bi_dir') else "-"
+                _pos = {"above": "现价中枢上方", "below": "现价中枢下方",
+                        "in": "现价中枢区间内"}.get(cs.get('zs_position') or "", "")
                 st.markdown(
                     f"**{freq}**：分型 {cs.get('n_fx')} 个 · 笔 {len(bis)} 条 · "
                     f"中枢 {len(zss)} 个 · 最新笔 {last_bi}"
                     f"{'（已确认）' if cs.get('last_bi_confirmed') else '（未确认）'} · "
                     f"当前{'在中枢内' if cs.get('in_zs') else '不在中枢内'}"
+                    f"{(' · ' + _pos) if _pos else ''}"
+                    f"{(' · 离开中枢' + ('上' if cs.get('leave_zs') == 'up' else '下')) if cs.get('leave_zs') else ''}"
+                    f"{(' · 末笔/中枢比 ' + str(cs.get('bi_stretch'))) if cs.get('bi_stretch') is not None else ''}"
                     f" · {cs.get('engine')} {cs.get('engine_ver')}")
+                if _pos:
+                    st.caption("结构摘要加深仅供展示，未进综合分")
                 for zs in zss[-3:]:
                     st.markdown(
                         f"　中枢 {zs['sdt']}~{zs['edt']}：ZG {_fmt(zs['zg'])} / "

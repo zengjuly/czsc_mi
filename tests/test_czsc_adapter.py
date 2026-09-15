@@ -119,3 +119,58 @@ def test_plot_figure_monthly_freq():
     fig = CzscAdapter().plot_figure(s, tail_bars=None)
     assert fig is not None
     assert "月线" in (fig.layout.title.text or "")
+
+
+# ---- 阶段6A（010.md）：结构摘要加深字段（只展示不进分）----
+
+def test_chan6a_derived_fields():
+    """有中枢时 zs_position/leave_zs/bi_stretch/n_zs 自洽。"""
+    s = _make_series(n=400, seed=11)
+    out = CzscAdapter().analyze(s)
+    assert out.n_zs == len(out.zss)
+    if out.zss:
+        assert out.zs_position in ("above", "in", "below")
+        if out.leave_zs:
+            assert out.leave_zs in ("up", "down")
+            # 真离开必须方向自洽：向上离开=价在zg上且末笔up
+            z = out.zss[-1]
+            last_close = s.bars[-1].close
+            if out.leave_zs == "up":
+                assert last_close > z.zg and out.last_bi_dir == "up"
+            else:
+                assert last_close < z.zd and out.last_bi_dir == "down"
+        if out.bi_stretch is not None:
+            assert out.bi_stretch >= 0
+    else:
+        assert out.zs_position == "" and out.bi_stretch is None
+    # 6A：买卖点/背驰保持空占位（信号引擎未进门控路径）
+    assert out.bs_flag == "" and out.divergence == ""
+
+
+def test_chan6a_roundtrip_and_legacy_dict():
+    """新字段 to_dict 可序列化；老缓存缺键容忍为默认（修正③）。"""
+    s = _make_series(n=300, seed=7)
+    out = CzscAdapter().analyze(s)
+    d = out.to_dict()
+    back = chan_from_dict(d)
+    assert back.zs_position == out.zs_position
+    assert back.leave_zs == out.leave_zs
+    assert back.bi_stretch == out.bi_stretch
+    assert back.n_zs == out.n_zs
+    assert back.last_zs_finished == out.last_zs_finished
+    # 老格式 dict（无 6A 键）→ 缺省空，不抛异常
+    legacy = {k: v for k, v in d.items()
+              if k not in ("zs_position", "leave_zs", "bi_stretch",
+                           "n_zs", "last_zs_finished", "bs_flag",
+                           "divergence")}
+    old = chan_from_dict(legacy)
+    assert old.zs_position == "" and old.n_zs == len(old.zss)
+    assert old.bi_stretch is None and old.bs_flag == ""
+
+
+def test_chan6a_empty_series_ok():
+    """czsc 不可用/数据不足：新字段全默认，分析不崩。"""
+    s = BarSeries(symbol="600519.SH", freq="1d")
+    out = CzscAdapter().analyze(s)
+    assert out.zs_position == "" and out.leave_zs == ""
+    assert out.bi_stretch is None and out.n_zs == 0

@@ -131,13 +131,21 @@ def _stock_card(d: Dict[str, Any]) -> str:
     if chan:
         c1 = chan.get("1d") or {}
         cw = chan.get("1w") or {}
+        _pos_cn = {"above": "中枢上方", "below": "中枢下方",
+                   "in": "中枢区间内"}.get(c1.get("zs_position") or "", "")
+        _bs = " · ".join(filter(None, [c1.get("bs_flag"), c1.get("divergence")]))
         chan_html = (
             f"<p>缠论：日线末笔{'向上' if c1.get('last_bi_dir') == 'up' else '向下'}"
             f"{'（已确认）' if c1.get('last_bi_confirmed') else '（未确认）'} · "
-            f"{'中枢内' if c1.get('in_zs') else '中枢外'} | "
-            f"周线末笔{'向上' if cw.get('last_bi_dir') == 'up' else '向下'}"
+            f"{'中枢内' if c1.get('in_zs') else '中枢外'}"
+            f"{(' · ' + _pos_cn) if _pos_cn else ''}"
+            f"{(' · 离开' + ('上' if c1.get('leave_zs') == 'up' else '下')) if c1.get('leave_zs') else ''}"
+            f"{(' · 拉伸比' + str(c1.get('bi_stretch'))) if c1.get('bi_stretch') is not None else ''}"
+            f"{(' · ' + _bs) if _bs else ''}"
+            f" | 周线末笔{'向上' if cw.get('last_bi_dir') == 'up' else '向下'}"
             f"{'（已确认）' if cw.get('last_bi_confirmed') else '（未确认）'} · "
-            f"czsc {_esc(d.get('czsc_ver', ''))}</p>"
+            f"czsc {_esc(d.get('czsc_ver', ''))}"
+            f"{'（结构摘要加深仅供展示，未进综合分）' if (_pos_cn or _bs) else ''}</p>"
         )
 
     return f"""

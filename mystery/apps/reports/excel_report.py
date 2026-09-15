@@ -212,6 +212,18 @@ def _detail_flat(d: Dict[str, Any]) -> Dict[str, Any]:
                 "向下" if c1.get("last_bi_dir") == "down" else "-")),
             ("日线末笔确认", _flag(c1.get("last_bi_confirmed"))),
             ("日线在中枢内", _flag(c1.get("in_zs"))),
+            ("现价vs末中枢", {"above": "中枢上方", "below": "中枢下方",
+                            "in": "中枢区间内"}.get(c1.get("zs_position") or "", "-")),
+            ("离开中枢方向", {"up": "向上离开", "down": "向下离开"}.get(
+                c1.get("leave_zs") or "", "-")),
+            ("末笔/中枢高度比", c1.get("bi_stretch")
+             if c1.get("bi_stretch") is not None else "-"),
+            ("中枢数(日线)", c1.get("n_zs", "-")),
+            ("周线现价vs末中枢", "上方" if cw.get("zs_position") == "above" else (
+                "下方" if cw.get("zs_position") == "below" else
+                ("区间内" if cw.get("zs_position") == "in" else "-"))),
+            ("czsc 买卖点/背驰", " / ".join(filter(None, [
+                c1.get("bs_flag"), c1.get("divergence")])) or "-（未进综合分）"),
             ("周线末笔方向", "向上" if cw.get("last_bi_dir") == "up" else (
                 "向下" if cw.get("last_bi_dir") == "down" else "-")),
             ("czsc 版本", d.get("czsc_ver", "")),
