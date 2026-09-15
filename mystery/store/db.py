@@ -675,6 +675,43 @@ class MysteryDB:
             pass
         return out
 
+    def sector_coverage_stats(self, codes: Optional[List[str]] = None) -> Dict:
+        """W32c（013.md）：三振行业腿所需 sector_kline 覆盖率（只读）。
+
+        口径与 get_sector_kline 一致：stock_sector_rel.is_primary=1 的主行业，
+        sector_code 归一为 ths_ 前缀后与 sector_kline 关联。行业缺失保持未知，
+        禁止成分股抽样。
+        """
+        out = {'n_stocks': 0, 'n_covered': 0, 'coverage': None,
+               'n_sectors': 0, 'n_sectors_covered': 0, 'kline_max': None}
+        try:
+            with self._lock:
+                conn = self._connect()
+                norm = "'ths_' || replace(r.sector_code, '.TI', '')"
+                where = "r.is_primary=1"
+                args: List = []
+                if codes:
+                    where += f" AND r.stock_code IN ({','.join('?' * len(codes))})"
+                    args += list(codes)
+                rows = conn.execute(
+                    f"SELECT r.stock_code, {norm}, "
+                    f"  MAX((SELECT 1 FROM sector_kline k "
+                    f"        WHERE k.sector_code = {norm})) "
+                    f"FROM stock_sector_rel r WHERE {where} "
+                    f"GROUP BY r.stock_code, 2", args).fetchall()
+                out['n_stocks'] = len(rows)
+                out['n_covered'] = sum(1 for *_x, c in rows if c)
+                out['coverage'] = (round(out['n_covered'] * 100.0 / out['n_stocks'], 1)
+                                   if out['n_stocks'] else None)
+                out['n_sectors'] = len({s for _c, s, _x in rows})
+                out['n_sectors_covered'] = len({s for _c, s, x in rows if x})
+                r = conn.execute(
+                    "SELECT MAX(trade_date) FROM sector_kline").fetchone()
+                out['kline_max'] = r[0] if r and r[0] else None
+        except Exception:  # noqa: BLE001 只读统计不阻塞
+            pass
+        return out
+
     def turnover_qa_stats(self, trade_date: str,
                           codes: Optional[List[str]] = None,
                           window_days: int = 33) -> Dict:

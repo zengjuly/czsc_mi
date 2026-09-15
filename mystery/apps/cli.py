@@ -367,6 +367,16 @@ def _turnover_qa_line(db, results, trade_date: str) -> str:
         lines.append("全市场 换手20日覆盖率 "
                      + _cov_str(db.turnover_qa_stats(trade_date))
                      + ("" if chip_seg_used else chip_seg))
+        # W32c（013.md）：三振行业腿 sector_kline 覆盖率（只读；缺失保持
+        # 未知，禁止成分股抽样）。口径：主行业归一 ths_ 后关联 sector_kline。
+        sc = db.sector_coverage_stats(codes=(wl_db or None))
+        if sc.get('n_stocks'):
+            lines.append(
+                f"行业覆盖 watchlist_n={sc['n_stocks']} "
+                f"sector_kline_n={sc['n_covered']} "
+                f"sector_coverage={sc['coverage']}% "
+                f"（行业 {sc['n_sectors_covered']}/{sc['n_sectors']} 个，"
+                f"板块K线止于 {sc.get('kline_max')}）")
         # W27b（008.md P3）：管线 2/3 步状态行（daily_pipeline 写 status json；
         # 手动跑报告时文件不存在/过期 → 跳过，不误导）
         try:
