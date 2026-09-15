@@ -143,7 +143,7 @@ analyze_one_stock(symbol):
 
 ## 8. 测试与验收
 
-- `pytest -q -m "not integration"`：141 passed（models/core 合成 OHLC/czsc adapter
+- `pytest -q -m "not integration"`：142 passed（models/core 合成 OHLC/czsc adapter
   mock K 线/金标 ≤ 1/scan_signals 三类信号/缠论图 plot_figure/technical 快照/
   web 页面冒烟 + 后台任务仓库跨 rerun 持久回归 + Excel 单汇总页回归 +
   CLI 默认 THS 环境注入回归 + 换手覆盖率 QA + 除权事件股本重拉）。
@@ -198,6 +198,7 @@ analyze_one_stock(symbol):
 | W24 | 扫描提速（006.md 阶段 4，不改年线语义）：`_analyze_chan` 非日频 series 由 `fetch_bars`（重复读日 K 再 resample）改为 `resample_bars(daily)` 复用主流程已取日 K；主流程 W15 起已 resample、scan worker 复用 AnalysisService+W23 缓存、不增线程池（GIL 无收益）。实测（scripts/w24_bench.py，50 只样本）：resample 路 vs fetch 路规则分差 max=0.000（验收 ≤1）；每票非日频数据获取 0.206s→0.056s，省 ~0.15s/票 ≈ 全市场 5562 只省 ~14min；125 离线测试全过 | ✅ 0.9.24 |
 | W25 | 扫描写库职责单一（006.md 阶段 5）：角色分工——① sync/每日管线写 kline/财务/板块/turn 派生+失效 analysis_cache；② sync-shares（周日 cron）仅股本快照；③ `czsc-mi scan`（**18:00 cron 为扫描写库固定写手**）写 scan_jobs/scan_results（同类型只留最新）；④ Web 默认只读 job，点「扫描」与 cron 互斥——`scan_market` 入口 flock 文件锁（`<db>.scanlock` 记录持有者 pid+时间），并发第二方**拒绝不排队**（进程退出/崩溃自动释放，无残留状态）；`--force`/`no_persist` 不加锁；Web 前台按钮捕获 RuntimeError 显示原因。实测：5 项锁语义测试全过（外部进程探测拒绝/崩溃自动释放/no_persist 与 force 旁路）、130 离线测试全过 | ✅ 0.9.25 |
 | W26 | 007.md 三项：a) 规范/文档对齐代码现状（AGENTS 核对无需改、DESIGN §11 两句旧文案更新、README 补 sync-shares/sync-turnover 命令、migrations/README.txt 更新为迁移框架已落地——纯文档）；b) 换手覆盖率可观测：`turnover_coverage()` QA（近 20 交易日 turn 覆盖/股本可派生率）+ 日报 Excel 页脚行与 HTML 头部 `.qa` 行 + `sync-turnover --backfill-days`（回填仅 CLI，不进管线）+ scan 摘要日志结构化；不改 chip_low 判定与综合分；c) `sync-shares --from-adjustments [--since]`：本地 MarketDB `raw_adjustment_events` 筛送转/增发事件票（无事件零 HTTP 秒回），事件票 ≤3% 也写新 as_of 锚点（unchanged_event 计数），对账状态文件 `<db>.shares_state` 供 since 默认值，插入 daily_pipeline 2/4 步。实测：新增 11 项离线测试、141 全过、金标三只分差 0 | ✅ 0.9.26 |
+| W27 | 008.md 四项（不升 rule_ver、不改 chip_low 阈值、不回填 date<as_of、不开阶段6）：a) P0 覆盖率 QA 双口径——日报 QA 行分【自选】/【全市场】两行（自选口径才是 18:00 验收指标，实测自选 86/86 有快照 46.4% vs 全市场 86/5559 44.5%）；b) P3 管线可观测——daily_pipeline 2/3 步退出码写 `<output>/pipeline_status.json`，日报页脚与飞书正文附「股本刷新/换手派生」状态行（仍不阻塞 scan）；c) P2 事件筛子探测——raw_adjustment_events 实测无回购注销/解禁/类型列，保持送转+增发口径，缺口写入 §11；d) P1 周日铺快照——`sync-shares --fresh-skip-days N`（fresh 票跳过 HTTP、事件票豁免）+ `scripts/weekly_shares.sh` 周日 10:00 cron（先自选后全市场，断点重跑安全）。实测：142 项离线全过、金标三只分差 0 | ✅ 0.9.27 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。
@@ -236,6 +237,12 @@ czsc-mi analyze --stock sh600519
 - 无 CI 之外的发布管道（无 wheel 构建/发布配置）。
 - scan 三类信号中 `chip_low` 依赖近20日均换手：turn 来源 = 官方/legacy 原值优先，
   空值由本地股本快照派生（`sync-turnover`，W22/W26b）；无有效分母保持
-  `chip_low_unknown`（不伪造）。覆盖率 QA 见日报「换手20日覆盖率/低位未知只数」。
+  `chip_low_unknown`（不伪造）。覆盖率 QA 见日报「换手20日覆盖率/低位未知只数」，
+  W27a 起按【自选】/【全市场】双口径分列（自选口径才是 18:00 验收指标）。
+- 除权事件筛子（W26c `--from-adjustments`）事件类型以映射表为准：本地 MarketDB
+  `raw_adjustment_events` 实测仅有 dividend_per_share/per_share_bonus/
+  allotment_ratio/allotment_price 列（2026-09 探测，57232 行），**无回购注销/
+  解禁/事件类型列** → 现只认送转+增发两类；此类股本变化依赖周日全市场
+  `sync-shares`（W27d）兜底。上游若加列再扩 WHERE，不猜列名硬筛。
 - tdx_api（tdx-api 容器）已实现并挂进 fallback，但容器未运行时会快速失败降级，
   不影响主链（db → ths_official 正常时不会触达）。

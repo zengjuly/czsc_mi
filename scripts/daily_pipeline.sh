@@ -29,16 +29,26 @@ czsc-mi sync --period daily --days 365
 # W26c（007.md）股本事件触发重拉：本地 MarketDB raw_adjustment_events 筛
 # 送转/增发事件票，无事件零 HTTP 秒回（可安全每日跑）；有事件只重拉命中票，
 # 事件票即使股本变化 ≤3% 也写新 as_of 锚点。周对账（3% 门槛）仍单独 cron。
+# W27b（008.md P3）：2/3 步失败仍不阻塞 scan，但退出码写入 pipeline_status.json
+# （报告目录），日报页脚与飞书正文读取展示，不再静默。
+STATUS_JSON="${MYSTERY_REPORT_DIR:-$(pwd)/output}/pipeline_status.json"
+mkdir -p "$(dirname "${STATUS_JSON}")"
+SHARES_OK=fail; TURNOVER_OK=fail
 echo "[daily_pipeline] 2/4 除权事件股本重拉（无事件零 HTTP）..."
-czsc-mi sync-shares --from-adjustments || \
-  echo "[daily_pipeline] ⚠️ sync-shares --from-adjustments 失败（不阻塞主流程）"
+if czsc-mi sync-shares --from-adjustments; then SHARES_OK=ok; else \
+  echo "[daily_pipeline] ⚠️ sync-shares --from-adjustments 失败（不阻塞主流程）"; fi
 
 # W22 换手派生：纯本地（读股本快照 → 回算当日空 turn + ≤5日洞），不打 HTTP。
 # 股本快照本身低频：每周单独 cron 跑 `czsc-mi sync-shares --watchlist`
 #（全市场加 --force），不进 18:00 主链。`--backfill-days` 只挂 CLI 手动，不进管线。
 echo "[daily_pipeline] 3/4 回算换手率（turn IS NULL → calc_float/ffill）..."
-czsc-mi sync-turnover --date "$(date '+%F')" || \
-  echo "[daily_pipeline] ⚠️ sync-turnover 失败（不阻塞主流程）"
+if czsc-mi sync-turnover --date "$(date '+%F')"; then TURNOVER_OK=ok; else \
+  echo "[daily_pipeline] ⚠️ sync-turnover 失败（不阻塞主流程）"; fi
+
+# W27b：状态落地（scan --report 页脚与 feishu_notify 读取同一文件）
+cat > "${STATUS_JSON}" <<EOF
+{"date": "$(date '+%F')", "shares_refresh": "${SHARES_OK}", "turnover_derive": "${TURNOVER_OK}"}
+EOF
 
 echo "[daily_pipeline] 4/4 后台扫描自选股（落 scan_jobs/scan_results）+ 生成日报（Excel/HTML）..."
 # W17：从 `daily --watchlist`（只出报告不落库）改为 `scan --watchlist --report`——

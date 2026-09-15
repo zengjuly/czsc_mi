@@ -121,6 +121,38 @@ def test_qa_fields_structured(qa_db):
     assert src['n_symbols'] == 2 and src['rows'] == 4
 
 
+def test_dual_scope_qa_line(qa_db, tmp_path, monkeypatch):
+    """W27a P0：日报 QA 行分【自选】与【全市场】双口径，自选口径不被
+    无快照票摊薄；两行 \\n 分隔。fixture 自选 = 600000/600001。"""
+    import json
+
+    from mystery.apps.cli import _turnover_qa_line
+    import mystery.services.watchlist as wl_mod
+
+    wl = tmp_path / 'watchlist.json'
+    wl.write_text(json.dumps(
+        [{"symbol": "600000.SH", "name": "测试A"},
+         {"symbol": "600001.SH", "name": "测试B"}]), encoding='utf-8')
+    # 直接 patch 模块路径变量（reload 会污染同进程其它测试）
+    monkeypatch.setattr(wl_mod, '_DEFAULT_WATCHLIST', str(wl))
+
+    line = _turnover_qa_line(qa_db, [], '2026-09-11')
+    rows = line.split('\n')
+    assert len(rows) == 2, line
+    assert rows[0].startswith('自选 换手20日覆盖率')
+    assert rows[1].startswith('全市场 换手20日覆盖率')
+    # 自选口径分母 = 2 只有 K 的自选票（全市场 = 4 只）
+    assert '2 只中' in rows[0] and '4 只中' in rows[1]
+    # 双口径独立计算：自选分母只含自选票（本 fixture 里 with-turn 行都在
+    # 600002/600003，自选覆盖率 0 < 全市场 0.25 属预期——证明口径确实拆开、
+    # 全市场数字不再冒充自选健康度）
+    w = qa_db.turnover_qa_stats('2026-09-11', codes=['sh.600000', 'sh.600001'])
+    m = qa_db.turnover_qa_stats('2026-09-11')
+    assert w['rows'] == 8 and m['rows'] == 16       # 分母口径拆开
+    assert w['coverage'] == 0.0 and m['coverage'] == 0.25
+    assert w['n_with_shares'] == 2 and m['n_with_shares'] == 2
+
+
 def test_coverage_denominator_excludes_no_k(qa_db):
     """无 K 票不摊薄覆盖率（007.md 验收：分母不含「无 K」）。"""
     stats = qa_db.turnover_qa_stats('2026-09-11')

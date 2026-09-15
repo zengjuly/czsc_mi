@@ -170,7 +170,8 @@ def write_html(results: List[Dict[str, Any]], path: str,
                      reverse=True)
     cards = "".join(_stock_card(d) for d in ordered)
     n_true = sum(1 for d in ordered if d.get("true_resonance"))
-    qa_html = (f'<p class="qa">{qa_line}</p>' if qa_line else "")
+    qa_html = (f'<p class="qa">{qa_line.replace(chr(10), "<br>")}</p>'
+               if qa_line else "")
     doc = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><title>每日股票分析报告</title>{_CSS}</head>

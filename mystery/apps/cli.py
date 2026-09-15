@@ -230,7 +230,8 @@ def _cmd_sync_shares(args: argparse.Namespace) -> int:
     if args.watchlist:
         from ..services.watchlist import load_watchlist
         codes = load_watchlist()
-    out = sync_shares(codes=codes, force=args.force)
+    out = sync_shares(codes=codes, force=args.force,
+                      fresh_skip_days=getattr(args, 'fresh_skip_days', None))
     print(json.dumps(out, ensure_ascii=False))
     return 0 if out.get('fetched') else 1
 
@@ -252,24 +253,66 @@ def _cmd_sync_turnover(args: argparse.Namespace) -> int:
 
 
 def _turnover_qa_line(db, results, trade_date: str) -> str:
-    """W26b 日报 QA 行：换手20日覆盖率 + chip_low 低位未知只数（只读，不改判）。"""
+    """日报 QA 行（W26b/W27a）：换手20日覆盖率【自选】与【全市场】双口径
+    分列 + chip_low 低位未知只数（只读，不改判、不改阈值）。
+
+    W27a（008.md P0）：全市场口径被 ~5500 只无快照票拉低（当前 44.5%），
+    会误导「派生失败」；自选口径才是 18:00 验收指标。两行以 \\n 分隔，
+    Excel 分行写、HTML 转 <br>。
+    """
     try:
         import math
 
-        codes = [r.get('symbol') for r in results if r.get('symbol')]
-        stats = db.turnover_qa_stats(trade_date, codes=codes or None)
-        cov = stats.get('coverage')
-        cov_s = f"{cov * 100:.1f}%" if cov is not None else "无数据"
+        from ..adapters.codes import db_code_of
+        from ..services.watchlist import load_watchlist
+
+        def _cov_str(stats) -> str:
+            cov = stats.get('coverage')
+            cov_s = f"{cov * 100:.1f}%" if cov is not None else "无数据"
+            return (f"{cov_s}（{stats.get('n_symbols')} 只中 "
+                    f"{stats.get('n_with_shares')} 只有股本快照，"
+                    f"窗口 {stats.get('window_start')}~{trade_date}）")
+
         n_unknown = sum(1 for r in results if r.get('chip_low_unknown'))
         n_turn = sum(1 for r in results
                      if r.get('turnover_20') is not None
                      or (isinstance(r.get('turnover_20'), float)
                          and not math.isnan(r['turnover_20'])))
-        return (f"换手20日覆盖率 {cov_s}"
-                f"（窗口 {stats.get('window_start')}~{trade_date}，"
-                f"{stats.get('n_symbols')} 只中 {stats.get('n_with_shares')} 只有股本）"
-                f" · 本次报告 chip_low 未知 {n_unknown}/{len(results)} 只"
-                f"（近20日均换手可得 {n_turn} 只）")
+        chip_seg = (f" · 本次报告 chip_low 未知 {n_unknown}/{len(results)} 只"
+                    f"（近20日均换手可得 {n_turn} 只）") if results else ""
+
+        lines = []
+        wl_db = []
+        try:
+            wl_db = [db_code_of(c) for c in load_watchlist()]
+        except Exception:  # noqa: BLE001 自选清单缺失不算 QA 失败
+            wl_db = []
+        report_symbols = {r.get('symbol') for r in results if r.get('symbol')}
+        if wl_db:
+            seg = chip_seg if report_symbols and \
+                {db_code_of(s) for s in report_symbols} == set(wl_db) else ""
+            lines.append("自选 换手20日覆盖率 "
+                         + _cov_str(db.turnover_qa_stats(trade_date,
+                                                         codes=wl_db)) + seg)
+        lines.append("全市场 换手20日覆盖率 "
+                     + _cov_str(db.turnover_qa_stats(trade_date))
+                     + ("" if lines and chip_seg else chip_seg))
+        # W27b（008.md P3）：管线 2/3 步状态行（daily_pipeline 写 status json；
+        # 手动跑报告时文件不存在/过期 → 跳过，不误导）
+        try:
+            import os
+
+            from ..config import output_dir
+            sp = os.path.join(output_dir(), 'pipeline_status.json')
+            if os.path.exists(sp):
+                with open(sp, encoding='utf-8') as f:
+                    st = json.load(f)
+                if st.get('date') == datetime.now().strftime('%Y-%m-%d'):
+                    lines.append(f"管线状态：股本刷新={st.get('shares_refresh')}"
+                                 f"；换手派生={st.get('turnover_derive')}")
+        except Exception:  # noqa: BLE001 状态缺失不影响 QA
+            pass
+        return "\n".join(lines)
     except Exception as e:  # noqa: BLE001 QA 失败不阻塞日报
         logger.debug(f"turnover QA 行生成失败: {e}")
         return ""
@@ -353,6 +396,9 @@ def main(argv: Optional[list] = None) -> int:
                         "无事件零 HTTP 秒回，可安全进每日管线")
     p.add_argument("--since", default=None,
                    help="事件窗口起点 YYYY-MM-DD（默认上次成功对账日，否则近 7 天）")
+    p.add_argument("--fresh-skip-days", type=int, default=None,
+                   help="W27d：距上次快照 as_of 不足 N 天的票跳过 HTTP"
+                        "（周日全市场控批次；--force 时忽略）")
     p.set_defaults(func=_cmd_sync_shares)
 
     p = sub.add_parser("sync-turnover",

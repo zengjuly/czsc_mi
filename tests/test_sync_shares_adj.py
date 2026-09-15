@@ -158,3 +158,33 @@ def test_from_adjustments_missing_table_skips(tmp_path, monkeypatch):
     out = ss.sync_shares_from_adjustments(db=MysteryDB(db_path),
                                           as_of='2026-09-15')
     assert out['events'] == 0 and '跳过' in out['note']
+
+
+def test_fresh_skip_days_zero_http(tmp_path, monkeypatch):
+    """W27d：--fresh-skip-days N —— 距上次 as_of < N 天的票跳过 HTTP；
+    事件票豁免（除权日必须重拉）。"""
+    db_path = str(tmp_path / 'fresh.db')
+    db = MysteryDB(db_path)
+    db.upsert_float_share('600519.SH', '2026-09-14', 1.6e12, 1280.0, 1.25e9)
+    db.upsert_float_share('000001.SZ', '2026-09-01', 2.0e11, 12.0, 1.66e10)
+    called = []
+
+    class CountingThs:
+        marketdb_path = ''
+
+        def get_auction_snapshot(self, thscodes, stage='final'):
+            called.append(list(thscodes))
+            return []
+    monkeypatch.setattr(ss, 'ThsClient', lambda *a, **k: CountingThs())
+    out = ss.sync_shares(codes=['sh600519', 'sz000001'], db=db,
+                         as_of='2026-09-20', fresh_skip_days=6)
+    # 600519 as_of=09-14 ≥ cut(09-14) → 跳过；000001 太旧 → 请求
+    assert out['skipped_recent'] == 1
+    assert called == [['000001.SZ']]
+    # 事件票豁免：600519 虽 fresh 仍被请求
+    called.clear()
+    out2 = ss.sync_shares(codes=['sh600519', 'sz000001'], db=db,
+                          as_of='2026-09-20', fresh_skip_days=6,
+                          event_codes={'600519.SH'})
+    assert sorted(called[0]) == ['000001.SZ', '600519.SH']
+    assert out2['skipped_recent'] == 0

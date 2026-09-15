@@ -296,7 +296,10 @@ def _append_qa_row(path: str, qa_line: str) -> None:
         wb = load_workbook(path)
         ws = wb["汇总报告"]
         row = ws.max_row + 2
-        ws.cell(row=row, column=1, value=qa_line)
+        # W27a：qa_line 可含 \n 多行（自选/全市场双口径），逐行写
+        for ln in qa_line.split("\n"):
+            ws.cell(row=row, column=1, value=ln)
+            row += 1
         wb.save(path)
     except Exception as e:  # noqa: BLE001 QA 观测失败不阻塞报告
         logger.warning("Excel QA 行写入失败（不影响报告主体）: %s", e)

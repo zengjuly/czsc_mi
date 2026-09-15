@@ -59,13 +59,16 @@ def sync_shares(codes: Optional[List[str]] = None,
                 force: bool = False,
                 as_of: Optional[str] = None,
                 db: Optional[MysteryDB] = None,
-                event_codes: Optional[set] = None) -> Dict:
+                event_codes: Optional[set] = None,
+                fresh_skip_days: Optional[int] = None) -> Dict:
     """刷新流通股本快照。
 
     codes: 目标票（默认全市场证券列表）。force=True 全量重拉并写快照；
     否则只对有旧快照的票做跳变对账 + 无快照的票补齐。
     event_codes: W26c 除权事件票（thscode 集合）——命中的票跳过 3% 门槛，
     股本未变也写新 as_of（锚点日），日志 unchanged 计数。
+    fresh_skip_days: W27d（008.md P1）——非 force 且距上次快照 as_of 不足
+    N 天的票直接跳过 HTTP（周日全市场批量控量用；事件票不受影响）。
     返回 QA 摘要 {as_of, fetched, written, skipped_small_change, failed}。
     """
     db = db or MysteryDB()
@@ -82,6 +85,30 @@ def sync_shares(codes: Optional[List[str]] = None,
 
     thscodes = [_to_thscode(c) for c in codes]
     code_by_ths = {_to_thscode(c): c for c in codes}
+
+    recent_cut = None
+    skipped_recent = 0
+    if fresh_skip_days and not force:
+        try:
+            recent_cut = (datetime.strptime(as_of, '%Y-%m-%d')
+                          - timedelta(days=int(fresh_skip_days))
+                          ).strftime('%Y-%m-%d')
+        except Exception:  # noqa: BLE001
+            recent_cut = None
+    if recent_cut:
+        with db._lock:
+            conn = db._connect()
+            try:
+                fresh = {r[0] for r in conn.execute(
+                    "SELECT DISTINCT thscode FROM float_share_snapshot "
+                    "WHERE as_of >= ?", (recent_cut,)).fetchall()}
+            finally:
+                conn.close()
+        # 事件票豁免：除权日必须重拉，哪怕快照还新鲜
+        fresh &= set(thscodes) - (event_codes or set())
+        skipped_recent = len(fresh)
+        thscodes = [t for t in thscodes if t not in fresh]
+        code_by_ths = {k: v for k, v in code_by_ths.items() if k not in fresh}
 
     snaps = ths.get_auction_snapshot(thscodes, stage='final')
     written = small = failed = unchanged = 0
@@ -113,6 +140,7 @@ def sync_shares(codes: Optional[List[str]] = None,
             failed += 1
     out = {'as_of': as_of, 'fetched': len(snaps), 'written': written,
            'skipped_small_change': small, 'unchanged_event': unchanged,
+           'skipped_recent': skipped_recent,
            'failed': failed, 'targets': len(codes)}
     if written:
         _record_shares_sync(db.db_path, as_of)

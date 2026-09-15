@@ -91,6 +91,18 @@ def _build_ok_message() -> str:
             nm = _name(payload)
             lines.append(f"  · {sym} {nm} 分={score}")
 
+    # W27b（008.md P3）：管线 2/3 步失败可观测——附当日状态行（若存在）
+    try:
+        import datetime as _dt
+        sp = Path(_report_dir()) / 'pipeline_status.json'
+        if sp.exists():
+            st = json.loads(sp.read_text(encoding='utf-8'))
+            if st.get('date') == _dt.date.today().isoformat():
+                lines.append(f"🧾 管线状态：股本刷新={st.get('shares_refresh')}"
+                             f"；换手派生={st.get('turnover_derive')}")
+    except Exception:
+        pass
+
     # 最新日报 xlsx → GitHub raw 链接（可点击下载；与旧 daily_stock_report.sh 口径一致）
     try:
         from urllib.parse import quote
