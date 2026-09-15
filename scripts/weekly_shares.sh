@@ -25,6 +25,7 @@ LOG="${CZSC_MI_STATE_DIR:-$HOME/.local/state/czsc_mi}/weekly_shares.log"
 mkdir -p "$(dirname "$LOG")"
 exec >>"$LOG" 2>&1
 echo "===== $(date '+%F %T') weekly_shares 开始 ====="
+echo "[weekly_shares] db=${MYSTERY_DB_PATH}"   # W31c（012.md）：验收先看打的是哪套库
 
 echo "[weekly_shares] 1/2 自选对账..."
 czsc-mi sync-shares --watchlist --fresh-skip-days 6 \
