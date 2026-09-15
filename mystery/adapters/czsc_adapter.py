@@ -367,23 +367,26 @@ class CzscAdapter:
             out[freq] = self.analyze(series)
         return out
 
-    def signal_flags(self, series: BarSeries) -> Tuple[str, str]:
+    def signal_flags(self, series: BarSeries) -> Tuple[str, str, bool]:
         """czsc 买卖点/背驰标签（010.md 6A/6C；仅混合分路径调用，分关零开销）。
 
         实测 czsc 1.0.1：`_native.call_signal(name, c, params=...)` 直调最新
-        信号值（非滚动生成，成本低）。返回 (bs_flag, divergence)：
+        信号值（非滚动生成，成本低）。返回 (bs_flag, divergence, signals_ok)：
         - bs_flag: "一买"/"二买"/"三买"/"三卖" 等（value 首段含买卖），无则 ""
         - divergence: "顶背驰"/"底背驰"（tas_macd_bc_V230803），无则 ""
-        任何异常（版本漂移/数据不足）→ ("", "")，调用方当无标签。
+        - signals_ok: 4 个信号函数全部正常返回（W30b，011.md：区分
+          「无标签」与「czsc 版本漂移/异常导致静默空标签」）
+        任何异常（版本漂移/数据不足）→ signals_ok=False，调用方当无标签但记日志。
         """
         try:
             from czsc import _native as n
         except ImportError:
-            return "", ""
+            return "", "", False
         c = self._build_czsc(series)
         if c is None:
-            return "", ""
+            return "", "", False
         bs, div = "", ""
+        ok = True
         try:
             for name, params in (("cxt_first_buy_V221126", {"di": 1}),
                                  ("cxt_second_bs_V240524",
@@ -400,6 +403,7 @@ class CzscAdapter:
                 if bs:
                     break
         except Exception as e:
+            ok = False
             logger.debug(f"买卖点信号失败({series.symbol}): {str(e)[:80]}")
         try:
             for s in n.call_signal("tas_macd_bc_V230803", c, params={}):
@@ -408,8 +412,9 @@ class CzscAdapter:
                     div = tok
                     break
         except Exception as e:
+            ok = False
             logger.debug(f"背驰信号失败({series.symbol}): {str(e)[:80]}")
-        return bs, div
+        return bs, div, ok
 
     # ---------------- 抽取 ----------------
     def _extract(self, c, freq: str) -> ChanStructure:

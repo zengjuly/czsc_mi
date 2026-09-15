@@ -228,7 +228,17 @@ class AnalysisService:
                 if with_signals and freq == '1d':
                     st = out[freq]
                     if not st.bs_flag and not st.divergence:
-                        bs, div = adapter.signal_flags(series)
+                        bs, div, sig_ok = adapter.signal_flags(series)
+                        # W30b（011.md）：空标签必须可见——signals_ok=False
+                        # 说明 czsc 异常/版本漂移，当无标签进分但记 WARNING
+                        if not sig_ok:
+                            logger.warning(
+                                f"czsc 信号异常({daily.symbol}): "
+                                f"bs= div= signals_ok=False（当无标签计 0）")
+                        elif not bs and not div:
+                            logger.info(
+                                f"czsc 信号无标签({daily.symbol}): "
+                                f"bs= div= signals_ok=True")
                         if bs or div:
                             st.bs_flag, st.divergence = bs, div
             except Exception as e:
