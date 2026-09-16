@@ -129,8 +129,14 @@ class AnalysisService:
 
     # ---------------- 市场上下文 ----------------
     def build_market_context(self, symbol: str,
-                             daily: BarSeries) -> MarketContext:
-        """指数 + 行业（名称/强度分/趋势）+ 财务。"""
+                             fill_financial: bool = True) -> MarketContext:
+        """指数 + 行业（名称/强度分/趋势）+ 财务。
+
+        W36 P1-1：fill_financial=False 时只用库内财务，缺则保持 None →
+        规则 unknown 语义。全市场扫描链禁逐只打 THS 财务 API（86 只
+        watchlist 实测库内 ROE 覆盖率 5510/5518，在线补齐只是兜底）；
+        个股交互路径（CLI/Web 详情）保持 True，补齐后回填库供扫描复用。
+        """
         ctx = MarketContext()
         try:
             index_series = self.market.fetch_index(_INDEX_CODE, '1d')
@@ -151,8 +157,9 @@ class AnalysisService:
             logger.debug(f"财务获取失败: {str(e)[:60]}")
         # W9: 本地库缺财务（或只有 PE/PB 缺 ROE）→ ths 在线补齐并回填库。
         # valuations-snapshot(PE/PB/PS) + financials-indicators(扣非ROE/毛利率/净利率)
+        # W36 P1-1：仅 fill_financial=True（个股交互路径）才允许外呼补齐。
         fin = ctx.financial or {}
-        if not fin.get('roe'):
+        if fill_financial and not fin.get('roe'):
             try:
                 val = self.market.ths.get_financial(symbol) or {}
                 ind = self.market.ths.get_indicators(symbol) or {}
@@ -263,11 +270,13 @@ class AnalysisService:
 
     def analyze_one_stock(self, symbol: str,
                           include_detail: bool = True,
-                          use_cache: bool = True) -> AnalysisResult:
+                          use_cache: bool = True,
+                          fill_financial: bool = True) -> AnalysisResult:
         """单票完整分析（CLAUDE.md §7.4 伪代码）。
 
         W23：use_cache=True 时头尾走 analysis_cache（键含开关/版本/K线指纹，
         改任何一项必 miss；sync 写该票 K 线时同事务删除旧缓存）。
+        W36 P1-1：fill_financial=False（扫描链）时不在线补财务，缺则 unknown。
         """
         daily = self.market.fetch_bars(symbol, '1d')
         if not daily.bars:
@@ -284,8 +293,10 @@ class AnalysisService:
                     make_cache_key
                 from ..adapters.czsc_adapter import czsc_version
                 ver = czsc_version() if chan_enabled() else ''
+                # W36 P1-1：F 位入键——扫描链(F=0)缺 ROE 的 unknown 结果
+                # 不得被个股详情(F=1,在线补齐)误命中，反之亦然。
                 flags = (f"D{int(include_detail)}|C{int(chan_enabled())}"
-                         f"|S{int(chan_score_enabled())}")
+                         f"|S{int(chan_score_enabled())}|F{int(fill_financial)}")
                 fp = bars_fingerprint(daily.bars)
                 ck = make_cache_key(
                     daily.adjust, rule, flags, ver, fp)
@@ -307,7 +318,8 @@ class AnalysisService:
         monthly = self.market.resample_bars(daily, '1M')
 
         internal = daily.symbol
-        ctx = self.build_market_context(internal, daily)
+        ctx = self.build_market_context(internal,
+                                        fill_financial=fill_financial)
 
         # 缠论（P2：只展示不进评分；MYSTERY_CHAN_ENABLED=0 时 Service 不调用 Adapter）
         # 010.md 6C：mix（结构开+分开关）时标签进 scorer；
@@ -369,7 +381,9 @@ class AnalysisService:
 
 def analyze_one_stock(symbol: str, include_detail: bool = True,
                       cfg: Optional[Dict] = None,
-                      use_cache: bool = True) -> AnalysisResult:
+                      use_cache: bool = True,
+                      fill_financial: bool = True) -> AnalysisResult:
     """唯一分析入口（模块级便捷函数）。"""
     return AnalysisService(cfg).analyze_one_stock(
-        symbol, include_detail=include_detail, use_cache=use_cache)
+        symbol, include_detail=include_detail, use_cache=use_cache,
+        fill_financial=fill_financial)

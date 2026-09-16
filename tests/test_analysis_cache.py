@@ -108,7 +108,7 @@ def _make_service(monkeypatch, db, bars=None):
                                              source=s.source),
     )
     svc.sector = None
-    svc.build_market_context = lambda internal, d: MarketContext()
+    svc.build_market_context = lambda internal, **kw: MarketContext()
     calls = {'n': 0}
 
     def fake_run_rules(daily, weekly, monthly, ctx, include_detail):

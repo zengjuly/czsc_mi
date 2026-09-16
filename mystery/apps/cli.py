@@ -88,7 +88,10 @@ def _cmd_daily(args: argparse.Namespace) -> int:
     def _one(code: str):
         """单只分析（线程内，共享 svc）：返回 (dict, None) 或 (None, 错误串)。"""
         try:
-            r = svc.analyze_one_stock(code, include_detail=True)
+            # W36 P1-1：批量路径与扫描链同口径（库内 ROE 覆盖 5510/5518，
+            # 缺则 unknown，不逐只外呼财务 API）
+            r = svc.analyze_one_stock(code, include_detail=True,
+                                      fill_financial=False)
             return r.to_dict(), None
         except Exception as e:
             return None, f"{code} 分析失败跳过: {str(e)[:80]}"

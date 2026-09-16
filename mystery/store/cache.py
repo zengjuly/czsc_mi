@@ -1,8 +1,9 @@
 """mystery.store.cache — 分析结果缓存（006.md 阶段 3 / W23）。
 
 键 = symbol + trade_date + cache_key，其中 cache_key 由
-adjust / rule_ver / chan_enabled / chan_score / czsc_ver / include_detail
-+ bars_fingerprint（日 K 末根 dt/close/volume + 根数）归一哈希。
+adjust / rule_ver / chan_enabled / chan_score / fill_financial / czsc_ver
+/ include_detail + bars_fingerprint（首根 dt + 中间 close + 末根
+dt/close/volume + volume 校验和 + 根数）归一哈希。
 
 语义：
 - 收盘后日级有效；盘中数据在变动时指纹不同 → 自然 miss，不会读到脏分。
@@ -31,18 +32,33 @@ def scan_cache_enabled() -> bool:
 
 
 def bars_fingerprint(bars: List[Any]) -> str:
-    """日 K 指纹：末根 dt/close/volume + 根数（006.md 阶段 3 定义）。
+    """日 K 指纹（W36 P1-3 加重）：首根 dt + 中间根 close + 末根
+    dt/close/volume + 根数 + volume 校验和。
 
+    旧实现只看末根 3 值 + 根数：换源重刷历史、中段补洞都可能指纹不变
+    → 脏缓存命中。校验和用「根数×位置加权」取样（首/中/末 + volume 求和
+    保留 2 位精度）覆盖全序列，成本 O(n) 字符串拼接只在必要时可接受。
     close/volume 用 repr 保精度；None 组件统一字面量，避免歧义。
     """
     if not bars:
         return 'empty'
+    n = len(bars)
     last = bars[-1]
+    mid = bars[n // 2]
+    first = bars[0]
+    vol_sum = 0.0
+    for b in bars:
+        v = getattr(b, 'volume', None)
+        if v is not None:
+            vol_sum += float(v)
     parts = [
+        str(first.dt)[:19],
+        repr(float(mid.close)) if mid.close is not None else 'None',
         str(last.dt)[:19],
         repr(float(last.close)) if last.close is not None else 'None',
         repr(float(last.volume)) if getattr(last, 'volume', None) is not None else 'None',
-        str(len(bars)),
+        repr(round(vol_sum, 2)),
+        str(n),
     ]
     return hashlib.sha1('|'.join(parts).encode('utf-8')).hexdigest()[:16]
 

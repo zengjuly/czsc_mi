@@ -77,7 +77,8 @@ def _scan_worker(codes_batch: List[str], cfg: Optional[Dict],
     for code in codes_batch:
         try:
             r = svc.analyze_one_stock(code, include_detail=include_detail,
-                                      use_cache=use_cache)
+                                      use_cache=use_cache,
+                                      fill_financial=False)
             d = r.to_dict()
             d.update(classify(d))
             if min_score is None or (d.get('score') is not None
@@ -97,7 +98,8 @@ def _scan_thread_worker(code: str, svc: AnalysisService,
     try:
         from ..store.cache import scan_cache_enabled
         r = svc.analyze_one_stock(code, include_detail=include_detail,
-                                  use_cache=scan_cache_enabled())
+                                  use_cache=scan_cache_enabled(),
+                                  fill_financial=False)
         d = r.to_dict()
         d.update(classify(d))
         if min_score is not None and (d.get('score') is None
