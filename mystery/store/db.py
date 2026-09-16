@@ -202,7 +202,7 @@ class MysteryDB:
                         "amount=excluded.amount, "
                         "turn=COALESCE(excluded.turn, turn), "
                         "pctChg=COALESCE(excluded.pctChg, pctChg)",
-                        (code, str(r.get('日期')), period,
+                        (code, _d(r.get('日期')), period,
                          _f(r.get('开盘价')), _f(r.get('最高价')), _f(r.get('最低价')),
                          _f(r.get('收盘价')), _f(r.get('成交量')), _f(r.get('成交额')),
                          _f(r.get('换手率')), _f(r.get('涨跌幅'))))
@@ -223,7 +223,7 @@ class MysteryDB:
         code_series = rows[code_col] if code_col in rows.columns \
             else rows['代码']
         data = [
-            (str(code), str(r.get('日期')), period,
+            (str(code), _d(r.get('日期')), period,
              _f(r.get('开盘价')), _f(r.get('最高价')), _f(r.get('最低价')),
              _f(r.get('收盘价')), _f(r.get('成交量')), _f(r.get('成交额')),
              _f(r.get('换手率')), _f(r.get('涨跌幅')))
@@ -830,3 +830,16 @@ def _f(v: Any) -> Optional[float]:
         return float(v)
     except Exception:
         return None
+
+
+def _d(v: Any) -> str:
+    """日期写入端归一：pandas Timestamp/ISO 带时间后缀 → 'YYYY-MM-DD'。
+
+    09-16 清洗教训：DuckDB 预同步写入 Timestamp 产生 'YYYY-MM-DD 00:00:00'
+    长格式，与在线回写的短格式在主键 (code,date,period) 下变成同日双行
+    （1020 万条），污染 MA/窗口计算。所有入库日期必须过此函数。
+    """
+    s = str(v)
+    if len(s) > 10 and s[10] in ' T':
+        s = s[:10]
+    return s

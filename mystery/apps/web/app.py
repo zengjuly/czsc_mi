@@ -281,6 +281,9 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
             '回撤%': (None if row.get('price_pos') is None
                       else round(float(row['price_pos']) * 100, 1)),
             '日期': row.get('trade_date', ''),
+            # W33：K线指纹前8位/来源（与详情页头部对照，不同 = 快照不同）
+            '指纹': f"{row.get('bars_fingerprint') or '-'}"
+                    f"/{row.get('data_source') or '-'}",
             '详情': f"?stock={row['symbol']}&nav_key={nav_key}&nav_idx={idx}",
         }
         # W16：年线系统 7 项具体条件 + 主升浪 8 项具体指标（只展示不改判）
@@ -592,6 +595,11 @@ def render_stock(d: dict):
     """个股页：指标卡 + 缠论卡 + 明细（只读 result dict，不再计算）。"""
     name = d.get('name') or '未知'
     st.subheader(f"{name}（{d.get('symbol', '')}）  {d.get('trade_date', '')}")
+    # W33：数据指纹 + 来源（诊断「扫描 vs 详情不一致」：两侧指纹不同 = K线快照不同）
+    _fp = d.get('bars_fingerprint') or '-'
+    _src = d.get('data_source') or '-'
+    _rv = d.get('rule_ver') or '-'
+    st.caption(f"数据指纹 {_fp} · 来源 {_src} · 口径 {_rv}")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("综合评分", _fmt(d.get('score')))
     c2.metric("操作建议", d.get('advice', '-'))

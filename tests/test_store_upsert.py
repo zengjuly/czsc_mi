@@ -72,6 +72,40 @@ def test_upsert_overwrite_values():
     assert close == 11.0 and turn == 3.0
 
 
+def test_upsert_date_normalized():
+    """pandas Timestamp / 带时间后缀日期入库必须归一为 YYYY-MM-DD。
+
+    09-16 清洗教训：长格式与短格式在主键下变同日双行（1020 万条污染）。
+    """
+    db = _fresh_db()
+    df = pd.DataFrame([
+        {'日期': pd.Timestamp('2026-08-01'), '开盘价': 10, '最高价': 11,
+         '最低价': 9, '收盘价': 10.5, '成交量': 1e6, '成交额': 1e7,
+         '换手率': 2.5, '涨跌幅': 1.0},
+        {'日期': '2026-08-02 00:00:00', '开盘价': 10, '最高价': 11,
+         '最低价': 9, '收盘价': 10.6, '成交量': 1e6, '成交额': 1e7,
+         '换手率': 2.5, '涨跌幅': 1.0},
+        {'日期': '2026-08-03T00:00:00', '开盘价': 10, '最高价': 11,
+         '最低价': 9, '收盘价': 10.7, '成交量': 1e6, '成交额': 1e7,
+         '换手率': 2.5, '涨跌幅': 1.0},
+    ])
+    db.upsert_kline(df, 'sh.600519', 'daily')
+    # 同一天再以长格式重写 → 应命中同一 PK 行而非新增双行
+    db.upsert_kline(df.iloc[[0]], 'sh.600519', 'daily')
+    conn = db._connect()
+    try:
+        dates = [r[0] for r in conn.execute(
+            "SELECT DISTINCT date FROM stock_kline_data WHERE code='sh.600519' ORDER BY date"
+        )]
+        n = conn.execute(
+            "SELECT COUNT(*) FROM stock_kline_data WHERE code='sh.600519'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert dates == ['2026-08-01', '2026-08-02', '2026-08-03'], dates
+    assert n == 3, f"出现同日双行: {n}"
+
+
 def test_get_sector_stocks_code_normalize():
     """板块成分查询归一：ths_881101 / 881101.TI / 881101 三种入参都命中 rel 表。
 

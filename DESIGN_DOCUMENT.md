@@ -147,7 +147,7 @@ analyze_one_stock(symbol):
 
 ## 8. 测试与验收
 
-- `pytest -q -m "not integration"`：142 passed（models/core 合成 OHLC/czsc adapter
+- `pytest -q -m "not integration"`：168 passed（models/core 合成 OHLC/czsc adapter
   mock K 线/金标 ≤ 1/scan_signals 三类信号/缠论图 plot_figure/technical 快照/
   web 页面冒烟 + 后台任务仓库跨 rerun 持久回归 + Excel 单汇总页回归 +
   CLI 默认 THS 环境注入回归 + 换手覆盖率 QA + 除权事件股本重拉）。
@@ -210,6 +210,7 @@ analyze_one_stock(symbol):
 | W30 | 011.md 稳定化（缠论公式与默认开关冻结）：a) W30a DESIGN §6/§11 + README 与 6C 标定表对齐（删「±10/±5/±8 浅规则」旧文案，补「打开 SCORE=1 后 rule_ver=mystery-0.10.0-chan 勿与 1.22.30 金标比绝对值」）；b) W30b `signal_flags` 返回 (bs, div, signals_ok)，分开路径无标签 INFO/异常 WARNING（分关仍零开销），mock 单测 4 项（test_signal_flags.py）；c) W30c 回归 153 全过，分关/分开 rule_ver 实测（000690 分关 40.0=compat/分开 38.4=chan，600036 触发新日志 signals_ok=True），6D 报表列实核（Excel 列全、空 `-`、「未进综合分」标注、排序 Mystery）。d) W30d 换手为运营验收（18:00 cron + 周日铺盘），代码冻结 | ✅ 0.10.1 |
 | W31 | 012.md（缠论侧继续冻结）：a) W31b 数据指纹——`MysteryDB.data_fingerprint()`（db_path/kline_max/as_of_max 只读），QA 行第一行固定 `db=… kline_max=… as_of_max=…`，K线滞后/空库/快照表空出 WARN（消灭手动 scan 打到旧库时「0 只快照=治理回退」误判），CLI scan/sync-turnover 启动打同款 `db=` 行；weekly_shares.sh 开始行 echo db=；新增 2 项 tmp-db 单测。b) W31c 18:00+周日验收清单入 012.md，判定逻辑零改动 | ✅ 0.10.2 |
 | W32 | 013.md（综合分/缠论继续冻结，只读增量）：a) W32a `docs/theory_index.md` 全书 `##` 级标题 303 条三层归类（金标已覆盖 18/可标签 87/仅心法 198，`scripts/theory_index.py` 可重跑）；b) W32b `mystery/core/turnover_tag.py` 零 IO 纯函数——换手分档 unknown/absorb(3-5)/inflow(8-15)/heavy(≥25)/flee(≥70)/other + 趋势/情绪/混合/未知风格，Excel/HTML/Web 三处只读两列（缺 turn 恒「未知」，不进综合分、不动 chip_low 门）；c) W32c `MysteryDB.sector_coverage_stats()` 行业覆盖进 QA 行（实测自选 97.6%、全市场 90.5%，板块K线滞后单独显示）；d) W32d 换手运营沿用 012 验收。新增 12 项单测 | ✅ 0.10.3 |
+| W33 | 数据一致性修复（用户「执行1 2 3」）：a) P0-1 `stock_kline_data` 清洗——备份 `backup_pre_clean_20260916.db`（integrity ok）后 `scripts/clean_kline_dupes.py` 删同日双行 10,206,456 条 + 归一长格式日期 116,471 条（21,553,144→11,346,688 行），清空 analysis_cache/chan_cache；根因=DuckDB 预同步写 Timestamp 带 ` 00:00:00` 后缀，PK 视长/短格式为不同行。b) P0-2 防回潮——`store/db.py` 新增 `_d()` 写入端日期归一，`upsert_kline`/`upsert_kline_many` 全部走它 + 单测 `test_upsert_date_normalized`；「DuckDB/SQLite 复权口径差」实证为双行污染窗口假象（v_daily_qfq factor≈0.997，OHLCV 逐行一致）。c) P1-3 可见性——`AnalysisResult` 新增 `bars_fingerprint`(前8位)/`data_source` 顶层字段（to_dict/缓存还原/缓存命中补齐三路径），Web 详情页头部 caption + 扫描表「指纹」列只读展示 | ✅ 0.10.4 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。

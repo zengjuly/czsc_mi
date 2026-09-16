@@ -184,6 +184,8 @@ class AnalysisResult:
     financial: Dict[str, Any] = field(default_factory=dict)
     rule_ver: str = RULE_VER
     czsc_ver: str = ""
+    bars_fingerprint: str = ""  # W33：日K指纹前8位（诊断「扫描 vs 详情不一致」用）
+    data_source: str = ""       # W33：日K来源 db/ths_official/tdx_api/tdx_local
 
     def to_dict(self) -> Dict[str, Any]:
         return _todict(self)

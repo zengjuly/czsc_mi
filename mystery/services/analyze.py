@@ -106,6 +106,8 @@ def _result_from_payload(data: dict) -> AnalysisResult:
         financial=data.get('financial') or {},
         rule_ver=data.get('rule_ver', ''),
         czsc_ver=data.get('czsc_ver', ''),
+        bars_fingerprint=data.get('bars_fingerprint', ''),
+        data_source=data.get('data_source', ''),
     )
 
 
@@ -270,13 +272,18 @@ class AnalysisService:
                 ver = czsc_version() if chan_enabled() else ''
                 flags = (f"D{int(include_detail)}|C{int(chan_enabled())}"
                          f"|S{int(chan_score_enabled())}")
+                fp = bars_fingerprint(daily.bars)
                 ck = make_cache_key(
-                    daily.adjust, rule, flags, ver,
-                    bars_fingerprint(daily.bars))
+                    daily.adjust, rule, flags, ver, fp)
                 hit = AnalysisCache(self.market.db).get(
                     daily.symbol, trade_date, ck)
                 if hit is not None:
-                    return _result_from_payload(hit)
+                    res = _result_from_payload(hit)
+                    # W33：缓存行不含 K 线指纹（旧 payload），命中时按当前
+                    # 序列补齐——指纹即缓存键成分，命中意味着指纹一致。
+                    res.bars_fingerprint = fp[:8]
+                    res.data_source = daily.source
+                    return res
             except Exception as e:
                 logger.debug(f"[cache] 读缓存失败({symbol}): {str(e)[:80]}")
                 ck = None
@@ -306,6 +313,7 @@ class AnalysisService:
         if chan:
             from ..adapters.czsc_adapter import czsc_version
             czsc_ver = czsc_version()
+        from ..store.cache import bars_fingerprint as _fp
         result = AnalysisResult(
             symbol=internal,
             name=name,
@@ -323,6 +331,8 @@ class AnalysisService:
             financial=ctx.financial,
             rule_ver=rule,
             czsc_ver=czsc_ver,
+            bars_fingerprint=_fp(daily.bars)[:8],   # W33 诊断展示
+            data_source=daily.source,               # W33 诊断展示
         )
         # ---- 缓存写（W23）----
         if ck is not None:
