@@ -43,6 +43,16 @@ def _service():
     return AnalysisService(load_config())
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def _market_env_line_cached() -> str:
+    """W37 大盘滤网一行摘要（10 分钟缓存；fetch_index 会话缓存双保险）。"""
+    from mystery.services.analyze import market_env_line, market_env_summary
+    try:
+        return market_env_line(market_env_summary(_service().market))
+    except Exception:  # noqa: BLE001
+        return "[大盘滤网] 大盘未知"
+
+
 def _fmt(v, nd=2):
     if v is None:
         return "-"
@@ -307,6 +317,7 @@ def _render_scan_table(rows: list, key: str = "scan"):
     nav_key 为该缓存的随机 key，进入详情页按 nav_key 恢复导航。
     """
     st.caption(f"共 {len(rows)} 只（按分降序）")
+    st.caption(_market_env_line_cached())
     
     # 存当前列表到进程级缓存（跨标签页/会话），供详情页恢复导航
     nav_key = _nav_cache_put(rows)

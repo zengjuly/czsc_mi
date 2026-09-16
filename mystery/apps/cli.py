@@ -126,6 +126,13 @@ def _cmd_daily(args: argparse.Namespace) -> int:
             (results[0].get('trade_date') or '')[:10] or date_str)
     except Exception:  # noqa: BLE001
         qa_line = ""
+    # W37 大盘滤网（只读展示，现算不进个股缓存；会话缓存=每进程一次）
+    try:
+        from ..services.analyze import market_env_line, market_env_summary
+        qa_line = (qa_line + "\n" if qa_line else "") + market_env_line(
+            market_env_summary(svc.market))
+    except Exception:  # noqa: BLE001
+        pass
     write_excel(results, xlsx, qa_line=qa_line or None)
     write_html(results, html, qa_line=qa_line or None)
     print(f"共 {len(results)} 只（失败 {failed}）")
@@ -157,6 +164,14 @@ def _write_scan_report(results, args) -> None:
             if results else ""
     except Exception:  # noqa: BLE001 QA 失败不阻塞报告
         qa_line = ""
+    # W37 大盘滤网（只读展示；新建 service 仅为取数通道，会话缓存一次）
+    try:
+        from ..services.analyze import (AnalysisService, market_env_line,
+                                        market_env_summary)
+        qa_line = (qa_line + "\n" if qa_line else "") + market_env_line(
+            market_env_summary(AnalysisService(args.cfg).market))
+    except Exception:  # noqa: BLE001
+        pass
     write_excel(results, xlsx, qa_line=qa_line or None)
     write_html(results, html, qa_line=qa_line or None)
     print(f"报告已生成: {xlsx}")

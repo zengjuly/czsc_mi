@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from ..adapters import market as _market
 from ..adapters import sector as _sector
@@ -48,6 +48,48 @@ def chan_score_enabled() -> bool:
     if v is not None:
         return v.strip().lower() in ('1', 'true', 'on', 'yes')
     return bool((load_config().get('chan') or {}).get('score', False))
+
+
+def market_env_summary(market) -> Dict[str, Any]:
+    """大盘滤网快照（W37，单一实现，四方展示只读调用）。
+
+    双锚（上证 000001.SH + 深证成指 399311.SZ；同花顺全A/中证全指实测
+    fuyao 无数据，见 core/market_env 模块 docstring）走既有
+    MarketDataClient.fetch_index 归一通道（会话级缓存 + 在线命中自动
+    落库），无旁路取数。缺数据 → verdict「大盘未知」，不猜。
+    **纯展示字段，不进 scorer、不改 rule_ver。**
+    """
+    from ..core.market_env import ANCHORS, anchor_env, market_env
+
+    anchors = []
+    for name, code in ANCHORS:
+        closes = []
+        last_dt = ''
+        try:
+            series = market.fetch_index(code, '1d')
+            if series and series.bars:
+                closes = [float(b.close) for b in series.bars]
+                last_dt = str(series.bars[-1].dt)[:10]
+        except Exception as e:
+            logger.debug(f"大盘锚 {code} 获取失败: {str(e)[:60]}")
+        a = anchor_env(name, code, closes)
+        a["date"] = last_dt
+        anchors.append(a)
+    return market_env(anchors)
+
+
+def market_env_line(env: Dict[str, Any]) -> str:
+    """一行文字摘要（QA 行/终端/飞书共用；缺数据字段跳过）。"""
+    parts = [env.get('verdict', '大盘未知')]
+    for a in env.get('anchors', []):
+        if a.get('close') is None:
+            parts.append(f"{a['name']}=缺数据")
+            continue
+        tag = "站年线" if a.get('above') else "破年线"
+        arr = "多头排列" if a.get('aligned') else "非多头"
+        parts.append(f"{a['name']}{a['close']:.0f}({tag}/{arr},"
+                     f"20日{a['chg_20d']:+.1f}%)")
+    return "[大盘滤网] " + "；".join(parts)
 
 
 def _avg_turnover_20(daily: BarSeries) -> Optional[float]:
