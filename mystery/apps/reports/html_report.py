@@ -13,6 +13,8 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from mystery.core.bc_resonance import bc_resonance as _bc_resonance
+
 logger = logging.getLogger(__name__)
 
 _CSS = """
@@ -139,6 +141,8 @@ def _stock_card(d: Dict[str, Any]) -> str:
         _pos_cn = {"above": "中枢上方", "below": "中枢下方",
                    "in": "中枢区间内"}.get(c1.get("zs_position") or "", "")
         _bs = " · ".join(filter(None, [c1.get("bs_flag"), c1.get("divergence")]))
+        # W34：日/周背驰共振（只展示不进分）
+        _bcr = _bc_resonance(chan)
         chan_html = (
             f"<p>缠论：日线末笔{'向上' if c1.get('last_bi_dir') == 'up' else '向下'}"
             f"{'（已确认）' if c1.get('last_bi_confirmed') else '（未确认）'} · "
@@ -147,6 +151,7 @@ def _stock_card(d: Dict[str, Any]) -> str:
             f"{(' · 离开' + ('上' if c1.get('leave_zs') == 'up' else '下')) if c1.get('leave_zs') else ''}"
             f"{(' · 拉伸比' + str(c1.get('bi_stretch'))) if c1.get('bi_stretch') is not None else ''}"
             f"{(' · ' + _bs) if _bs else ''}"
+            f"{(' · <b>' + _bcr + '</b>') if _bcr else ''}"
             f" | 周线末笔{'向上' if cw.get('last_bi_dir') == 'up' else '向下'}"
             f"{'（已确认）' if cw.get('last_bi_confirmed') else '（未确认）'} · "
             f"czsc {_esc(d.get('czsc_ver', ''))}"

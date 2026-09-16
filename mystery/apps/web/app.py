@@ -30,6 +30,7 @@ from mystery.adapters.codes import normalize_symbol  # noqa: E402
 from mystery.apps.reports.excel_report import excel_bytes  # noqa: E402
 from mystery.config import load_config, output_dir  # noqa: E402
 from mystery.core.scan_signals import classify  # noqa: E402
+from mystery.core.bc_resonance import bc_resonance as _bc_resonance  # noqa: E402
 from mystery.services.analyze import (AnalysisService, chan_enabled,  # noqa: E402
                                       chan_score_enabled)
 from mystery.services.scan import (scan_market, latest_scan_job,  # noqa: E402
@@ -284,6 +285,8 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
             # W33：K线指纹前8位/来源（与详情页头部对照，不同 = 快照不同）
             '指纹': f"{row.get('bars_fingerprint') or '-'}"
                     f"/{row.get('data_source') or '-'}",
+            # W34：日/周背驰共振（core 纯函数单一实现，只展示不进分）
+            '背驰共振': _bc_resonance(row.get('chan') or {}) or '-',
             '详情': f"?stock={row['symbol']}&nav_key={nav_key}&nav_idx={idx}",
         }
         # W16：年线系统 7 项具体条件 + 主升浪 8 项具体指标（只展示不改判）
@@ -649,6 +652,10 @@ def render_stock(d: dict):
                         f"　中枢 {zs['sdt']}~{zs['edt']}：ZG {_fmt(zs['zg'])} / "
                         f"ZD {_fmt(zs['zd'])} / GG {_fmt(zs['gg'])} / DD {_fmt(zs['dd'])} · "
                         f"{zs['n_bi']}笔")
+            _bcr = _bc_resonance(chan)
+            if _bcr:
+                st.markdown(f"**背驰共振：{_bcr}**（日/周多级别联动，"
+                            f"20260524 第二章；只展示不进综合分）")
     else:
         st.info("缠论未开启（MYSTERY_CHAN_ENABLED=0）")
 

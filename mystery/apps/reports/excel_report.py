@@ -18,6 +18,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from mystery.core.bc_resonance import bc_resonance as _bc_resonance
+
 logger = logging.getLogger(__name__)
 
 SUMMARY_COLS = [
@@ -229,6 +231,8 @@ def _detail_flat(d: Dict[str, Any]) -> Dict[str, Any]:
                 ("区间内" if cw.get("zs_position") == "in" else "-"))),
             ("czsc 买卖点/背驰", " / ".join(filter(None, [
                 c1.get("bs_flag"), c1.get("divergence")])) or "-（未进综合分）"),
+            # W34：日/周背驰共振（只展示不进分；core 纯函数单一实现）
+            ("背驰共振", _bc_resonance(chan) or "-"),
             ("周线末笔方向", "向上" if cw.get("last_bi_dir") == "up" else (
                 "向下" if cw.get("last_bi_dir") == "down" else "-")),
             ("czsc 版本", d.get("czsc_ver", "")),

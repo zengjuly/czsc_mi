@@ -227,7 +227,9 @@ class AnalysisService:
                     self.market.db.set_chan_cache(
                         daily.symbol, freq, trade_date, ver,
                         _json.dumps(s.to_dict(), ensure_ascii=False))
-                if with_signals and freq == '1d':
+                # W34：日线/周线都补标签（周线供背驰共振展示）；
+                # 标签仍只在 mix 路径进 scorer，分关零影响。
+                if with_signals and freq in ('1d', '1w'):
                     st = out[freq]
                     if not st.bs_flag and not st.divergence:
                         bs, div, sig_ok = adapter.signal_flags(series)
@@ -296,10 +298,13 @@ class AnalysisService:
         ctx = self.build_market_context(internal, daily)
 
         # 缠论（P2：只展示不进评分；MYSTERY_CHAN_ENABLED=0 时 Service 不调用 Adapter）
-        # 010.md 6C：mix（结构开+分开关）时才生成买卖点/背驰标签，分关零开销
+        # 010.md 6C：mix（结构开+分开关）时标签进 scorer；
+        # W34：标签生成门控放宽到 chan_enabled——日/周背驰共振列在生产
+        # 默认（分关）路径也要有值。安全性：scorer.combine 仅 mix 时读
+        # chan 标签，分关分数逐字段不变；缓存键含 S 标志，两路径互不污染。
         chan: Dict[str, ChanStructure] = {}
         if chan_enabled():
-            chan = self._analyze_chan(daily, with_signals=mix)
+            chan = self._analyze_chan(daily, with_signals=True)
 
         bd = self.run_rules(daily, weekly, monthly, ctx, include_detail)
         # 混合分开关：chan_enabled AND chan_score_enabled（结构展示 ≠ 混合分）
