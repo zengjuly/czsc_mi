@@ -398,10 +398,26 @@ def _df_to_series(df: pd.DataFrame, symbol: str, freq: str, adjust: str,
     turnovers = _col('换手率', 'turn')
     pcts = _col('涨跌幅', 'pctChg')
     bars = [Bar(dt=d, open=_num(o), high=_num(h), low=_num(l), close=_num(cl),
-                volume=_num(v), amount=_num(a), turnover=_num(t), pct_chg=_num(p))
+                volume=_num(v), amount=_num(a), turnover=_turn_opt(t), pct_chg=_num(p))
             for d, o, h, l, cl, v, a, t, p in
             zip(dts, opens, highs, lows, closes, volumes, amounts, turnovers, pcts)]
     return BarSeries(symbol=symbol, freq=freq, adjust=adjust, bars=bars, source=source)
+
+
+def _turn_opt(v) -> Optional[float]:
+    """换手率 → Optional[float]（W35 P0-A）：无效值一律 None，禁止 0 冒充缺失。
+
+    治理口径（core/turnover.py is_valid_turnover）：0 < turn < 80 才有效。
+    库内历史 turn=0 绝大多数为缺数冒充（2026-09 实测主库 96.9% 行为 0），
+    真停牌 0 与假 0 不可分时按无效处理。
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(f) or not (0 < f < 80):
+        return None
+    return f
 
 
 def _num(v) -> float:

@@ -51,16 +51,22 @@ def chan_score_enabled() -> bool:
 
 
 def _avg_turnover_20(daily: BarSeries) -> Optional[float]:
-    """近 20 根日 K 换手率均值(%)；换手率 0 计入均值，20 根全无效值才返回 None。"""
+    """近 20 根日 K 有效换手率均值(%)（W35 P0-A）。
+
+    只计 is_valid 值（0 < turn < 80；None/0/越界一律跳过——历史上
+    缺数写 0 会系统性拉低均值、污染 chip_low/换手标签），20 根全无效返回 None。
+    """
     vals = []
     for b in daily.bars[-20:]:
         t = b.turnover
         if t is None:
             continue
         try:
-            vals.append(float(t))
+            f = float(t)
         except (TypeError, ValueError):
             continue
+        if f > 0:
+            vals.append(f)
     if not vals:
         return None
     return round(sum(vals) / len(vals), 4)
@@ -220,9 +226,15 @@ class AnalysisService:
                 else:
                     s = adapter.analyze(series)
                     if s.engine_ver == "unavailable":
+                        # W35 P0-B：引擎不可用的空结构**不写缓存**——否则
+                        # czsc 缺装机器会把"不可用"固化到共享 chan_cache，
+                        # 装好引擎后仍长期读到空结构。当次返回空结构仅影响
+                        # 本票本轮展示，下次自然重试。
                         logger.error(
                             f"MYSTERY_CHAN_ENABLED=1 但 czsc 未安装："
                             f"pip install -e '.[chan]' 后重启（{daily.symbol}）")
+                        out[freq] = s
+                        continue
                     out[freq] = s
                     self.market.db.set_chan_cache(
                         daily.symbol, freq, trade_date, ver,

@@ -62,7 +62,7 @@ class Bar:
     close: float
     volume: float = 0.0
     amount: float = 0.0
-    turnover: float = 0.0       # 换手率(%)
+    turnover: Optional[float] = None  # 换手率(%)；None=无有效值（治理口径 (0,80) 之外无效，禁止用 0 冒充缺失）
     pct_chg: float = 0.0        # 涨跌幅(%)
 
     def to_dict(self) -> Dict[str, Any]:

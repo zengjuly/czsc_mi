@@ -55,12 +55,21 @@ def _dot(code: str) -> str:
 def _invalidate_analysis(conn: sqlite3.Connection, codes) -> None:
     """W23：sync 更新 K 线 → 删除该票 analysis_cache（006.md 阶段 3）。
 
+    W35 P0-C：chan_cache 一并失效——结构由 K 线派生，盘后补洞/回写同日 K
+    后旧结构（笔/中枢/背驰）即过期；trade_date 键只挡新一天，挡不住同日修订。
+
     与 K 线写入同一连接/事务；表缺失（未迁移）时静默跳过。
     在 commit 之前调用，随同一事务提交。
     """
     try:
         conn.executemany(
             "DELETE FROM analysis_cache WHERE symbol=?",
+            [(_dot(c),) for c in codes])
+    except sqlite3.Error:
+        pass
+    try:
+        conn.executemany(
+            "DELETE FROM chan_cache WHERE symbol=?",
             [(_dot(c),) for c in codes])
     except sqlite3.Error:
         pass
