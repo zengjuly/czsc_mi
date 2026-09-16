@@ -12,11 +12,44 @@ from typing import Any, Dict, Optional
 import yaml
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_ENV_RE = re.compile(r"\$\{([^}]+)\}")
+
+# ---- 环境变量集中控制原则（2026-09-16）----
+# 所有变量唯一事实源 = ~/.stockrc；所有进程（含裸环境启动的 Python）导入之。
+# 已有 env 优先（setdefault 不覆盖），显式注入的变量仍可覆盖文件值。
+_STOCKRC = os.path.expanduser("~/.stockrc")
+_EXPORT_RE = re.compile(r"^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+
+
+def load_stockrc(path: str = _STOCKRC) -> int:
+    """解析 ~/.stockrc 的 export 行 setdefault 进 os.environ；返回新注入数。
+
+    文件缺失/不可读静默跳过（不阻塞导入）。值去外层引号，不做 shell 展开。
+    """
+    count = 0
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                m = _EXPORT_RE.match(line)
+                if not m:
+                    continue
+                name, raw = m.group(1), m.group(2).strip()
+                if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+                    raw = raw[1:-1]
+                if name not in os.environ:
+                    os.environ[name] = raw
+                    count += 1
+    except OSError:
+        pass
+    return count
+
+
+load_stockrc()
+
 _DEFAULT_CONFIG = os.environ.get(
     "MYSTERY_CONFIG",
     os.path.join(_REPO_ROOT, "config", "config.yaml"),
 )
-_ENV_RE = re.compile(r"\$\{([^}]+)\}")
 
 
 def _expand_env(value: str) -> str:
