@@ -3,11 +3,15 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def test_stockrc_injected_on_import():
     """裸环境（env -i）import mystery.config 后关键变量必须到位。"""
+    if not os.path.isfile(os.path.expanduser("~/.stockrc")):
+        pytest.skip("需要本机 ~/.stockrc（CI runner 无此文件）")
     code = (
         "import sys, os; sys.path.insert(0, %r);"
         "import mystery.config;"

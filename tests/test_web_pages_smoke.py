@@ -8,17 +8,31 @@
 - 系统状态：最近扫描任务与结果选择器
 
 依赖真实生产库（MYSTERY_DB_PATH），只读；AppTest 从文件渲染。
+故标记为 integration：默认 `-m "not integration"` 不收集（CI 无 streamlit/
+生产库，收集期即 ImportError），本机跑 Web 改动时用 `pytest -m integration` 补验。
 """
 from __future__ import annotations
 
 import os
 
-from streamlit.testing.v1 import AppTest
+import pytest
+
+# CI 只装 .[dev]（无 streamlit）：标记不挡收集期 import，必须 importorskip
+pytest.importorskip("streamlit.testing.v1")
+
+pytestmark = pytest.mark.integration
 
 APP = "/home/ai/ai_runner/stock/czsc_mi/mystery/apps/web/app.py"
 
 
+def _app_mod():
+    """延迟导入 web app（依赖 streamlit；仅 integration 路径触达）。"""
+    import mystery.apps.web.app  # noqa: F401
+    return mystery.apps.web.app
+
+
 def _make(mtimeo=120):
+    from streamlit.testing.v1 import AppTest
     if not os.environ.get("MYSTERY_DB_PATH"):
         os.environ["MYSTERY_DB_PATH"] = (
             "/home/ai/ai_runner/stock/data/db/mystery_cache.db")
@@ -82,7 +96,7 @@ def test_scan_detail_link_restores_nav():
     链接格式 ?stock=<sym>&nav_key=<key>&nav_idx=<i>；nav_key 为进程级导航缓存
     （_nav_cache_put 生成）的 key，供 LinkColumn 新标签页（全新 session）恢复列表。
     """
-    from mystery.apps.web.app import _nav_cache_put
+    _nav_cache_put = _app_mod()._nav_cache_put
     at = _make()
     rows = [
         {"symbol": "600519.SH", "name": "贵州茅台"},
@@ -122,7 +136,8 @@ def test_scan_detail_link_without_nav():
 
 def test_scan_table_shows_signal_flags():
     """扫描结果表格展示判定列（年线滤网/周线锚定/破五反五/主升浪8项），值来自 mystery。"""
-    from mystery.apps.web.app import _sig_flag, _main_wave_count, _scan_table_data
+    m = _app_mod()
+    _sig_flag, _main_wave_count, _scan_table_data = m._sig_flag, m._main_wave_count, m._scan_table_data
     # _sig_flag 取值：True→✅ / False→❌ / 缺失→''
     assert _sig_flag({"mystery": {"signal": {"年线滤网": True}}}, "年线滤网") == "✅"
     assert _sig_flag({"mystery": {"signal": {"年线滤网": False}}}, "年线滤网") == "❌"
@@ -211,7 +226,8 @@ def test_scan_table_shows_signal_flags():
 
 def test_bg_store_persists_across_rerun():
     """后台任务仓库跨 rerun 持久（st.cache_resource，非模块级 dict）。"""
-    from mystery.apps.web.app import _bg_store, _bg_lock, _bg_tasks, _bg_launch
+    m = _app_mod()
+    _bg_store, _bg_lock, _bg_tasks, _bg_launch = m._bg_store, m._bg_lock, m._bg_tasks, m._bg_launch
     # 第一次"rerun"：启动一个 fake 任务并完成
     s1, l1, t1, launch = _bg_store, _bg_lock, _bg_tasks, _bg_launch
     tid = launch("测试任务", lambda cb, holder: (cb(1, 2),
