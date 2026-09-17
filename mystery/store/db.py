@@ -87,6 +87,19 @@ def _dot(code: str) -> str:
         return str(code).strip().upper()
 
 
+def _dbcode(code: str) -> str:
+    """任意代码 → 库内点格式 sh.600519（W46：写端与读端格式统一）。
+
+    复用 codes.db_code_of（内部先 normalize_symbol 再拆）；非法输入宽容
+    回退原样小写（与 _dot 对称语义，不炸批量写入）。
+    """
+    from ..adapters.codes import db_code_of
+    try:
+        return db_code_of(code)
+    except ValueError:
+        return str(code).strip().lower()
+
+
 def _invalidate_analysis(conn: sqlite3.Connection, codes) -> None:
     """W23：sync 更新 K 线 → 删除该票 analysis_cache（006.md 阶段 3）。
 
@@ -272,8 +285,12 @@ class MysteryDB:
         rows = to_cn_columns(df) if 'date' in df.columns else df.copy()
         code_series = rows[code_col] if code_col in rows.columns \
             else rows['代码']
+        # W46：代码统一为库内点格式（600000.SH → sh.600000，与读端
+        # kline_last_date/get_kline 同格式）。旧版裸 str(code) 把 DuckDB
+        # thscode 原样写库，双格式错位造成 2317 票孤儿行（sync 每天重拉
+        # 重插、分析读点格式旧行停更）。非标准码宽容回退原样。
         data = [
-            (str(code), _d(r.get('日期')), period,
+            (_dbcode(code), _d(r.get('日期')), period,
              _f(r.get('开盘价')), _f(r.get('最高价')), _f(r.get('最低价')),
              _f(r.get('收盘价')), _f(r.get('成交量')), _f(r.get('成交额')),
              _t(r.get('换手率')), _f(r.get('涨跌幅')))
