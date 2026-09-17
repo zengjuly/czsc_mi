@@ -27,6 +27,43 @@ _CN_COLS = {'date': '日期', 'open': '开盘价', 'high': '最高价', 'low': '
             'tradestatus': '交易状态', 'pctChg': '涨跌幅', 'isST': '是否ST'}
 
 
+# W45（用户 2026-09-17 指令）：每票日K最多保存 2000 条，超限滚动替换最旧，
+# 控制磁盘占用。MYSTERY_DAILY_K_MAX_ROWS=0 可关闭。仅 daily；weekly/monthly
+# 行数本就稀少，不受限。
+DAILY_KLINE_MAX_ROWS = int(os.environ.get("MYSTERY_DAILY_K_MAX_ROWS", "2000"))
+
+
+def _prune_daily(conn: sqlite3.Connection, codes) -> int:
+    """滚动剪除：指定 code 集合内 daily 行数超上限的，删最旧行补齐。
+
+    在 upsert 同一事务内调用，只扫写入触及的 code；PRIMARY KEY
+    (code,date,period) 下 COUNT 与 cutoff 定位实测 <1ms（2026-09-17），
+    未超限时仅一次聚合查询，成本可忽略。返回删除行数。
+    """
+    cap = DAILY_KLINE_MAX_ROWS
+    if not cap:
+        return 0
+    uniq = [c for c in dict.fromkeys(codes) if c]
+    if not uniq:
+        return 0
+    deleted = 0
+    for i in range(0, len(uniq), 400):  # IN 变量数分块，避 SQLite 参数上限
+        chunk = uniq[i:i + 400]
+        ph = ",".join("?" * len(chunk))
+        over = conn.execute(
+            f"SELECT code, COUNT(*) FROM stock_kline_data "
+            f"WHERE period='daily' AND code IN ({ph}) GROUP BY code "
+            f"HAVING COUNT(*) > ?", (*chunk, cap)).fetchall()
+        for code, _n in over:
+            cur = conn.execute(
+                "DELETE FROM stock_kline_data WHERE code=? AND period='daily' "
+                "AND date <= (SELECT date FROM stock_kline_data WHERE code=? "
+                "AND period='daily' ORDER BY date DESC LIMIT 1 OFFSET ?)",
+                (code, code, cap))
+            deleted += cur.rowcount
+    return deleted
+
+
 def to_cn_columns(df: pd.DataFrame) -> pd.DataFrame:
     """DB 列 → 中文列（含 日期/代码）。"""
     out = df.copy()
@@ -218,6 +255,8 @@ class MysteryDB:
                          _f(r.get('收盘价')), _f(r.get('成交量')), _f(r.get('成交额')),
                          _t(r.get('换手率')), _f(r.get('涨跌幅'))))
                 _invalidate_analysis(conn, [code])
+                if period == 'daily':
+                    _prune_daily(conn, [code])
                 conn.commit()
             finally:
                 conn.close()
@@ -256,6 +295,8 @@ class MysteryDB:
                     "turn=COALESCE(excluded.turn, turn), "
                     "pctChg=COALESCE(excluded.pctChg, pctChg)", data)
                 _invalidate_analysis(conn, {d[0] for d in data})
+                if period == 'daily':
+                    _prune_daily(conn, {d[0] for d in data})
                 conn.commit()
             finally:
                 conn.close()
