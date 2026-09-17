@@ -80,6 +80,17 @@ def _build_ok_message() -> str:
 
     lines = [f"📊 Mistery 趋势交易日报 {trade_date or ''}",
              f"✅ 扫描 {n_ok} 只（失败 {n_fail}）"]
+
+    # W37 大盘滤网（W40 接入飞书）：复用 market_env_summary/market_env_line
+    # 单一实现，走 fetch_index 归一通道；失败跳过，不阻塞发送。
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from mystery.adapters.market import MarketDataClient
+        from mystery.services.analyze import (market_env_line,
+                                              market_env_summary)
+        lines.append(market_env_line(market_env_summary(MarketDataClient())))
+    except Exception as e:
+        print(f"[feishu_notify] 大盘滤网跳过: {e}")
     if rows:
         lines.append("🏆 评分 Top 8：")
         for i, (sym, score, _tr, payload) in enumerate(rows, 1):
