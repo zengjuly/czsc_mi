@@ -8,8 +8,9 @@
   显式关闭：env ``MYSTERY_WEB_AUTH=0``。
 - 口令校验用 PBKDF2-HMAC-SHA256 + ``hmac.compare_digest``；不落明文、不用 md5。
 - 失败限速：连续 8 次错误锁 60 秒（会话级，防在线暴力；本机个人站够用）。
-- 会话持久化走 ``st.session_state["_auth_ok"]``（同一连接 rerun 不掉线，
-  断开/刷新需重登）。
+- 会话持久化走 ``st.session_state["_auth_ok"]``；跨标签页（扫描表「详情」
+  LinkColumn 新标签 = 全新 session）用 URL 内嵌 HMAC token ``?at=`` 自动放行，
+  密钥派生自凭据 hash，7 天时效；token 验过即从 query 摘除。
 
 管理口令：``python scripts/web_auth_init.py``（getpass 交互，支持 --user /
 --password-env 供非交互初始化）。
@@ -65,6 +66,48 @@ def load_credential() -> dict | None:
     return data
 
 
+# ---------------- 跨标签页会话保持（W42 v0.10.16） ----------------
+# 扫描表「详情」列是 LinkColumn，新标签页打开 = 全新 Streamlit session，
+# session_state 登录位不共享 → 又要求输密码。解法：详情链接内嵌 HMAC 签名
+# token，新页验签通过即自动放行。密钥派生自凭据 hash 字段（不可反推密码）；
+# token 7 天时效，且会留在浏览器历史/地址栏——本机池内网个人工具，威胁模型
+# 是防外人随手访问，接受该暴露面（DESIGN §9 W42c 记录）。
+
+
+def _token_key(cred: dict) -> bytes:
+    return hashlib.sha256(("czsc_mi_auth_token:" + str(cred["hash"])).encode(
+        "utf-8")).digest()
+
+
+def make_auth_token(cred: dict | None = None,
+                    ttl: int = 7 * 24 * 3600) -> str:
+    """签发跨标签页 token：'<exp_unix>.<hmac_hex32>'；未启用鉴权返回 ''。"""
+    cred = cred or load_credential()
+    if cred is None:
+        return ""
+    exp = int(time.time()) + ttl
+    sig = hmac.new(_token_key(cred), str(exp).encode("utf-8"),
+                   hashlib.sha256).hexdigest()[:32]
+    return f"{exp}.{sig}"
+
+
+def verify_auth_token(token: str, cred: dict | None = None) -> bool:
+    """校验 token 签名 + 时效；任何异常/缺失/过期均 False。"""
+    cred = cred or load_credential()
+    if cred is None or not token or "." not in token:
+        return False
+    exp_s, _, sig = token.partition(".")
+    try:
+        exp = int(exp_s)
+    except ValueError:
+        return False
+    if exp <= time.time():
+        return False
+    want = hmac.new(_token_key(cred), exp_s.encode("utf-8"),
+                    hashlib.sha256).hexdigest()[:32]
+    return hmac.compare_digest(sig, want)
+
+
 def require_login() -> bool:
     """登录门。True=放行（未启用或本会话已验证）；False=本次渲染已出示登录页，
     调用方必须 st.stop()。仅可在 Streamlit 运行时脚本内调用。"""
@@ -73,8 +116,28 @@ def require_login() -> bool:
         return True
     import streamlit as st
 
+    # 裸模式（无 ScriptRunContext，如 pytest 里 import app 模块）：登录表单无法
+    # 交互且会在主线程残留 form 上下文、污染后续 AppTest（W42 实测），直接放行。
+    if not st.runtime.exists():
+        return True
+
     if st.session_state.get("_auth_ok"):
         return True
+
+    # 跨标签页 token 放行（扫描表「详情」LinkColumn 新标签 = 新 session）
+    try:
+        raw = st.query_params.get("at")
+        if isinstance(raw, (list, tuple)):  # AppTest 模拟里 query 值是 list
+            raw = raw[0] if raw else ""
+        if verify_auth_token(str(raw or ""), cred):
+            st.session_state["_auth_ok"] = True
+            try:
+                del st.query_params["at"]  # 尽早从地址栏摘掉 token
+            except Exception:
+                pass
+            return True
+    except Exception:
+        pass  # 非标准 runtime 拿不到 query_params → 走表单
 
     now = time.time()
     locked_until = st.session_state.get("_auth_locked_until", 0.0)

@@ -274,6 +274,11 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
     链接用 ?stock=..&nav_key=..&nav_idx=.. 供新标签页恢复导航。
     """
     table_data = []
+    # W42 v0.10.16: 「详情」LinkColumn 新标签 = 全新 session；鉴权启用时链接
+    # 内嵌跨标签 token（?at=），新页 require_login 验签自动放行，免重登。
+    from mystery.apps.web.auth import make_auth_token
+    at_tok = make_auth_token()
+    at_qs = f"&at={at_tok}" if at_tok else ""
     for idx, row in enumerate(rows):
         item = {
             '序号': idx + 1,
@@ -297,7 +302,7 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
                     f"/{row.get('data_source') or '-'}",
             # W34：日/周背驰共振（core 纯函数单一实现，只展示不进分）
             '背驰共振': _bc_resonance(row.get('chan') or {}) or '-',
-            '详情': f"?stock={row['symbol']}&nav_key={nav_key}&nav_idx={idx}",
+            '详情': f"?stock={row['symbol']}&nav_key={nav_key}&nav_idx={idx}{at_qs}",
         }
         # W16：年线系统 7 项具体条件 + 主升浪 8 项具体指标（只展示不改判）
         for src, disp in _YEARLINE_DISP:

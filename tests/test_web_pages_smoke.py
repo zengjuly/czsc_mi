@@ -36,7 +36,20 @@ def _make(mtimeo=120):
     if not os.environ.get("MYSTERY_DB_PATH"):
         os.environ["MYSTERY_DB_PATH"] = (
             "/home/ai/ai_runner/stock/data/db/mystery_cache.db")
-    return AppTest.from_file(APP, default_timeout=mtimeo)
+    at = AppTest.from_file(APP, default_timeout=mtimeo)
+    # W42: 本机若已配置 web_auth（~/.config/czsc_mi/web_auth.json 存在），
+    # 登录门会拦截渲染；冒烟测的是页面而非鉴权，预置已登录态。
+    # （鉴权行为由 tests/test_w42_web_auth.py 单独覆盖。）
+    from mystery.apps.web.auth import load_credential
+    if load_credential() is not None:
+        at.session_state["_auth_ok"] = True
+    return at
+
+
+def _load_cred_safe():
+    """当前是否启用 Web 鉴权（决定详情链接是否带 &at=）。"""
+    from mystery.apps.web.auth import load_credential
+    return load_credential()
 
 
 def test_stock_page_renders():
@@ -220,8 +233,10 @@ def test_scan_table_shows_signal_flags():
     # 主升浪具体指标映射（600519 全 ✅；600150 仅 4 项 ✅）
     assert data[1]['主升浪·长期横盘'] == '✅' and data[1]['主升浪·板块走强'] == '✅'
     assert data[0]['主升浪·突破平台'] == '❌' and data[0]['主升浪·资金流入'] == '✅'
-    # 详情链接带 nav 参数（nav_key 为进程缓存 key）
-    assert data[0]['详情'] == "?stock=600150.SH&nav_key=scan&nav_idx=0"
+    # 详情链接带 nav 参数（nav_key 为进程缓存 key）；W42 鉴权启用时追加
+    # &at=<token>（跨标签免重登），故用前缀断言
+    assert data[0]['详情'].startswith("?stock=600150.SH&nav_key=scan&nav_idx=0")
+    assert ("&at=" in data[0]['详情']) == (_load_cred_safe() is not None)
 
 
 def test_bg_store_persists_across_rerun():

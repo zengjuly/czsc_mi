@@ -51,6 +51,31 @@ def test_load_credential_bad_or_partial_file(tmp_path, monkeypatch):
     assert AU.load_credential() is None
 
 
+def test_token_roundtrip_and_tamper():
+    cred = {"user": "u", **AU.hash_password("p", salt_hex="00" * 16,
+                                            iterations=1000)}
+    tok = AU.make_auth_token(cred)
+    assert AU.verify_auth_token(tok, cred)
+    # 篡改签名 / 篡改过期时间 / 空 / 坏格式 / 其他凭据 → 全部拒绝
+    exp, sig = tok.split(".")
+    assert not AU.verify_auth_token(f"{exp}{'0' * (32 - len(sig))}{sig[1:]}", cred)
+    assert not AU.verify_auth_token(f"{int(exp) + 1}.{sig}", cred)
+    assert not AU.verify_auth_token("", cred)
+    assert not AU.verify_auth_token("abc", cred)
+    other = {"user": "u", **AU.hash_password("p", salt_hex="ff" * 16,
+                                             iterations=1000)}
+    assert not AU.verify_auth_token(tok, other)
+    # 过期 token 拒绝
+    past = AU.make_auth_token(cred, ttl=-10)
+    assert not AU.verify_auth_token(past, cred)
+
+
+def test_token_disabled_returns_empty(monkeypatch):
+    monkeypatch.setenv("MYSTERY_WEB_AUTH", "0")
+    assert AU.make_auth_token() == ""
+    assert AU.verify_auth_token("123.abc") is False
+
+
 def test_init_script_end_to_end(tmp_path, monkeypatch):
     """web_auth_init 非交互路径真实跑一遍：写 600 凭据 + 可校验回读。"""
     import os
