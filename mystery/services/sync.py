@@ -273,3 +273,78 @@ def sync_sector_constituents(sector_code: str,
     except Exception as e:
         logger.debug(f"[sync] meta 刷新跳过: {str(e)[:60]}")
     return {'sector_code': sector_code, 'total': len(cons), 'written': written}
+
+
+def sync_sector_kline(cfg: Optional[Dict] = None,
+                      days: int = 15,
+                      sectors: Optional[List[str]] = None,
+                      limit: Optional[int] = None,
+                      full_since: Optional[str] = None) -> dict:
+    """增量同步板块指数日K → sector_kline（W39，三振行业腿数据源）。
+
+    取数归一：只走 ThsClient.get_index_daily（fuyao index-historical），
+    与 fetch_index 降级链同源，禁止旁路 HTTP。增量：每板块从库内最新日期
+    前扩 days 天重拉（幂等 UPSERT 覆盖修订），无库底的板块全量拉 days 窗口。
+    full_since（如 '2023-01-01'）：忽略库内断点，从该日起全量重灌——
+    W39 date_ms 错位修复重建专用，仍是同一取数/写库通道。
+    """
+    from datetime import datetime, timedelta
+
+    from ..adapters.ths import ThsClient
+    from ..store.db import MysteryDB
+
+    cfg = cfg or {}
+    ths = ThsClient(cfg)
+    db = MysteryDB(cfg.get('db_path') if cfg else None)
+
+    if sectors:
+        codes = list(sectors)
+    else:
+        codes = db.get_sector_kline_sectors()
+    if not codes:
+        raise RuntimeError("sector_kline 板块清单为空（先填充 sector_meta/存量）")
+    if limit:
+        codes = codes[:limit]
+
+    last_dates = db.get_sector_kline_dates()
+    names = db.get_sector_kline_names()
+    if full_since:
+        # W39 date_ms 错位重建：清单/名称已在上面取好，先清空再重灌，
+        # 否则旧错位的周末键行会作为孤儿脏数据残留。
+        db.clear_sector_kline()
+        last_dates = {}
+    today = datetime.now()
+    synced, failed, rows_total = 0, 0, 0
+    errors: List[str] = []
+    for sc in codes:
+        base = sc if sc.startswith('ths_') else f'ths_{sc.split(".")[0]}'
+        fuyao_code = base[4:] + '.TI'
+        # 增量起点：库内最新 - days（重拉一段以覆盖修订）；无库底则拉 days 窗口
+        anchor = last_dates.get(base)
+        if full_since:
+            start = full_since
+        elif anchor:
+            try:
+                start = (datetime.strptime(anchor, '%Y-%m-%d')
+                         - timedelta(days=days)).strftime('%Y-%m-%d')
+            except ValueError:
+                start = (today - timedelta(days=days)).strftime('%Y-%m-%d')
+        else:
+            start = (today - timedelta(days=days)).strftime('%Y-%m-%d')
+        try:
+            df = ths.get_index_daily(fuyao_code, start=start,
+                                     end=today.strftime('%Y-%m-%d'))
+            if df is None or df.empty:
+                failed += 1
+                errors.append(f"{base}: 空返回")
+                continue
+            n = db.upsert_sector_kline(df, base, sector_name=names.get(base, ''))
+            rows_total += n
+            synced += 1
+        except Exception as e:
+            failed += 1
+            errors.append(f"{base}: {str(e)[:60]}")
+            logger.warning(f"[sync-sector-kline] {base} 失败: {str(e)[:80]}")
+    return {'sectors': len(codes), 'synced': synced, 'failed': failed,
+            'rows': rows_total, 'max_date': today.strftime('%Y-%m-%d'),
+            'errors': errors[:10]}

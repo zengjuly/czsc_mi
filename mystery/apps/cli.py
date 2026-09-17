@@ -439,6 +439,16 @@ def _cmd_sector_sync(args: argparse.Namespace) -> int:
     return 0 if out.get('written') else 1
 
 
+def _cmd_sector_sync_kline(args: argparse.Namespace) -> int:
+    from ..services.sync import sync_sector_kline
+
+    out = sync_sector_kline(cfg=args.cfg, days=args.days,
+                            sectors=args.sector, limit=args.limit,
+                            full_since=args.full_since)
+    print(json.dumps(out, ensure_ascii=False))
+    return 0 if out.get('synced') else 1
+
+
 def _cmd_watchlist_import_tdx(args: argparse.Namespace) -> int:
     from ..services import watchlist as _wl
 
@@ -530,6 +540,19 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--limit", type=int, default=None,
                    help="最多写 N 只成分（调试用）")
     p.set_defaults(func=_cmd_sector_sync)
+
+    p = sub.add_parser("sector-sync-kline",
+                       help="增量同步板块指数日K → sector_kline（W39，三振行业腿）")
+    p.add_argument("--sector", action="append", default=None,
+                   help="指定板块（可重复；缺省 = sector_kline 全部存量板块）")
+    p.add_argument("--days", type=int, default=15,
+                   help="每板块从库内最新日期前扩 N 天重拉（默认 15）")
+    p.add_argument("--limit", type=int, default=None,
+                   help="最多同步 N 个板块（调试用）")
+    p.add_argument("--full-since", default=None, metavar="YYYY-MM-DD",
+                   help="清空 sector_kline 后自该日全量重灌（W39 date_ms 错位"
+                        "重建专用；常规增量勿用）")
+    p.set_defaults(func=_cmd_sector_sync_kline)
 
     p = sub.add_parser("watchlist", help="自选股管理")
     wsub = p.add_subparsers(dest="wl_cmd", required=True)

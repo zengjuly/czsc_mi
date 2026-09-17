@@ -403,6 +403,99 @@ class MysteryDB:
             finally:
                 conn.close()
 
+    def upsert_sector_kline(self, df: pd.DataFrame, sector_code: str,
+                            sector_name: str = '') -> int:
+        """写板块指数日K（df 中文列或英文列均可，UPSERT 幂等）。返回写入行数。
+
+        W39：sector_kline 只有读路径没有写路径导致停更近一月——同步统一走
+        sync_sector_kline（fuyao index-historical 归一通道），本方法为其唯一写入口。
+        """
+        if df is None or df.empty:
+            return 0
+        code = str(sector_code)
+        if not code.startswith('ths_'):
+            code = f'ths_{code.split(".")[0]}'
+        d = df.copy()
+        ren = {v: k for k, v in _CN_COLS.items() if v in d.columns}
+        d = d.rename(columns=ren)
+        need = {'date', 'open', 'high', 'low', 'close'}
+        if not need.issubset(d.columns):
+            raise ValueError(f"sector_kline 缺列: {sorted(need - set(d.columns))}")
+        rows = []
+        for _, r in d.iterrows():
+            vol = r.get('volume')
+            amt = r.get('amount')
+            rows.append((code, sector_name or code,
+                         str(r['date'])[:10],
+                         float(r['open']), float(r['high']),
+                         float(r['low']), float(r['close']),
+                         int(vol) if pd.notna(vol) else 0,
+                         float(amt) if pd.notna(amt) else 0.0))
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.executemany(
+                    "INSERT INTO sector_kline (sector_code, sector_name, "
+                    "trade_date, open, high, low, close, volume, amount, "
+                    "source_type) VALUES (?,?,?,?,?,?,?,?,?,'ths') "
+                    "ON CONFLICT(sector_code, trade_date) DO UPDATE SET "
+                    "open=excluded.open, high=excluded.high, "
+                    "low=excluded.low, close=excluded.close, "
+                    "volume=excluded.volume, amount=excluded.amount, "
+                    "update_time=CURRENT_TIMESTAMP", rows)
+                conn.commit()
+            finally:
+                conn.close()
+        return len(rows)
+
+    def clear_sector_kline(self) -> int:
+        """清空 sector_kline 全表（W39 date_ms 错位重建专用，配合
+        sync_sector_kline(full_since=...) 使用）。返回删除行数。"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute("DELETE FROM sector_kline")
+                conn.commit()
+                return cur.rowcount
+            finally:
+                conn.close()
+
+    def get_sector_kline_dates(self) -> Dict[str, str]:
+        """sector_code → 库内最新 trade_date（W39 增量同步断点用）。"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT sector_code, MAX(trade_date) FROM sector_kline "
+                    "GROUP BY sector_code").fetchall()
+            finally:
+                conn.close()
+        return {r[0]: r[1] for r in rows if r[1]}
+
+    def get_sector_kline_names(self) -> Dict[str, str]:
+        """sector_code → 任一存量 sector_name（W39 同步保留板块名，不覆盖）。"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT sector_code, MIN(sector_name) FROM sector_kline "
+                    "GROUP BY sector_code").fetchall()
+            finally:
+                conn.close()
+        return {r[0]: r[1] for r in rows if r[1]}
+
+    def get_sector_kline_sectors(self) -> List[str]:
+        """sector_kline 现有全部板块代码（升序，W39 同步清单）。"""
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT DISTINCT sector_code FROM sector_kline "
+                    "ORDER BY sector_code").fetchall()
+            finally:
+                conn.close()
+        return [r[0] for r in rows]
+
     def upsert_sector_meta(self, sector_code: str, sector_name: str,
                            parent_type: str = '行业/概念',
                            is_active: int = 1) -> None:

@@ -160,7 +160,10 @@ class ThsClient:
         if df.empty or 'date_ms' not in df.columns:
             return pd.DataFrame()
         out = pd.DataFrame()
-        out['日期'] = pd.to_datetime(df['date_ms'], unit='ms')
+        # 同 get_index_daily：prices-historical date_ms 也是北京时间零点
+        # epoch（实测 9-06/9-13 周日标签），按 UTC 解释会整体倒退一天。
+        out['日期'] = (pd.to_datetime(df['date_ms'], unit='ms', utc=True)
+                       .dt.tz_convert('Asia/Shanghai').dt.tz_localize(None))
         out['开盘价'] = df.get('open_price', 0).astype(float)
         out['最高价'] = df.get('high_price', 0).astype(float)
         out['最低价'] = df.get('low_price', 0).astype(float)
@@ -195,7 +198,10 @@ class ThsClient:
         if df.empty or 'date_ms' not in df.columns:
             return pd.DataFrame()
         out = pd.DataFrame()
-        out['日期'] = pd.to_datetime(df['date_ms'], unit='ms')
+        # fuyao date_ms 是北京时间零点的 epoch；按 UTC 解释会整体倒退一天
+        # （sector_kline 99006 行周末标签即此坑），必须显式经 Asia/Shanghai。
+        out['日期'] = (pd.to_datetime(df['date_ms'], unit='ms', utc=True)
+                       .dt.tz_convert('Asia/Shanghai').dt.tz_localize(None))
         out['开盘价'] = df.get('open_price', 0).astype(float)
         out['最高价'] = df.get('high_price', 0).astype(float)
         out['最低价'] = df.get('low_price', 0).astype(float)
