@@ -31,8 +31,10 @@ def test_anchor_names():
                for name, code in ANCHORS)
 
 
-def test_avg_turnover_20_upper_bound():
+def test_avg_turnover_20_upper_bound(monkeypatch):
     # None/0/越界(90) 全部剔除，只剩 4.0（review 建议样本）
+    # W47 后小样本需显式降门槛，专注测边界过滤语义。
+    monkeypatch.setenv('MYSTERY_TURNOVER_20_MIN_VALID', '1')
     assert A._avg_turnover_20(_series([None, 0, 4.0, 90.0])) == 4.0
     # 80 边界本身也无效（治理口径是开区间）
     assert A._avg_turnover_20(_series([80.0])) is None

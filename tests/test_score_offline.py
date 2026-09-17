@@ -58,7 +58,7 @@ def _score(sym: str) -> float:
     bd = run_mystery(series["1d"], weekly=series.get("1w"),
                      monthly=series.get("1M"), ctx=_load_ctx(sym),
                      include_detail=False)
-    score, _, _ = combine(bd, None, chan_enabled=False)
+    score, _, _ = combine(bd, None, mix_enabled=False)
     return float(score)
 
 

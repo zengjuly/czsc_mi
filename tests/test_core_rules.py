@@ -186,7 +186,7 @@ def test_combine_p4_blend():
 
     bd = _mk_breakdown()
     chan = _mk_chan('up')
-    score, advice, true_res = combine(bd, chan, chan_enabled=True)
+    score, advice, true_res = combine(bd, chan, mix_enabled=True)
     assert score == round(0.55 * 49 + 0.25 * 55 + 0.20 * chan_score(chan), 1)
     assert score == round(0.55 * 49 + 0.25 * 55 + 0.20 * 62, 1)
     assert advice == '可关注'
@@ -197,7 +197,7 @@ def test_combine_p4_veto():
     from mystery.core.scorer import combine
 
     bd = _mk_breakdown(vetoed=True)
-    score, _, _ = combine(bd, _mk_chan('up'), chan_enabled=True)
+    score, _, _ = combine(bd, _mk_chan('up'), mix_enabled=True)
     assert score == 0.0
 
 
@@ -206,7 +206,7 @@ def test_combine_chan_off_unchanged():
     from mystery.core.scorer import combine
 
     bd = _mk_breakdown()
-    score, _, _ = combine(bd, _mk_chan('up'), chan_enabled=False)
+    score, _, _ = combine(bd, _mk_chan('up'), mix_enabled=False)
     assert score == 49.0
 
 

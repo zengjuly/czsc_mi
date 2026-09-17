@@ -118,8 +118,15 @@ def _build_ok_message() -> str:
         if sp.exists():
             st = json.loads(sp.read_text(encoding='utf-8'))
             if st.get('date') == _dt.date.today().isoformat():
-                lines.append(f"🧾 管线状态：股本刷新={st.get('shares_refresh')}"
-                             f"；换手派生={st.get('turnover_derive')}")
+                _steps = (('板块K线', st.get('sector_kline_sync')),
+                          ('股本', st.get('shares_refresh')),
+                          ('换手', st.get('turnover_derive')))
+                _bad = [n for n, v in _steps if v != 'ok']
+                if _bad:
+                    lines.append("🧾 ⚠️DEGRADED 管线降级："
+                                 + "、".join(_bad) + " 未成功（信号慎用）")
+                else:
+                    lines.append("🧾 管线状态：全部 ok")
     except Exception:
         pass
 

@@ -110,7 +110,13 @@ def _avg_turnover_20(daily: BarSeries) -> Optional[float]:
     缺数写 0 会系统性拉低均值、污染 chip_low/换手标签），20 根全无效返回 None。
     W41：上界 80 显式判（与 _turn_opt/治理口径同源，防未来旁路构造的 Bar
     绕过 market 层清洗直接带脏值进均值）。
+    W47（外部 review P0#1）：有效根数 < MYSTERY_TURNOVER_20_MIN_VALID（默认
+    15）时返回 None——20 根里只有 2~3 根有效时均值由残值决定，W43 假 0 洗成
+    NULL 后这类票更容易被误打 chip_low；宁缺毋假，消费方（scan_signals）本
+    就按 None 走 chip_low_unknown，语义安全。
     """
+    min_valid = max(1, int(os.environ.get('MYSTERY_TURNOVER_20_MIN_VALID',
+                                          '15')))
     vals = []
     for b in daily.bars[-20:]:
         t = b.turnover
@@ -122,7 +128,7 @@ def _avg_turnover_20(daily: BarSeries) -> Optional[float]:
             continue
         if 0 < f < 80:
             vals.append(f)
-    if not vals:
+    if len(vals) < min_valid:
         return None
     return round(sum(vals) / len(vals), 4)
 
@@ -151,6 +157,13 @@ def _result_from_payload(data: dict) -> AnalysisResult:
     """
     from ..adapters.czsc_adapter import chan_from_dict
     chan = {f: chan_from_dict(d) for f, d in (data.get('chan') or {}).items()}
+    # W47（外部 review P0#4）：payload 多未知键不再 TypeError（规则字段演进
+    # 后旧缓存整池静默重算、只表现为偶发变慢）。只取 dataclass 已知字段。
+    from dataclasses import fields as _dc_fields
+    known = {f.name for f in _dc_fields(MysteryBreakdown)}
+    mystery_data = data.get('mystery') or {}
+    mystery = MysteryBreakdown(
+        **{k: v for k, v in mystery_data.items() if k in known})
     return AnalysisResult(
         symbol=data.get('symbol', ''),
         name=data.get('name', ''),
@@ -161,7 +174,7 @@ def _result_from_payload(data: dict) -> AnalysisResult:
         true_resonance=bool(data.get('true_resonance', False)),
         turnover_20=data.get('turnover_20'),
         high_120=data.get('high_120'),
-        mystery=MysteryBreakdown(**(data.get('mystery') or {})),
+        mystery=mystery,
         chan=chan,
         sector=data.get('sector') or {},
         financial=data.get('financial') or {},
@@ -388,7 +401,7 @@ class AnalysisService:
         bd = self.run_rules(daily, weekly, monthly, ctx, include_detail)
         # 混合分开关：chan_enabled AND chan_score_enabled（结构展示 ≠ 混合分）
         score, advice, true_res = _scorer.combine(bd, chan,
-                                                  chan_enabled=mix)
+                                                  mix_enabled=mix)
         last = daily.bars[-1]
         name = self.market.db.get_stock_name(internal) or ''
         turnover_20 = _avg_turnover_20(daily)

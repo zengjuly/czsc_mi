@@ -60,17 +60,23 @@ def chan_score(chan: Optional[Dict[str, ChanStructure]]) -> float:
     elif bs in ('一卖', '二卖', '三卖'):
         s -= 10
     div = getattr(c1, 'divergence', '')
-    if '顶背驰' in div:
+    # W47（外部 review P1#6）：精确匹配。divergence 由 czsc_adapter 归一为
+    # "顶背驰"/"底背驰"/""，串匹配会在上游吐复合串（如"顶背驰_疑似"）时误计分。
+    if div == '顶背驰':
         s -= 10
-    elif '底背驰' in div:
+    elif div == '底背驰':
         s += 10
     return min(100.0, max(0.0, s))
 
 
 def combine(breakdown: MysteryBreakdown,
             chan: Optional[Dict[str, ChanStructure]] = None,
-            chan_enabled: bool = False) -> Tuple[Optional[float], str, bool]:
+            mix_enabled: bool = False) -> Tuple[Optional[float], str, bool]:
     """综合评分 + 操作建议 + 真三振。
+
+    W47：参数名从 chan_enabled 改为 mix_enabled——它控制的是「混合分
+    （0.7*Mystery+0.3*Chan）」，不是「chan 结构展示」。两开关语义不同
+    （生产默认：结构开、混合分关），旧名极易误导成把结构开关直接传入。
 
     :return: (score, advice, true_resonance)
     """
@@ -78,7 +84,7 @@ def combine(breakdown: MysteryBreakdown,
     s_mystery = signal.get('综合评分')
     advice = signal.get('操作建议', '')
     true_res = bool(signal.get('真三振', False))
-    if not chan_enabled:
+    if not mix_enabled:
         return s_mystery, advice, true_res
     # 年线滤网一票否决：未通过时混合分强制 0（避免 0.2*S_chan 把否决股拉成正分）
     if signal.get('年线滤网') is False:

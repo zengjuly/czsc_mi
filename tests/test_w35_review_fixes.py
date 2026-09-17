@@ -42,8 +42,10 @@ def test_turn_opt_rejects_fake_values():
         assert _turn_opt(ok) is not None, f"{ok!r} 应判有效"
 
 
-def test_avg_turnover_20_skips_zero_and_none():
-    """0/None 是缺数冒充，不得进 20 日均值（旧实现会把 0 计入拉低）。"""
+def test_avg_turnover_20_skips_zero_and_none(monkeypatch):
+    """0/None 是缺数冒充，不得进 20 日均值（旧实现会把 0 计入拉低）。
+    W47 后小样本需显式降门槛，专注测值过滤语义。"""
+    monkeypatch.setenv('MYSTERY_TURNOVER_20_MIN_VALID', '1')
     d = BarSeries(symbol='x', freq='1d', adjust='qfq',
                   bars=_bars([None, 0.0, 4.0, 2.0]), source='db')
     assert A._avg_turnover_20(d) == 3.0

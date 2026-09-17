@@ -237,6 +237,9 @@ def calculate_trend_strength(data: pd.DataFrame) -> pd.DataFrame:
 # ---------------- 动能（量比 / 换手率 / 量价） ----------------
 
 def calculate_volume_ratio(data: pd.DataFrame, period: int = 5) -> pd.DataFrame:
+    # W47 口径钉死：VMA 为「含当日」的 rolling 均值（量比 = 当日/含当日5日均）。
+    # 这不是 bug——金标旧仓 stock_analyzer/momentum_indicators.py:25 同式，
+    # 分数回归以旧仓为基准，改 shift(1) 会打偏全部量比阈值信号。勿"修正"。
     result = data.copy()
     result['VMA'] = result['成交量'].rolling(window=period).mean()
     result['量比'] = result['成交量'] / result['VMA']

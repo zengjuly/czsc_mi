@@ -411,8 +411,19 @@ def _turnover_qa_line(db, results, trade_date: str) -> str:
                 with open(sp, encoding='utf-8') as f:
                     st = json.load(f)
                 if st.get('date') == datetime.now().strftime('%Y-%m-%d'):
-                    lines.append(f"管线状态：股本刷新={st.get('shares_refresh')}"
-                                 f"；换手派生={st.get('turnover_derive')}")
+                    # W47（外部 review P0#3）：任一步 fail 时行首打
+                    # ⚠️DEGRADED——只写状态值太容易被划过去，带坏覆盖率
+                    # （昨日换手/板块）的报告必须一眼可辨。
+                    _steps = (('板块K线', st.get('sector_kline_sync')),
+                              ('股本刷新', st.get('shares_refresh')),
+                              ('换手派生', st.get('turnover_derive')))
+                    _bad = [n for n, v in _steps if v != 'ok']
+                    if _bad:
+                        lines.append("⚠️DEGRADED 管线降级："
+                                     + "、".join(_bad) + " 未成功"
+                                     "（本报告可能带旧覆盖率，信号慎用）")
+                    else:
+                        lines.append("管线状态：全部 ok（板块K线/股本/换手）")
             # W28b（009.md）：周日铺盘验收行（7 日内有效）
             wp = os.path.join(output_dir(), 'weekly_shares_status.json')
             if os.path.exists(wp):
