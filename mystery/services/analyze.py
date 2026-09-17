@@ -53,7 +53,7 @@ def chan_score_enabled() -> bool:
 def market_env_summary(market) -> Dict[str, Any]:
     """大盘滤网快照（W37，单一实现，四方展示只读调用）。
 
-    双锚（上证 000001.SH + 深证成指 399311.SZ；同花顺全A/中证全指实测
+    双锚（上证 000001.SH + 国证1000 399311.SZ；同花顺全A/中证全指实测
     fuyao 无数据，见 core/market_env 模块 docstring）走既有
     MarketDataClient.fetch_index 归一通道（会话级缓存 + 在线命中自动
     落库），无旁路取数。缺数据 → verdict「大盘未知」，不猜。
@@ -97,6 +97,8 @@ def _avg_turnover_20(daily: BarSeries) -> Optional[float]:
 
     只计 is_valid 值（0 < turn < 80；None/0/越界一律跳过——历史上
     缺数写 0 会系统性拉低均值、污染 chip_low/换手标签），20 根全无效返回 None。
+    W41：上界 80 显式判（与 _turn_opt/治理口径同源，防未来旁路构造的 Bar
+    绕过 market 层清洗直接带脏值进均值）。
     """
     vals = []
     for b in daily.bars[-20:]:
@@ -107,7 +109,7 @@ def _avg_turnover_20(daily: BarSeries) -> Optional[float]:
             f = float(t)
         except (TypeError, ValueError):
             continue
-        if f > 0:
+        if 0 < f < 80:
             vals.append(f)
     if not vals:
         return None

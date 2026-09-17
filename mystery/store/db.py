@@ -775,13 +775,16 @@ class MysteryDB:
         try:
             with self._lock:
                 conn = self._connect()
-                r = conn.execute(
-                    "SELECT MAX(substr(date,1,10)) FROM stock_kline_data "
-                    "WHERE period='daily'").fetchone()
-                out['kline_max'] = r[0] if r and r[0] else None
-                r = conn.execute(
-                    "SELECT MAX(as_of) FROM float_share_snapshot").fetchone()
-                out['as_of_max'] = r[0] if r and r[0] else None
+                try:
+                    r = conn.execute(
+                        "SELECT MAX(substr(date,1,10)) FROM stock_kline_data "
+                        "WHERE period='daily'").fetchone()
+                    out['kline_max'] = r[0] if r and r[0] else None
+                    r = conn.execute(
+                        "SELECT MAX(as_of) FROM float_share_snapshot").fetchone()
+                    out['as_of_max'] = r[0] if r and r[0] else None
+                finally:
+                    conn.close()  # W41：与其他读方法同构，防指纹泄漏连接
         except Exception:  # noqa: BLE001 指纹失败不阻塞 QA
             pass
         return out

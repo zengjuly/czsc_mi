@@ -6,15 +6,19 @@
 
 锚选择（实测 2026-09-16）：同花顺全A 880008.TI 与中证全指 000985 在 fuyao
 index-historical 均无数据（对照组 000001.SH 正常），故用 上证 000001.SH +
-深证成指 399311.SZ 双锚近似全市场；两者都走既有 MarketDataClient.fetch_index
+国证1000 399311.SZ 双锚近似全市场；两者都走既有 MarketDataClient.fetch_index
 归一通道（会话缓存，每进程一次降级链），无旁路取数。
+
+注意（W41 审校）：399311 是**国证1000**（沪深北大中盘指数），不是深证成指
+（深证成指 = 399001.SZ）。不选 399001 是实测原因：W39 核查时 399001 在上游
+停更约三周，而 399311 数据新鲜（max 到最近交易日）。仅作全市场代理展示。
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
 # 展示用锚：(显示名, 内部代码)。代码可被 normalize/fetch_index 直接消化。
-ANCHORS = (("上证指数", "000001.SH"), ("深证成指", "399311.SZ"))
+ANCHORS = (("上证指数", "000001.SH"), ("国证1000", "399311.SZ"))
 
 _MIN_BARS = 250   # 年线滤网需 ≥250 根
 
