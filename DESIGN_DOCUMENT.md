@@ -147,7 +147,7 @@ analyze_one_stock(symbol):
 
 ## 8. 测试与验收
 
-- `pytest -q -m "not integration"`：208 passed（models/core 合成 OHLC/czsc adapter
+- `pytest -q -m "not integration"`：213 passed（models/core 合成 OHLC/czsc adapter
   mock K 线/金标 ≤ 1/scan_signals 三类信号/缠论图 plot_figure/technical 快照/
   web 页面冒烟 + 后台任务仓库跨 rerun 持久回归 + Excel 单汇总页回归 +
   CLI 默认 THS 环境注入回归 + 换手覆盖率 QA + 除权事件股本重拉）。
