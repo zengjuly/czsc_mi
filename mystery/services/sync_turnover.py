@@ -135,15 +135,21 @@ def _ffill_recent_gaps(db: MysteryDB, trade_date: str,
         by_code.setdefault(code, []).append((d, turn))
 
     filled = 0
+    # W43：锚点/前值口径与治理同源（0 < t < 80 才有效）——旧版把假 0 当
+    # "有值"锚点向前填充（实测 15864 行 ffill 传播了假 0），一并阻断。
+    def _ok(t):
+        return t is not None and 0 < t < 80
     for code, series in by_code.items():
-        vals = [t for _, t in series if t is not None]
+        vals = [t for _, t in series if _ok(t)]
         if not vals:
             continue                      # 全空 = 无锚，不填
-        _, dates = ffill_gaps(series, max_gap=FFILL_MAX_GAP)
+        _, dates = ffill_gaps(
+            [(d, t if _ok(t) else None) for d, t in series],
+            max_gap=FFILL_MAX_GAP)
         filled_dates = set(dates)
         prev = None
         for d, t in series:
-            if t is not None:
+            if _ok(t):
                 prev = t
             elif d in filled_dates and prev is not None:
                 db.set_turn(code, d, prev, 'ffill')

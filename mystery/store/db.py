@@ -191,6 +191,10 @@ class MysteryDB:
 
         换手率用 COALESCE：新值为 None 时保留库内旧值（ths 数据无换手率，
         避免覆盖 baostock 同步的历史 turn —— 2026-08-27 教训）。
+        W43：写入前过 `_t()` —— turn<=0 的假 0（baostock/DuckDB 缺数语义）
+        归一为 None，让 COALESCE 走保旧值路径，杜绝假 0 入库再污染
+        ffill 锚点与覆盖率 QA（读端 `_turn_opt` 早已把 0 当 None，写端
+        不拦就是让脏数据永远躺在库里装作"有值"）。
         """
         rows = to_cn_columns(df) if 'date' in df.columns else df.copy()
         if max_rows and len(rows) > max_rows:
@@ -212,7 +216,7 @@ class MysteryDB:
                         (code, _d(r.get('日期')), period,
                          _f(r.get('开盘价')), _f(r.get('最高价')), _f(r.get('最低价')),
                          _f(r.get('收盘价')), _f(r.get('成交量')), _f(r.get('成交额')),
-                         _f(r.get('换手率')), _f(r.get('涨跌幅'))))
+                         _t(r.get('换手率')), _f(r.get('涨跌幅'))))
                 _invalidate_analysis(conn, [code])
                 conn.commit()
             finally:
@@ -233,7 +237,7 @@ class MysteryDB:
             (str(code), _d(r.get('日期')), period,
              _f(r.get('开盘价')), _f(r.get('最高价')), _f(r.get('最低价')),
              _f(r.get('收盘价')), _f(r.get('成交量')), _f(r.get('成交额')),
-             _f(r.get('换手率')), _f(r.get('涨跌幅')))
+             _t(r.get('换手率')), _f(r.get('涨跌幅')))
             for code, (_, r) in zip(code_series, rows.iterrows())
         ]
         if not data:
@@ -748,12 +752,13 @@ class MysteryDB:
                          - timedelta(days=int(days * 1.7) + 3)).strftime('%Y-%m-%d')
                 rows = conn.execute(
                     f"SELECT COALESCE(turn_source,'null'), COUNT(*), "
-                    f"SUM(CASE WHEN turn IS NOT NULL THEN 1 ELSE 0 END) "
+                    f"SUM(CASE WHEN turn > 0 AND turn < 80 THEN 1 ELSE 0 END) "
                     f"FROM stock_kline_data WHERE {where} "
                     f"AND substr(date,1,10)>=? AND substr(date,1,10)<=? "
                     f"GROUP BY 1", args + [start, anchor]).fetchall()
                 total = sum(r[1] for r in rows)
-                # 覆盖以 turn 值为准（历史行 turn_source 为 NULL 但值在）
+                # 覆盖以 turn 有效值为准（W43：假 0/越界不算覆盖；
+                # 旧口径 `turn IS NOT NULL` 被历史假 0 灌成虚高覆盖率）
                 with_turn = sum(r[2] for r in rows)
                 return {'anchor': anchor, 'window_start': start,
                         'rows': total, 'with_turn': with_turn,
@@ -850,9 +855,9 @@ class MysteryDB:
                        " WHERE type='1' OR type IS NULL)")
                 rows = conn.execute(
                     f"SELECT code, COALESCE(turn_source,'null'), COUNT(*), "
-                    f"SUM(CASE WHEN turn IS NOT NULL THEN 1 ELSE 0 END) "
+                    f"SUM(CASE WHEN turn > 0 AND turn < 80 THEN 1 ELSE 0 END) "
                     f"FROM stock_kline_data WHERE {where}{uni} "
-                    f"GROUP BY code, 2", args).fetchall()
+                    f"GROUP BY code, 2", args).fetchall()  # W43: 假0不算覆盖
                 stats = {'as_of': trade_date, 'window_start': start,
                          'n_symbols': 0, 'n_with_shares': 0,
                          'rows': 0, 'with_turn': 0, 'coverage': None,
@@ -912,7 +917,8 @@ class MysteryDB:
                         continue
                     if vol is not None and vol > 0:
                         fillable += 1
-                        if turn is not None:
+                        if turn is not None and 0 < turn < 80:
+                            # W43：假 0 不算已填（与 coverage 口径同源）
                             filled += 1
                 stats['fillable_rows'] = fillable
                 stats['filled_rows'] = filled
@@ -942,6 +948,21 @@ def _f(v: Any) -> Optional[float]:
         return float(v)
     except Exception:
         return None
+
+
+def _t(v: Any) -> Optional[float]:
+    """换手率写端口径（W43）：0/负数/越界(≥80)/NaN → None。
+
+    上游（baostock/DuckDB v_daily_qfq）缺数以 0 填充；0 一旦入库，
+    QA 的 `turn IS NOT NULL` 把它当有值（覆盖率虚高）、ffill 拿它当锚点
+    （0 值传播）、mystery_rules 筹码集中度 mean 被拉歪。
+    归一为 None 后 upsert 的 COALESCE 自动走保旧值/留空路径。
+    与读端 adapters.market._turn_opt、core.turnover.is_valid_turnover 同源。
+    """
+    f = _f(v)
+    if f is None or not (0 < f < 80):
+        return None
+    return f
 
 
 def _d(v: Any) -> str:
