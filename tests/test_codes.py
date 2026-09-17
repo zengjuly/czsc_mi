@@ -25,6 +25,19 @@ def test_normalize_sz(raw):
     assert normalize_symbol(raw) == "000001.SZ"
 
 
+def test_normalize_bj_and_laoban_refuse():
+    # W41：北交所号段
+    assert normalize_symbol("430047") == "430047.BJ"
+    assert normalize_symbol("832000") == "832000.BJ"
+    assert normalize_symbol("920008") == "920008.BJ"
+    # W48（review P1#8）：老三板 400/410/420 无前缀拒猜（生产库该段存量=0）
+    for raw in ("400001", "410001", "420001"):
+        with pytest.raises(ValueError):
+            normalize_symbol(raw)
+    # 显式前缀仍优先（设计内：显式前后缀恒优先于号段推断）
+    assert normalize_symbol("sh.430047") == "430047.SH"
+
+
 def test_db_code_of():
     assert db_code_of("600519.SH") == "sh.600519"
     assert db_code_of("sh600519") == "sh.600519"

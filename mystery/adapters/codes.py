@@ -22,8 +22,13 @@ def normalize_symbol(symbol: str) -> str:
     if not exch:
         # 无前缀无后缀：按交易所规则推断
         # W41：北交所 43/83/87/92 段（旧实现只认 92，430/83x/87x 被误标 SZ，
-        # 后续 db_code_of/扶摇/tdx 全链路错码）。4xxxxx 段中 400 为老三板，
-        # 但无前后缀输入无法区分时按 BJ 处理优于 SZ（SZ 无 4 开头现行段）。
+        # 后续 db_code_of/扶摇/tdx 全链路错码）。
+        # W48（review P1#8）：400/410/420 为老三板（两网及退市），无交易所
+        # 前缀时无法与 BJ 43 段可靠区分，宁拒绝不猜错——猜 BJ 会把它们送进
+        # 全市场扫描失败池。带显式 sh./sz. 前缀的仍按前缀走。
+        if digits.startswith(("400", "410", "420")):
+            raise ValueError(
+                f"老三板代码 {symbol!r} 需带交易所前缀（sh./sz.）")
         if digits.startswith(("43", "83", "87", "92")):
             exch = "BJ"
         elif digits[0] in "569":

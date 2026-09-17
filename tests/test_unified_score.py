@@ -32,6 +32,11 @@ def test_score_within_1_of_gold(sym):
     except Exception as e:
         pytest.skip(f"数据源不可用: {str(e)[:80]}")
     assert r.score is not None
+    # W48：金标是快照日（gold['date']）的对照，年线滤网/行情随日漂移——
+    # 非同交易日比较属时间炸弹（9-17 实跑 3 票全 0 分 vs gold 8-27 快照即此）。
+    if gold.get("date") and str(r.trade_date)[:10] != gold["date"]:
+        pytest.skip(f"行情日 {r.trade_date} ≠ 金标日 {gold['date']}，"
+                    "跨日分数/价格属漂移非回归（同日对拍见 stash 基线法）")
     diff = abs(float(r.score) - float(gold.get("综合评分") or 0))
     assert diff <= 1, f"{sym}: mine={r.score} gold={gold.get('综合评分')}"
 
@@ -48,5 +53,7 @@ def test_gold_price_matches(sym):
         pytest.skip(f"数据源不可用: {str(e)[:80]}")
     gp = gold.get("最新价")
     if gp:
+        if gold.get("date") and str(r.trade_date)[:10] != gold["date"]:
+            pytest.skip(f"行情日 {r.trade_date} ≠ 金标日 {gold['date']}，价格天然不同")
         assert abs(float(r.price or 0) - float(gp)) < 0.01, \
             f"{sym}: mine={r.price} gold={gp}"

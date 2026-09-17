@@ -56,18 +56,43 @@ def test_token_roundtrip_and_tamper():
                                             iterations=1000)}
     tok = AU.make_auth_token(cred)
     assert AU.verify_auth_token(tok, cred)
-    # 篡改签名 / 篡改过期时间 / 空 / 坏格式 / 其他凭据 → 全部拒绝
-    exp, sig = tok.split(".")
-    assert not AU.verify_auth_token(f"{exp}{'0' * (32 - len(sig))}{sig[1:]}", cred)
-    assert not AU.verify_auth_token(f"{int(exp) + 1}.{sig}", cred)
+    # W48 格式：<exp>.<nonce>.<sig>
+    exp, nonce, sig = tok.split(".")
+    assert len(nonce) == 16
+    # 篡改签名 / 篡改过期时间 / 篡改nonce / 空 / 坏格式 / 其他凭据 → 全部拒绝
+    assert not AU.verify_auth_token(f"{exp}.{nonce}{'0' * 31}{sig[-1:]}", cred)
+    assert not AU.verify_auth_token(f"{int(exp) + 1}.{nonce}.{sig}", cred)
+    assert not AU.verify_auth_token(f"{exp}.{nonce}{'f' * 32}", cred)
     assert not AU.verify_auth_token("", cred)
     assert not AU.verify_auth_token("abc", cred)
-    other = {"user": "u", **AU.hash_password("p", salt_hex="ff" * 16,
+    assert not AU.verify_auth_token(f"{exp}.{sig}", cred)  # 旧两段格式拒收
+    other = {"user": "v", **AU.hash_password("p", salt_hex="00" * 16,
                                              iterations=1000)}
-    assert not AU.verify_auth_token(tok, other)
+    assert not AU.verify_auth_token(tok, other)  # 绑用户名：同hash不同user拒
+    other2 = {"user": "u", **AU.hash_password("p", salt_hex="ff" * 16,
+                                              iterations=1000)}
+    assert not AU.verify_auth_token(tok, other2)
     # 过期 token 拒绝
     past = AU.make_auth_token(cred, ttl=-10)
     assert not AU.verify_auth_token(past, cred)
+    # 默认时效 24h（不再是 7 天）
+    import time as _t
+    tok2 = AU.make_auth_token(cred)
+    assert int(tok2.split(".")[0]) - _t.time() <= 24 * 3600 + 5
+
+
+def test_fail_state_file_roundtrip(tmp_path, monkeypatch):
+    """W48：失败计数/锁定落盘（换标签页不清零），锁满自动过期。"""
+    ff = tmp_path / "fails.json"
+    monkeypatch.setattr(AU, "FAILS_FILE", ff)
+    assert AU._load_fail_state(100.0) == (0, 0.0)  # 缺文件=干净
+    AU._save_fail_state(3, 0.0)
+    assert AU._load_fail_state(100.0) == (3, 0.0)
+    AU._save_fail_state(0, 200.0)
+    assert AU._load_fail_state(150.0) == (0, 200.0)   # 锁定中
+    assert AU._load_fail_state(250.0) == (0, 0.0)     # 到期清零
+    ff.write_text("{ broken")
+    assert AU._load_fail_state(100.0) == (0, 0.0)     # 坏文件不炸
 
 
 def test_token_disabled_returns_empty(monkeypatch):
