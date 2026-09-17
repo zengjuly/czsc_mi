@@ -8,6 +8,8 @@
 import os
 import sqlite3
 
+import pytest
+
 from mystery.core.market_env import ANCHORS
 from mystery.services import analyze as A
 from mystery.core.models import Bar, BarSeries
@@ -167,6 +169,7 @@ def test_chan_figure_title_annotations():
 def test_bs_label_priority_third_over_first(monkeypatch):
     """W41 #9：同时命中一买与三买 → 取三买（最新结构），不再先到先得。"""
     import types
+    pytest.importorskip("czsc")  # CI .[dev] 无 czsc（本会话 CI 复现踩坑）
     import czsc
     from mystery.adapters.czsc_adapter import CzscAdapter
     from mystery.core.models import BarSeries, Bar
