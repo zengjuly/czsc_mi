@@ -226,8 +226,14 @@ def _build_chan_figure(c, series: BarSeries, tail_bars: Optional[int],
         hovertemplate="MACD %{y:.3f}<extra></extra>"), row=3, col=1)
 
     freq_label = _FREQ_LABEL.get(series.freq, series.freq)
+    # W41 #12：周/月 K 由日 K 自然周(W-FRI)/自然月重采样，末根可能是未完成周期
+    _partial = "，含未完成周/月" if series.freq in ("1w", "1M") else ""
+    # W41 #10：图 MACD 用 czsc 口径（首值种子 EMA + 柱×2），规则分用
+    # Mystery 口径（pandas ewm adjust=False）——两套数值可不同，不强行对齐。
     fig.update_layout(
-        title=f"{series.symbol} 缠论结构（{freq_label}）",
+        title=(f"{series.symbol} 缠论结构（{freq_label}{_partial}）"
+               f"<span style='font-size:11px; color:#888'>　MACD: czsc 口径"
+               f"（首值种子+柱×2），与规则分口径不同</span>"),
         height=720, margin=dict(l=40, r=20, t=64, b=24),
         paper_bgcolor=colors["bg"], plot_bgcolor=colors["bg"],
         font=dict(color=colors["text"], size=12),

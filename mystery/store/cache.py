@@ -89,14 +89,17 @@ class AnalysisCache:
     def get(self, symbol: str, trade_date: str,
             cache_key: str) -> Optional[Dict[str, Any]]:
         try:
-            conn = self.db._connect()
-            try:
-                row = conn.execute(
-                    "SELECT payload_json FROM analysis_cache "
-                    "WHERE symbol=? AND trade_date=? AND cache_key=?",
-                    (symbol, trade_date, cache_key)).fetchone()
-            finally:
-                conn.close()
+            # W41 #6：与 MysteryDB 同锁（RLock，外层持锁不死锁）——扫描线程池
+            # 回退路径不再与 upsert_kline 抢同一库。
+            with self.db._lock:
+                conn = self.db._connect()
+                try:
+                    row = conn.execute(
+                        "SELECT payload_json FROM analysis_cache "
+                        "WHERE symbol=? AND trade_date=? AND cache_key=?",
+                        (symbol, trade_date, cache_key)).fetchone()
+                finally:
+                    conn.close()
             if row:
                 return json.loads(row[0])
         except Exception:
@@ -110,21 +113,22 @@ class AnalysisCache:
             include_detail: bool = False,
             fingerprint: str = '') -> None:
         try:
-            conn = self.db._connect()
-            try:
-                conn.execute(
-                    "INSERT OR REPLACE INTO analysis_cache "
-                    "(symbol, trade_date, cache_key, adjust, rule_ver, "
-                    " chan_enabled, chan_score, czsc_ver, include_detail, "
-                    " bars_fingerprint, payload_json, created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)",
-                    (symbol, trade_date, cache_key, adjust, rule_ver,
-                     int(chan_enabled), int(chan_score), czsc_ver,
-                     int(include_detail), fingerprint,
-                     json.dumps(payload, ensure_ascii=False)))
-                conn.commit()
-            finally:
-                conn.close()
+            with self.db._lock:
+                conn = self.db._connect()
+                try:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO analysis_cache "
+                        "(symbol, trade_date, cache_key, adjust, rule_ver, "
+                        " chan_enabled, chan_score, czsc_ver, include_detail, "
+                        " bars_fingerprint, payload_json, created_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)",
+                        (symbol, trade_date, cache_key, adjust, rule_ver,
+                         int(chan_enabled), int(chan_score), czsc_ver,
+                         int(include_detail), fingerprint,
+                         json.dumps(payload, ensure_ascii=False)))
+                    conn.commit()
+                finally:
+                    conn.close()
         except Exception:
             pass
 
@@ -135,21 +139,22 @@ class AnalysisCache:
         trade_date 为 None 时删该票全部（sync 无法精确定位旧交易日）。
         """
         try:
-            conn = self.db._connect()
-            try:
-                if trade_date:
-                    cur = conn.execute(
-                        "DELETE FROM analysis_cache "
-                        "WHERE symbol=? AND trade_date=?",
-                        (symbol, trade_date))
-                else:
-                    cur = conn.execute(
-                        "DELETE FROM analysis_cache WHERE symbol=?",
-                        (symbol,))
-                conn.commit()
-                return cur.rowcount
-            finally:
-                conn.close()
+            with self.db._lock:
+                conn = self.db._connect()
+                try:
+                    if trade_date:
+                        cur = conn.execute(
+                            "DELETE FROM analysis_cache "
+                            "WHERE symbol=? AND trade_date=?",
+                            (symbol, trade_date))
+                    else:
+                        cur = conn.execute(
+                            "DELETE FROM analysis_cache WHERE symbol=?",
+                            (symbol,))
+                    conn.commit()
+                    return cur.rowcount
+                finally:
+                    conn.close()
         except Exception:
             return 0
 

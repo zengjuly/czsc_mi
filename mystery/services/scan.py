@@ -156,6 +156,16 @@ def _hold_scan_lock(db_path: str, enabled: bool = True):
         fh.close()
 
 
+def _warn_fail_rate(results: List[dict], failed: int) -> None:
+    """W41 #18：扫描失败率 >2% 时 warning（旧实现逐股失败只 debug/个股
+    warning，整晚数据源挂了管线日志里也看不出异常，只有分数静默变少）。"""
+    total = len(results) + failed
+    if total >= 20 and failed / total > 0.02:
+        logger.warning(f"[scan] ⚠️ 失败率 {failed}/{total} = "
+                       f"{failed / total:.1%} > 2%——疑似数据源/接口异常，"
+                       f"查当日管线日志与 ths/tdx 可用性")
+
+
 def scan_market(limit: Optional[int] = None,
                 watchlist: Optional[List[str]] = None,
                 include_detail: bool = False,
@@ -262,6 +272,7 @@ def _scan_market_impl(limit: Optional[int] = None,
                             pass
             logger.info(f"[scan] 完成 {len(results)} 只（失败 {failed} 只，"
                         f"processes={workers}）")
+            _warn_fail_rate(results, failed)  # W41 #18：失败率>2% 上 warning
             results.sort(key=lambda x: (x.get('score') is not None,
                                         float(x.get('score') or -1)), reverse=True)
             return _persist_or_return(results, failed, no_persist, svc,
@@ -288,6 +299,7 @@ def _scan_market_impl(limit: Optional[int] = None,
                     pass
     logger.info(f"[scan] 完成 {len(results)} 只（失败 {failed} 只，"
                 f"threads={max(1, workers)}）")
+    _warn_fail_rate(results, failed)  # W41 #18：失败率>2% 上 warning
     results.sort(key=lambda x: (x.get('score') is not None,
                                 float(x.get('score') or -1)), reverse=True)
     return _persist_or_return(results, failed, no_persist, svc, job_holder,

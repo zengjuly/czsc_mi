@@ -87,3 +87,76 @@ def test_data_fingerprint_closes_connection(tmp_path):
         except sqlite3.ProgrammingError:
             closed_ok = True
         assert closed_ok, "data_fingerprint 泄漏了未关闭的 SQLite 连接"
+
+
+# ---- 第二批（本周项收口）----
+
+def test_analysis_cache_uses_db_lock(tmp_path):
+    """W41 #6：AnalysisCache get/put/invalidate 全程持 db._lock。"""
+    import threading
+    from unittest.mock import patch as upatch
+    from mystery.store.db import MysteryDB
+    from mystery.store.cache import AnalysisCache
+
+    db = MysteryDB(db_path=str(tmp_path / "c.db"))
+    cache = AnalysisCache(db)
+    cache.put("600000.SH", "2026-09-17", "k1", {"score": 1})
+    assert cache.get("600000.SH", "2026-09-17", "k1") == {"score": 1}
+
+    # 锁内调用断言：wrap db._lock.acquire，验证 get 路径持锁
+    observed = []
+    real_lock = db._lock
+
+    class SpyLock:
+        def __enter__(self):
+            observed.append(True)
+            return real_lock.__enter__()
+
+        def __exit__(self, *a):
+            return real_lock.__exit__(*a)
+
+    with upatch.object(db, "_lock", SpyLock()):
+        cache.get("600000.SH", "2026-09-17", "k1")
+        cache.put("600000.SH", "2026-09-17", "k2", {"x": 1})
+        cache.invalidate_symbol("600000.SH")
+    assert len(observed) == 3, "cache 读写未经过 db._lock"
+
+
+def test_warn_once_helper():
+    """W41 #18：_warn_once 每 key 只警告一次（升级可观测，防扫描刷屏）。"""
+    from mystery.services import analyze as A
+    A._warned_once.discard("test-key")
+    assert "test-key" not in A._warned_once
+    A._warn_once("test-key", "boom")
+    assert "test-key" in A._warned_once  # 第二次调用只进 set 不再 emit
+
+
+def test_scan_fail_rate_warning(caplog):
+    """W41 #18：失败率>2% 且样本≥20 → warning；正常情况不打。"""
+    import logging
+    from mystery.services.scan import _warn_fail_rate
+    with caplog.at_level(logging.WARNING, logger="mystery.services.scan"):
+        _warn_fail_rate([{"score": 1}] * 98, failed=10)  # 9.2% → warn
+        assert "失败率" in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="mystery.services.scan"):
+        _warn_fail_rate([{"score": 1}] * 99, failed=1)   # 1% → 静默
+        _warn_fail_rate([{"score": 1}] * 5, failed=2)    # 样本<20 → 静默
+        assert caplog.text == ""
+
+
+def test_chan_figure_title_annotations():
+    """W41 #10/#12：缠论图标题含 MACD 口径注记；周/月含「未完成」标注。"""
+    import pytest
+    pytest.importorskip("czsc")
+    from mystery.adapters.czsc_adapter import CzscAdapter
+    bars = [Bar(dt=f"2026-{4 + i // 28:02d}-{i % 28 + 1:02d}",
+                open=1 + i * .01, high=1.1 + i * .01, low=.9 + i * .01,
+                close=1 + i * .01, volume=100 + i, amount=100 + i)
+            for i in range(120)]
+    ser = BarSeries(symbol="600000.SH", freq="1d", adjust="qfq", bars=bars)
+    fig = CzscAdapter().plot_figure(ser)
+    assert fig is not None
+    title = fig.layout.title.text
+    assert "czsc 口径" in title          # MACD 双口径标注
+    assert "未完成" not in title          # 日线不带未完成标注

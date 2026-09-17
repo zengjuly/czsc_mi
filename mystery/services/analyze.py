@@ -23,6 +23,17 @@ from ..core import scorer as _scorer
 
 logger = logging.getLogger(__name__)
 
+# W41 #18：降级路径可观测性——旧实现全走 debug，生产默认 WARNING 下整晚
+# 数据源挂掉也不出现在管线日志（只有分数静默变 unknown）。这些"环境级
+# 故障"升级为**每进程一次性 warning**（模块级标记防扫描逐票刷屏）。
+_warned_once: set = set()
+
+
+def _warn_once(key: str, msg: str) -> None:
+    if key not in _warned_once:
+        _warned_once.add(key)
+        logger.warning(msg)
+
 _INDEX_CODE = 'sh.000001'   # 上证指数
 
 
@@ -71,7 +82,7 @@ def market_env_summary(market) -> Dict[str, Any]:
                 closes = [float(b.close) for b in series.bars]
                 last_dt = str(series.bars[-1].dt)[:10]
         except Exception as e:
-            logger.debug(f"大盘锚 {code} 获取失败: {str(e)[:60]}")
+            _warn_once(f"anchor:{code}", f"[大盘锚] {code} 获取失败: {str(e)[:60]}（该锚 env 判定按缺数据降级）")
         a = anchor_env(name, code, closes)
         a["date"] = last_dt
         anchors.append(a)
@@ -187,14 +198,14 @@ class AnalysisService:
             if index_series.bars:
                 ctx.index_bars = index_series
         except Exception as e:
-            logger.debug(f"指数获取失败: {str(e)[:60]}")
+            _warn_once("index", f"[ctx] 大盘指数获取失败: {str(e)[:60]}"                     "（共振判定按无指数降级）")
         try:
             ind = self.sector.get_industry(symbol)
             ctx.industry_name = ind.get('name') or '未知'
             ctx.industry_score = ind.get('score')
             ctx.industry_up = ind.get('up')
         except Exception as e:
-            logger.debug(f"行业获取失败: {str(e)[:60]}")
+            _warn_once("industry", f"[ctx] 行业获取失败: {str(e)[:60]}")
         try:
             ctx.financial = self.market.db.get_financial(symbol)
         except Exception as e:
@@ -230,7 +241,7 @@ class AnalysisService:
                     except Exception as e:
                         logger.debug(f"财务回填失败: {str(e)[:60]}")
             except Exception as e:
-                logger.debug(f"财务在线补齐失败: {str(e)[:60]}")
+                _warn_once("fin_fill", f"[ctx] 财务在线补齐失败: {str(e)[:60]}（后续票财务字段继续走本地，估值项按缺数降级）")
         return ctx
 
     # ---------------- 规则明细（收口到 core.pipeline 纯计算） ----------------
