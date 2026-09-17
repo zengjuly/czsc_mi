@@ -187,7 +187,8 @@ def _print_db_fingerprint() -> None:
         from ..store.db import MysteryDB
         fp = MysteryDB().data_fingerprint()
         print(f"db={fp.get('db_path')} kline_max={fp.get('kline_max')}"
-              f" as_of_max={fp.get('as_of_max')}", flush=True)
+              f" as_of_max={fp.get('as_of_max')}"
+              f" orphan={fp.get('suffix_orphans')}", flush=True)
     except Exception as e:  # noqa: BLE001 指纹失败不阻塞主流程
         print(f"[warn] db 指纹读取失败: {e}", file=sys.stderr)
 
@@ -353,7 +354,8 @@ def _turnover_qa_line(db, results, trade_date: str) -> str:
         # 空库时，「0 只有股本快照」是库不对，不是快照丢了。
         fp = db.data_fingerprint()
         head = (f"db={fp.get('db_path')} kline_max={fp.get('kline_max')}"
-                f" as_of_max={fp.get('as_of_max')}")
+                f" as_of_max={fp.get('as_of_max')}"
+                f" orphan={fp.get('suffix_orphans')}")
         warns = []
         if fp.get('kline_max') is None:
             warns.append("WARN: 库内无日K——空库/库不对（检查 MYSTERY_DB_PATH）")
@@ -363,6 +365,9 @@ def _turnover_qa_line(db, results, trade_date: str) -> str:
         if fp.get('as_of_max') is None:
             warns.append("WARN: 股本快照表为空——可能未用 MYSTERY_DB_PATH "
                          "指向生产库")
+        if fp.get('suffix_orphans'):
+            warns.append(f"WARN: K线表 {fp['suffix_orphans']} 行后缀格式孤儿"
+                         "（W46 回潮：查 upsert _dbcode 归一/外部直写）")
         if warns:
             head += "\n  " + "；".join(warns)
         chip_seg = (f" · 本次报告 chip_low 未知 {n_unknown}/{len(results)} 只"
