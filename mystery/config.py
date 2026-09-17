@@ -89,11 +89,16 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
 
 
 def output_dir(cfg: Optional[Dict[str, Any]] = None) -> str:
-    """报表输出目录：MYSTERY_OUTPUT_DIR → config report.output_dir → <repo>/output。"""
+    """报表输出目录：MYSTERY_OUTPUT_DIR → config report.output_dir → <repo>/output。
+
+    cfg 省略时自行 load_config()（W44：修复 docstring 承诺的 config 回退
+    实际从未生效——裸调用全落 repo/output，weekly_shares 状态文件因此崩溃、
+    日报页脚管线/铺盘两行永远缺失）。"""
     env = os.environ.get("MYSTERY_OUTPUT_DIR")
     if env:
         return env
-    cfg = cfg or {}
+    if cfg is None:
+        cfg = load_config()
     d = (cfg.get("report") or {}).get("output_dir") or ""
     if d:
         return d
