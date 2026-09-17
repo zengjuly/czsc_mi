@@ -259,7 +259,8 @@ czsc-mi analyze --stock sh600519
 ## 11. 已知缺口
 
 - 金标集成测依赖原机实盘数据（THS/TDX/生产 DB），已拆双层：离线 fixture 锁分（test_score_offline），
-  集成测打标 @integration 默认跳过。
+  集成测打标 @integration 默认跳过。W48 起集成金标加「行情日≠金标快照日→skip」守卫
+  （gold fixture 的 date 字段为锚），跨年线滤网漂移不再产生假失败；同日对拍仍用 stash 基线法。
 - 迁移框架已落地（W21）：`_init_db` 按文件名序执行 `mystery/store/migrations/001–003`，
   记账表 `schema_migrations`，语句级执行、容忍重复列。改列/加表一律走迁移文件。
 - 缠论混合分（0.10.0/6C 起）已用 30 只快照标定规则表替换旧浅规则（±10/±5/±8），
