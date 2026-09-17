@@ -463,12 +463,15 @@ def _stock_pick_select(label: str = "选择股票（输入名称搜索）",
     return pick, ""
 
 
-@st.cache_data(show_spinner=False)
-def _plot_cache(symbol: str, freq: str):
+@st.cache_data(ttl=3600, show_spinner=False)
+def _plot_cache(symbol: str, freq: str, data_ver: str = ""):
     """缠论图 Figure（plotly 自绘；czsc 已装且数据可用时返回，否则 None）。
 
     周期 1d/1w/1M 由 service 拉取（周/月=日K重采样），czsc 结构在 adapter 内
-    重建；结果按 (symbol, freq) 缓存，切换周期不重新分析。
+    重建。W41：缓存键含 data_ver（详情页传 "trade_date|bars_fingerprint前8"），
+    盘后 sync 出新 K → 指纹变 → 自然 miss，杜绝「分和图对不上」（旧键只有
+    (symbol, freq)，进程不重启永远画旧中枢/笔）；另加 ttl=3600 挡同日补洞。
+    data_ver 不参与计算，只做缓存代际令牌。
     """
     try:
         from mystery.adapters.czsc_adapter import CzscAdapter
@@ -479,11 +482,12 @@ def _plot_cache(symbol: str, freq: str):
         return None
 
 
-@st.cache_data(show_spinner=False)
-def _lightweight_cache(symbol: str, freq: str):
+@st.cache_data(ttl=3600, show_spinner=False)
+def _lightweight_cache(symbol: str, freq: str, data_ver: str = ""):
     """官方 lightweight 校验图 HTML（plot_czsc(c, output='html')）；失败返回 ''。
 
     仅作校验/降级对照，主图始终用 plotly 自绘中枢盒（_plot_cache）。
+    缓存代际令牌 data_ver 同 _plot_cache（W41）。
     """
     try:
         from mystery.adapters.czsc_adapter import CzscAdapter
@@ -629,13 +633,15 @@ def render_stock(d: dict):
                 "K线周期", ["日线", "周线", "月线"], horizontal=True,
                 key="stock_freq")
             freq = {"日线": "1d", "周线": "1w", "月线": "1M"}[freq_label]
-            fig = _plot_cache(d.get('symbol', ''), freq)
+            # W41：data_ver=交易日|指纹前8，盘后 K 线更新自动换代缓存（与分数同源）
+            _dver = f"{d.get('trade_date', '')}|{_fp[:8]}"
+            fig = _plot_cache(d.get('symbol', ''), freq, _dver)
             if fig is not None:
                 st.plotly_chart(fig, height=720, width="stretch")
             else:
                 st.info("缠论图不可用（czsc 未装或数据不足），见下方结构文本")
             with st.expander("官方校验图（czsc lightweight，仅对照）", expanded=False):
-                lw_html = _lightweight_cache(d.get('symbol', ''), freq)
+                lw_html = _lightweight_cache(d.get('symbol', ''), freq, _dver)
                 if lw_html:
                     st.iframe(lw_html, height=640)
                 else:

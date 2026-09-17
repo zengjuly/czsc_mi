@@ -51,9 +51,11 @@ class MarketDataClient:
         self._ref_cache: Dict[str, Optional[str]] = {}
         self._ref_ts = 0.0
         self._ref_lock = threading.Lock()
-        # 全源皆空负缓存（30min）：不存在的票/停牌无数据票，同进程不重复探测
+        # 全源皆空负缓存（W41 起 10min）：不存在的票/停牌无数据票，同进程不重复探测
         self._empty_cache: Dict[str, float] = {}
-        self._EMPTY_TTL = 1800
+        # W41：30min→10min。源抖动把有票的票误标空的中毒窗口减半；
+        # 全市场扫描空票探测成本可接受（进程会话级，重扫自然重来）。
+        self._EMPTY_TTL = 600
         # 指数会话级缓存（W12）：daily/扫描 86 只逐股调 build_market_context，
         # 每次都完整走 fetch_index 降级链 ~1.3s；同进程共享一次结果。
         # 线程安全：daily 用 ThreadPoolExecutor 并发调 fetch_bars。

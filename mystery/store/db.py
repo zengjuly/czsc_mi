@@ -37,19 +37,17 @@ def to_cn_columns(df: pd.DataFrame) -> pd.DataFrame:
 def _dot(code: str) -> str:
     """任意库内代码（sh.600519 / 600519.SH / thscode）→ 点号格式 600519.SH。
 
-    与 adapters.codes.normalize_symbol 同逻辑（此处本地实现避免 import 环）。
+    W41：归一逻辑唯一实现在 adapters.codes.normalize_symbol（旧版本地复制
+    的正则/推断分支已删，防两处漂移）；本函数保留 _dot 的宽容回退语义——
+    normalize_symbol 抛 ValueError 的输入原样大写返回（原行为，调用方
+    如 watchlist 混入非标准码不致炸查询）。codes.py 仅依赖 re，无 import 环
+    （cache.dot_symbol 同款路径已验证）。
     """
-    import re as _re
-    s = str(code).strip().lower()
-    m = _re.match(r'^(?:(sh|sz|bj)\.?)?(\d{6})(?:\.(sh|sz|bj))?$', s)
-    if not m:
+    from ..adapters.codes import normalize_symbol
+    try:
+        return normalize_symbol(code)
+    except ValueError:
         return str(code).strip().upper()
-    prefix, digits, suffix = m.group(1), m.group(2), m.group(3)
-    exch = (suffix or prefix or '').upper()
-    if not exch:
-        exch = 'BJ' if digits.startswith('92') else (
-            'SH' if digits[0] in '569' else 'SZ')
-    return f"{digits}.{exch}"
 
 
 def _invalidate_analysis(conn: sqlite3.Connection, codes) -> None:

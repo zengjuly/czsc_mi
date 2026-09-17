@@ -68,8 +68,9 @@ def make_cache_key(adjust: Optional[str], rule_ver: str,
                    fingerprint: str) -> str:
     """版本 + 归因开关串 + 指纹 → 归一 cache_key（顺序固定，| 分隔）。
 
-    analysis_flags = 'D{0|1}|C{0|1}|S{0|1}'：
-    D=include_detail，C=chan_enabled（结构），S=chan_score（混合分）。
+    analysis_flags = 'D{0|1}|C{0|1}|S{0|1}|F{0|1}'：
+    D=include_detail，C=chan_enabled（结构），S=chan_score（混合分），
+    F=fill_financial（W36：扫描链禁在线补财务，与详情互不命中）。
     （epoch 曾入键，会导致 analyze 在线降级自动落库后立即自失效抖动，
     已移除；sync 写 K 线的失效由 upsert_kline* 显式删对应日缓存实现。）
     """

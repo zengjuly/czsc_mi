@@ -20,10 +20,9 @@ chan:
   freqs: [1d, 1w]
   plot: zs_box            # 主图=中枢盒（plotly 自绘）；lightweight 仅作官方校验图
 
-scoring:
-  mystery: 0.55
-  resonance: 0.25
-  chan: 0.20
+# 注意（W41）：原 scoring 权重段是死配置（无任何代码读取；0.55/0.25/0.20
+# 硬编码于 mystery/core/scorer.py combine()，AGENTS §2.5 冻结）。已删除，
+# 防止运维改这里误以为调了混合分。要动权重必须改代码+升 rule_ver。
 
 report:
   output_dir: ${MYSTERY_REPORT_DIR:-}

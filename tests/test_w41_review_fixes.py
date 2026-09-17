@@ -38,6 +38,28 @@ def test_avg_turnover_20_upper_bound():
     assert A._avg_turnover_20(_series([2.0, 4.0])) == 3.0
 
 
+def test_bj_segments_inference():
+    """W41 #8：无前缀 43/83/87/92 段推断为 BJ（旧实现只认 92→其余标 SZ）。"""
+    from mystery.adapters.codes import normalize_symbol
+    assert normalize_symbol("430047") == "430047.BJ"
+    assert normalize_symbol("832000") == "832000.BJ"
+    assert normalize_symbol("873122") == "873122.BJ"
+    assert normalize_symbol("920002") == "920002.BJ"
+    # 回归护栏：沪深推断不变
+    assert normalize_symbol("600519") == "600519.SH"
+    assert normalize_symbol("000001") == "000001.SZ"
+    assert normalize_symbol("300750") == "300750.SZ"
+    assert normalize_symbol("510300") == "510300.SH"
+    # 显式前后缀优先于推断（SZ 老三板等不受影响）
+    assert normalize_symbol("430047.SZ") == "430047.SZ"
+    # db._dot 已收编同一路径（W41 代码归一）；显式前缀优先于号段推断（设计内）
+    from mystery.store.db import _dot
+    assert _dot("430047") == "430047.BJ"
+    assert _dot("bj.430047") == "430047.BJ"
+    assert _dot("sh.430047") == "430047.SH"  # 前缀冲突以前缀为准（宽容不改）
+    assert _dot("乱码XX") == "乱码XX"  # 宽容回退语义保留
+
+
 def test_data_fingerprint_closes_connection(tmp_path):
     from mystery.store.db import MysteryDB
     db = MysteryDB(db_path=str(tmp_path / "fp.db"))

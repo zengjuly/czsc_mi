@@ -12,6 +12,9 @@
 #   RUN_MARKET_SCAN（默认 0：不跑全市场扫描；=1 时用 SCAN_LIMIT 只数）
 #   SCAN_LIMIT
 set -euo pipefail
+# W41：锁死北京时区——脚本用 date '+%F' 给 sync-turnover 传当日日期，
+# 机器 TZ 若是 UTC 会错一天。
+export TZ=Asia/Shanghai
 source /home/ai/ai_runner/.stockrc
 source "${VENV:-/home/ai/ai_runner/venv}/bin/activate"
 cd "${CZSC_MI_ROOT:-$(dirname "$0")/..}"

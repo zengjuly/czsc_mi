@@ -21,7 +21,10 @@ def normalize_symbol(symbol: str) -> str:
     exch = (suffix or prefix or "").upper()
     if not exch:
         # 无前缀无后缀：按交易所规则推断
-        if digits.startswith("92"):
+        # W41：北交所 43/83/87/92 段（旧实现只认 92，430/83x/87x 被误标 SZ，
+        # 后续 db_code_of/扶摇/tdx 全链路错码）。4xxxxx 段中 400 为老三板，
+        # 但无前后缀输入无法区分时按 BJ 处理优于 SZ（SZ 无 4 开头现行段）。
+        if digits.startswith(("43", "83", "87", "92")):
             exch = "BJ"
         elif digits[0] in "569":
             exch = "SH"

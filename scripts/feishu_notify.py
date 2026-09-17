@@ -55,9 +55,18 @@ def _build_ok_message() -> str:
     db = _db_path()
     conn = sqlite3.connect(db)
     try:
+        # W41：优先取当日 watchlist job（18:00 管线产物），其次任意最新 job。
+        # 旧实现 ORDER BY id DESC LIMIT 1 不分类型：先跑全市场再跑自选会让
+        # Top8 变成 86 只自选（或反之）。
         job = conn.execute(
             "SELECT id, trade_date, started_at, n_ok, n_fail "
-            "FROM scan_jobs ORDER BY id DESC LIMIT 1").fetchone()
+            "FROM scan_jobs WHERE scan_type='watchlist' "
+            "AND trade_date=date('now','localtime') "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+        if not job:
+            job = conn.execute(
+                "SELECT id, trade_date, started_at, n_ok, n_fail "
+                "FROM scan_jobs ORDER BY id DESC LIMIT 1").fetchone()
         if not job:
             return "⚠️ 定时任务完成，但库中无 scan_jobs 记录（扫描未写库？）"
         job_id, trade_date, started_at, n_ok, n_fail = job
@@ -156,12 +165,24 @@ def main() -> int:
     ap.add_argument("--error", default="", help="失败告警文案（否则发成功摘要）")
     args = ap.parse_args()
 
+    # W41：显式配置了 MYSTERY_DB_PATH 但文件不存在 → 失败退出（旧行为：
+    # sqlite3.connect 静默建空库 →「无 scan_jobs」还报成功）。
+    env_db = os.environ.get("MYSTERY_DB_PATH", "").strip()
+    if env_db and not Path(env_db).exists():
+        print(f"❌ MYSTERY_DB_PATH 指向的库不存在: {env_db}")
+        return 1
+
     if args.error:
         text = f"❌ Mistery 日报任务失败（{datetime.now():%Y-%m-%d %H:%M}）\n{args.error[:1500]}"
     else:
         text = _build_ok_message()
-    _send(text)
-    return 0
+    # W41：发送失败必须非 0 退出——旧实现恒 return 0，cron 永远绿，
+    # webhook 挂了都没人知道。未配置 webhook 仍按文档语义跳过（exit 0）。
+    if not _webhook():
+        print("未配置飞书 webhook，跳过发送（消息预览）：")
+        print(text)
+        return 0
+    return 0 if _send(text) else 1
 
 
 if __name__ == "__main__":
