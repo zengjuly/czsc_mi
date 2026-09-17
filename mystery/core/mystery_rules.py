@@ -721,6 +721,9 @@ class MysteryLogic:
                     else:
                         checklist['详情'].append(
                             f"RSI={rsi_now:.1f}（{('<50' if rsi_now <= 50 else '走弱')}）")
+                else:
+                    # W41 #11：缺数（新股/短序列前14行NaN）显式标注，不静默
+                    checklist['详情'].append('RSI缺失（数据不足，不按0处理）')
             else:
                 checklist['详情'].append('RSI数据不足')
             if len(data) >= 4 and '成交量' in data.columns and '涨跌幅' in data.columns:

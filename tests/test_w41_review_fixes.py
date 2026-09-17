@@ -160,3 +160,90 @@ def test_chan_figure_title_annotations():
     title = fig.layout.title.text
     assert "czsc 口径" in title          # MACD 双口径标注
     assert "未完成" not in title          # 日线不带未完成标注
+
+
+# ---- 第四批（定口径三项：#9 标签优先级 / #4 丢棒 / #11 RSI 缺失显式化）----
+
+def test_bs_label_priority_third_over_first(monkeypatch):
+    """W41 #9：同时命中一买与三买 → 取三买（最新结构），不再先到先得。"""
+    import types
+    import czsc
+    from mystery.adapters.czsc_adapter import CzscAdapter
+    from mystery.core.models import BarSeries, Bar
+
+    def sig(val):
+        return types.SimpleNamespace(value=val)
+
+    def behavior(name, c, params=None):
+        if name == "cxt_first_buy_V221126":
+            return [sig("一买_1")]
+        if name == "cxt_second_bs_V240524":
+            return [sig("其他_1")]
+        if name == "cxt_third_bs_V230319":
+            return [sig("三买_5_20")]
+        return [sig("其他_1")]
+
+    fake = types.SimpleNamespace(call_signal=behavior)
+    monkeypatch.setattr(czsc, "_native", fake)
+
+    import numpy as np
+    rng = np.random.default_rng(7)
+    dates = ["2025-%02d-%02d" % (i // 28 + 1, i % 28 + 1) for i in range(300)]
+    close = 10 * np.cumprod(1 + rng.normal(0.0008, 0.015, 300))
+    bars = [Bar(dt=d, open=float(c), high=float(c) * 1.01, low=float(c) * .99,
+                close=float(c), volume=1e6, amount=1e7)
+            for d, c in zip(dates, close)]
+    s = BarSeries(symbol="600519.SH", freq="1d", adjust="qfq", bars=bars,
+                  source="test")
+    bs, div, ok = CzscAdapter().signal_flags(s)
+    assert bs == "三买" and ok is True
+
+
+def test_df_to_series_drops_bad_ohlc_rows():
+    """W41 #4：close/任一 OHLC 为 NaN → 丢该根，不填 0；缺列容忍不变。"""
+    import numpy as np
+    import pandas as pd
+    from mystery.adapters.market import _df_to_series
+
+    df = pd.DataFrame({
+        "日期": pd.date_range("2026-01-01", periods=5),
+        "开盘价": [10, 11, 12, 13, 14],
+        "最高价": [10.5, 11.5, 12.5, 13.5, 14.5],
+        "最低价": [9.5, 10.5, 11.5, 12.5, 13.5],
+        "收盘价": [10.2, np.nan, 12.2, 13.2, 14.2],   # 第2根缺 close
+        "成交量": [100, 100, 100, 100, 100],
+        "成交额": [1000, 1000, 1000, 1000, 1000],
+    })
+    s = _df_to_series(df, "600000.SH", "1d", "qfq", "test")
+    assert len(s.bars) == 4
+    assert all(b.close > 0 for b in s.bars)
+    assert [b.dt for b in s.bars] == ["2026-01-01", "2026-01-03",
+                                      "2026-01-04", "2026-01-05"]
+    # 全 NaN 也不炸（丢光 → 空序列）
+    df2 = df.copy()
+    df2["收盘价"] = np.nan
+    assert _df_to_series(df2, "600000.SH", "1d", "qfq", "test").bars == []
+
+
+def test_rsi_missing_marked_not_silent():
+    """W41 #11：RSI 末两行 NaN → checklist 不判分、详情含缺失标注（行为=旧 notna 守卫，新增可见性）。"""
+    import numpy as np
+    import pandas as pd
+    from mystery.core.mystery_rules import MysteryLogic
+
+    n = 80
+    df = pd.DataFrame({
+        "最高价": np.linspace(11, 20, n), "最低价": np.linspace(10, 19, n),
+        "收盘价": np.linspace(10.5, 19.5, n), "成交量": [1000] * n,
+        "成交额": [1e6] * n, "涨跌幅": [0.01] * n, "MA60": [None] * 70 + [15.0] * 10,
+        "换手率": [None] * n, "量比": [1.0] * n,
+    })
+    df["RSI"] = [np.nan] * (n - 2) + [np.nan, np.nan]  # 末两行缺数
+    cl = MysteryLogic().main_bull_wave_checklist(df)
+    assert cl["RSI>50继续走强"] is False
+    assert any("RSI缺失" in d for d in cl["详情"])
+    # 有值路径不受影响
+    df2 = df.copy()
+    df2["RSI"] = 60.0
+    cl2 = MysteryLogic().main_bull_wave_checklist(df2)
+    assert cl2["RSI>50继续走强"] is True

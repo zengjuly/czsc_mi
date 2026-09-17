@@ -394,6 +394,15 @@ class CzscAdapter:
         bs, div = "", ""
         ok = True
         try:
+            # W41 #9：三函数全收集候选后按 三>二>一 取最新结构（旧实现
+            # 按检查顺序先到先得，一买恒压三买 → 标签偏旧）。czsc
+            # call_signal 返回快照值、Signal 无时间字段，无法按日期取最近，
+            # 结构次序（三买卖必然晚于一买）即时间次序的等价物。
+            # chan_score 对一/二/三买(卖)统一 ±10：同向标签换档不影响分数；
+            # 仅罕见的「一买+三卖」混杂会翻转符号（±20），只作用于 chan mix
+            # 路径（生产 MYSTERY_CHAN_SCORE=0 默认关，不进综合分）。
+            _BS_RANK = {"三": 3, "二": 2, "一": 1}
+            cands: List[str] = []
             for name, params in (("cxt_first_buy_V221126", {"di": 1}),
                                  ("cxt_second_bs_V240524",
                                   {"di": 1, "big_gap_factor": 0.95,
@@ -403,11 +412,11 @@ class CzscAdapter:
                                    "fast": 5, "slow": 20, "vols_ma": 5})):
                 for s in n.call_signal(name, c, params=params):
                     tok = str(s.value).split("_", 1)[0]
-                    if ("买" in tok or "卖" in tok) and "任意" not in tok:
-                        bs = tok
-                        break
-                if bs:
-                    break
+                    if (("买" in tok or "卖" in tok) and "任意" not in tok
+                            and tok not in cands):
+                        cands.append(tok)
+            if cands:
+                bs = max(cands, key=lambda t: _BS_RANK.get(t[0], 0))
         except Exception as e:
             ok = False
             logger.debug(f"买卖点信号失败({series.symbol}): {str(e)[:80]}")

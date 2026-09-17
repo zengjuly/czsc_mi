@@ -158,6 +158,13 @@ def analyze_macd_signals(data: pd.DataFrame) -> pd.DataFrame:
 
 
 def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """RSI（W41 #11 口径注记：SMA 均值版，非 Wilder ewm 平滑）。
+
+    与 1.22.30 金标快照同源（金标按本口径钉死）；若日后对齐通达信
+    Wilder 口径须升 rule_ver 并重对金标。前 period-1 行为 NaN 属正常
+    （消费方 mystery_rules checklist 用 pd.notna 守卫、analyze_rsi_signals
+    用 np.isfinite 守卫，缺数不会被当 RSI=0 超卖处理）。
+    """
     result = data.copy()
     delta = result['收盘价'].diff()
     gain = delta.where(delta > 0, 0)

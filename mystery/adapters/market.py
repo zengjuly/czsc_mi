@@ -399,11 +399,29 @@ def _df_to_series(df: pd.DataFrame, symbol: str, freq: str, adjust: str,
     amounts = _col('成交额', 'amount')
     turnovers = _col('换手率', 'turn')
     pcts = _col('涨跌幅', 'pctChg')
-    bars = [Bar(dt=d, open=_num(o), high=_num(h), low=_num(l), close=_num(cl),
-                volume=_num(v), amount=_num(a), turnover=_turn_opt(t), pct_chg=_num(p))
-            for d, o, h, l, cl, v, a, t, p in
-            zip(dts, opens, highs, lows, closes, volumes, amounts, turnovers, pcts)]
-    return BarSeries(symbol=symbol, freq=freq, adjust=adjust, bars=bars, source=source)
+    # W41 #4：OHLC 任一缺失（NaN/非数值）→ 丢弃该根，禁止 _num 填 0 带歪
+    # 均线/年线滤网/缠论（0 价 K 线会把 MA250 直接拉穿）。volume/amount/
+    # pct 缺失填 0 无碍（停牌行本就 0 量）。生产库实测 close NULL/0=0 行，
+    # 本改动是对在线源（ths/tdx 偶发 NaN 行）的纯加固，零现库漂移。
+    def _f(v):
+        try:
+            f = float(v)
+            return None if pd.isna(f) else f
+        except (TypeError, ValueError):
+            return None
+    kept, dropped = [], 0
+    for d, o, h, l, cl, v, a, t, p in zip(
+            dts, opens, highs, lows, closes, volumes, amounts, turnovers, pcts):
+        fo, fh, fl, fc = _f(o), _f(h), _f(l), _f(cl)
+        if fo is None or fh is None or fl is None or fc is None:
+            dropped += 1
+            continue
+        kept.append(Bar(dt=d, open=fo, high=fh, low=fl, close=fc,
+                        volume=_num(v), amount=_num(a),
+                        turnover=_turn_opt(t), pct_chg=_num(p)))
+    if dropped:
+        logger.warning(f"[{symbol} {freq}] 丢弃 OHLC 缺失 K 线 {dropped} 根")
+    return BarSeries(symbol=symbol, freq=freq, adjust=adjust, bars=kept, source=source)
 
 
 def _turn_opt(v) -> Optional[float]:
