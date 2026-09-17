@@ -1151,6 +1151,12 @@ def _clear_subview():
 
 
 def main():
+    # W42 v0.10.15: 访问鉴权门（~/.config/czsc_mi/web_auth.json 存在即启用；
+    # 未配置 = 关闭，CI/integration 冒烟零影响）。失败即停，不渲染业务内容。
+    from mystery.apps.web.auth import require_login
+    if not require_login():
+        st.stop()
+
     page = st.sidebar.radio("导航", ["个股分析", "自选股", "全市场扫描", "板块钻取",
                                     "真三振池", "系统状态", "板块强度表"],
                             key="nav_page",
