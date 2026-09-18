@@ -64,6 +64,10 @@ pytest -m integration                   # 原机集成（需 MYSTERY_DB_PATH + T
 
 ## 阶段
 
+> **从零部署/配置/使用/验收完整指导见 [`docs/014.md`](docs/014.md)**；
+> 当前实现状态权威 = `DESIGN_DOCUMENT.md` §9（W20–W48 全记录，v0.10.23）。
+> 以下仅保留 P0–W5 早期里程碑摘要。
+
 - P0 骨架（models / 包结构 / 空 Adapter 接口）✅
 - P1 规则迁入 + 金标（关闭缠论，score 与 stock_analyzer 差 ≤ 1）✅
   - core 规则全量迁入（mystery_rules/indicators/resonance/platform/patterns）
