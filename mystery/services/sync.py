@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from .analyze import AnalysisService
+from .task_lock import clear_progress, hold_task_lock, report_progress
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,33 @@ def sync_market(period: Optional[str] = None,
                 cfg: Optional[Dict] = None,
                 periods: Optional[List[str]] = None,
                 no_persist: bool = False) -> dict:
+    """同步行情到本地库（W49：全程持 sync 任务锁 + 进度心跳）。
+
+    同名任务并发直接拒绝（不排队）；--force 旧语义（强制全量重灌）保留，
+    但 W49 起 force 不再绕锁——绕锁重灌正是 09-18 WAL 换建僵死事故的形态。
+    """
+    db_path = AnalysisService(cfg).market.db.db_path
+    _label_periods = periods or [period or 'daily']
+    label = (f"days={days} periods={'/'.join(_label_periods)}"
+             + (f" limit={limit}" if limit else ""))
+    with hold_task_lock(db_path, 'sync', label=label):
+        try:
+            return _sync_market_impl(db_path, period=period, days=days, force=force,
+                                     symbols=symbols, limit=limit, cfg=cfg,
+                                     periods=periods, no_persist=no_persist)
+        finally:
+            clear_progress(db_path, 'sync')
+
+
+def _sync_market_impl(db_path: str,
+                period: Optional[str] = None,
+                days: int = 365,
+                force: bool = False,
+                symbols: Optional[List[str]] = None,
+                limit: Optional[int] = None,
+                cfg: Optional[Dict] = None,
+                periods: Optional[List[str]] = None,
+                no_persist: bool = False) -> dict:
     """同步行情到本地库。
 
     :param period: 单周期（兼容旧签名）；与 periods 同时给出时取 periods
@@ -202,7 +230,14 @@ def sync_market(period: Optional[str] = None,
     synced, failed, updated_rows = 0, 0, 0
     skipped = 0
     errors: List[str] = []
-    for code in codes:
+    # W49 进度心跳：total=票数×周期数；每票处理完上报一次（内部节流）
+    total_steps = len(codes) * len(periods)
+    done_steps = 0
+    report_progress(db_path, 'sync', 0, total_steps)
+    for ci, code in enumerate(codes):
+        # 循环顶部上报：continue/跳过分支不漏报（票内多周期一并计入）
+        done_steps = ci * len(periods) + len(periods)
+        report_progress(db_path, 'sync', done_steps, total_steps, label=code)
         # 跳过北交所(920xxx.BJ)
         from ..adapters.codes import is_bj_stock
         if is_bj_stock(code):
@@ -238,6 +273,7 @@ def sync_market(period: Optional[str] = None,
     if not no_persist:
         cp["done_symbols"] = done
         _save_checkpoint(cp)
+    clear_progress(db_path, 'sync')
     return {'periods': periods, 'days': days, 'synced': synced, 'failed': failed,
             'skipped': skipped, 'rows': updated_rows, 'errors': errors[:10]}
 
@@ -282,6 +318,8 @@ def sync_sector_kline(cfg: Optional[Dict] = None,
                       full_since: Optional[str] = None) -> dict:
     """增量同步板块指数日K → sector_kline（W39，三振行业腿数据源）。
 
+    W49：持 sector_kline 任务锁 + 进度心跳，同名任务并发拒绝。
+
     取数归一：只走 ThsClient.get_index_daily（fuyao index-historical），
     与 fetch_index 降级链同源，禁止旁路 HTTP。增量：每板块从库内最新日期
     前扩 days 天重拉（幂等 UPSERT 覆盖修订），无库底的板块全量拉 days 窗口。
@@ -294,6 +332,29 @@ def sync_sector_kline(cfg: Optional[Dict] = None,
     from ..store.db import MysteryDB
 
     cfg = cfg or {}
+    db = MysteryDB(cfg.get('db_path') if cfg else None)
+    label = ('全量重建 since=' + full_since) if full_since \
+        else f"增量 days={days}" + (f" limit={limit}" if limit else "")
+    with hold_task_lock(db.db_path, 'sector_kline', label=label):
+        try:
+            return _sync_sector_kline_impl(
+                cfg=cfg, days=days, sectors=sectors, limit=limit,
+                full_since=full_since, db_path=db.db_path)
+        finally:
+            clear_progress(db.db_path, 'sector_kline')
+
+
+def _sync_sector_kline_impl(cfg: Optional[Dict] = None,
+                            days: int = 15,
+                            sectors: Optional[List[str]] = None,
+                            limit: Optional[int] = None,
+                            full_since: Optional[str] = None,
+                            db_path: str = "") -> dict:
+    from datetime import datetime, timedelta
+
+    from ..adapters.ths import ThsClient
+    from ..store.db import MysteryDB
+
     ths = ThsClient(cfg)
     db = MysteryDB(cfg.get('db_path') if cfg else None)
 
@@ -316,7 +377,10 @@ def sync_sector_kline(cfg: Optional[Dict] = None,
     today = datetime.now()
     synced, failed, rows_total = 0, 0, 0
     errors: List[str] = []
-    for sc in codes:
+    total_steps = len(codes)
+    report_progress(db_path, 'sector_kline', 0, total_steps)
+    for i, sc in enumerate(codes):
+        report_progress(db_path, 'sector_kline', i, total_steps, label=sc)
         base = sc if sc.startswith('ths_') else f'ths_{sc.split(".")[0]}'
         fuyao_code = base[4:] + '.TI'
         # 增量起点：库内最新 - days（重拉一段以覆盖修订）；无库底则拉 days 窗口

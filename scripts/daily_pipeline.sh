@@ -27,7 +27,14 @@ export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-/home/ai/ai_runner/stock/Financial-
 export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-/home/ai/ai_runner/stock/Financial-API/data}"
 
 echo "[daily_pipeline] 1/5 同步行情（日线 365 天）..."
-czsc-mi sync --period daily --days 365
+# W49：sync 写库互斥——已有 sync 在跑（另一 cron/手动/Web 触发）时 CLI
+# 报「已有任务进行中」并以 exit 3 退出；此处给出管线级提示后同样退出，
+# 数据由在跑任务负责，不重复拉库。
+czsc-mi sync --period daily --days 365 || { rc=$?
+  if [ "$rc" -eq 3 ]; then
+    echo "[daily_pipeline] 已有 sync 任务进行中（W49 写库互斥），本管线让路退出"
+  fi
+  exit "$rc"; }
 
 # W39 板块指数日K增量（三振行业腿数据源）：fuyao index-historical 归一通道，
 # 每板块从库内断点前扩 15 天幂等 UPSERT；失败不阻塞主流程。

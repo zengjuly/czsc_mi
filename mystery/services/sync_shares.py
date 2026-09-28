@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 from ..adapters.ths import ThsClient
 from ..core.turnover import estimate_float_shares, shares_changed_enough
 from ..store.db import MysteryDB
+from .task_lock import clear_progress, hold_task_lock, report_progress
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ def sync_shares(codes: Optional[List[str]] = None,
                 db: Optional[MysteryDB] = None,
                 event_codes: Optional[set] = None,
                 fresh_skip_days: Optional[int] = None) -> Dict:
-    """刷新流通股本快照。
+    """刷新流通股本快照（W49：写库任务，先拿独占锁）。
 
     codes: 目标票（默认全市场证券列表）。force=True 全量重拉并写快照；
     否则只对有旧快照的票做跳变对账 + 无快照的票补齐。
@@ -71,6 +72,25 @@ def sync_shares(codes: Optional[List[str]] = None,
     N 天的票直接跳过 HTTP（周日全市场批量控量用；事件票不受影响）。
     返回 QA 摘要 {as_of, fetched, written, skipped_small_change, failed}。
     """
+    db = db or MysteryDB()
+    _label = ('全量 force' if force else '对账') \
+        + (f" fresh_skip={fresh_skip_days}d" if fresh_skip_days else "")
+    with hold_task_lock(db.db_path, 'shares', label=_label):
+        try:
+            return _sync_shares_impl(
+                codes=codes, force=force, as_of=as_of, db=db,
+                event_codes=event_codes, fresh_skip_days=fresh_skip_days)
+        finally:
+            clear_progress(db.db_path, 'shares')
+
+
+def _sync_shares_impl(codes: Optional[List[str]] = None,
+                      force: bool = False,
+                      as_of: Optional[str] = None,
+                      db: Optional[MysteryDB] = None,
+                      event_codes: Optional[set] = None,
+                      fresh_skip_days: Optional[int] = None) -> Dict:
+    """sync_shares 主体（锁由调用方持有；from_adjustments 复用避免死锁）。"""
     db = db or MysteryDB()
     ths = ThsClient()
     as_of = as_of or datetime.now().strftime('%Y-%m-%d')
@@ -112,7 +132,12 @@ def sync_shares(codes: Optional[List[str]] = None,
 
     snaps = ths.get_auction_snapshot(thscodes, stage='final')
     written = small = failed = unchanged = 0
-    for it in snaps:
+    total_steps = len(snaps) or 1
+    report_progress(db.db_path, 'shares', 0, total_steps,
+                    label=f"targets={len(codes)}")
+    for si, it in enumerate(snaps):
+        report_progress(db.db_path, 'shares', si, total_steps,
+                        label=it.get('thscode', ''))
         try:
             thscode = it.get('thscode', '')
             shares = estimate_float_shares(it.get('float_market_cap'),
@@ -236,7 +261,9 @@ def sync_shares_from_adjustments(since: Optional[str] = None,
     codes = [c for c, t in known.items() if t in ev_set]
     extra = sorted(ev_set - set(known.values()))   # 库里没有的证券：直接按 thscode 打
     targets = codes + [_thscode_to_prefixed(t) for t in extra]
-    out = sync_shares(codes=targets, db=db, as_of=as_of, event_codes=ev_set)
+    # W49：调 _impl（本函数无独占锁，sync_shares 的锁会自死锁——flock
+    # 对同进程二次 EX 请求阻塞）。
+    out = _sync_shares_impl(codes=targets, db=db, as_of=as_of, event_codes=ev_set)
     out.update({'since': since, 'events': len(ev_set),
                 'requested': len(targets)})
     logger.info(f"[from_adjustments] since={since} events={len(ev_set)} "

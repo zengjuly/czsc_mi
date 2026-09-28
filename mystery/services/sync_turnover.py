@@ -24,6 +24,7 @@ from typing import Dict, List, Optional
 from ..core.turnover import derived_turn, ffill_gaps
 from ..store.db import MysteryDB
 from .sync_shares import _to_thscode
+from .task_lock import hold_task_lock, report_progress
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,24 @@ def sync_turnover(trade_date: str,
 
     backfill_days=None → 策略 A（只填当日）。给了 N>0 → 策略 B：额外回填
     [trade_date - N 自然日, trade_date] 内快照 as_of 之后的空 turn（仅 CLI）。
+
+    W49：本函数逐行 UPDATE kline 表，属写库任务，先拿独占锁（与 scan/sync
+    互斥；同库并发写正是 WAL 重建风暴来源）。
     """
+    db = db or MysteryDB()
+    with hold_task_lock(
+            db.db_path, 'turnover',
+            label=f"date={trade_date}" + (f" backfill={backfill_days}d"
+                                          if backfill_days else "")):
+        return _sync_turnover_impl(trade_date, codes=codes, db=db,
+                                   backfill_days=backfill_days)
+
+
+def _sync_turnover_impl(trade_date: str,
+                        codes: Optional[List[str]] = None,
+                        db: Optional[MysteryDB] = None,
+                        backfill_days: Optional[int] = None) -> Dict:
+    """sync_turnover 主体（锁由调用方持有）。"""
     db = db or MysteryDB()
     qa = {'trade_date': trade_date, 'null_rows': 0, 'calc_float': 0,
           'dropped': 0, 'no_shares': 0, 'ffill_filled': 0,
@@ -57,7 +75,13 @@ def sync_turnover(trade_date: str,
     # ---- 1. 当日空 turn 行 → calc_float ----
     rows = db.null_turn_rows(trade_date, codes=codes)
     qa['null_rows'] = len(rows)
-    for r in rows:
+    total_steps = len(rows) + 2      # +2：回填阶段、ffill 阶段各算一步
+    report_progress(db.db_path, 'turnover', 0, total_steps,
+                    label=f"空turn行={len(rows)}")
+    for ri, r in enumerate(rows):
+        if ri % 50 == 0:
+            report_progress(db.db_path, 'turnover', ri, total_steps,
+                            label=r['code'])
         thscode = _to_thscode(r['code'])
         snap = _snap(thscode, trade_date)
         if not snap:
@@ -93,6 +117,8 @@ def sync_turnover(trade_date: str,
         # 回填后新边界仍查不到快照的，才计 skipped；已在窗口内逐行处理
 
     # ---- 3. 近端窗口 ≤5 日连续洞 → ffill（每票独立） ----
+    report_progress(db.db_path, 'turnover', len(rows) + 1, total_steps,
+                    label='近端洞ffill')
     ff = _ffill_recent_gaps(db, trade_date, codes)
     qa['ffill_filled'] = ff
 

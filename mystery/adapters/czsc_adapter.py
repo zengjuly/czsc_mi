@@ -379,7 +379,8 @@ class CzscAdapter:
         实测 czsc 1.0.1：`_native.call_signal(name, c, params=...)` 直调最新
         信号值（非滚动生成，成本低）。返回 (bs_flag, divergence, signals_ok)：
         - bs_flag: "一买"/"二买"/"三买"/"三卖" 等（value 首段含买卖），无则 ""
-        - divergence: "顶背驰"/"底背驰"（tas_macd_bc_V230803），无则 ""
+        - divergence: "顶背驰"/"底背驰"（tas_macd_bc_V240307，W50 起；
+          V230803 在本版 czsc 恒不触发，仅作兼容回退），无则 ""
         - signals_ok: 4 个信号函数全部正常返回（W30b，011.md：区分
           「无标签」与「czsc 版本漂移/异常导致静默空标签」）
         任何异常（版本漂移/数据不足）→ signals_ok=False，调用方当无标签但记日志。
@@ -421,10 +422,24 @@ class CzscAdapter:
             ok = False
             logger.debug(f"买卖点信号失败({series.symbol}): {str(e)[:80]}")
         try:
-            for s in n.call_signal("tas_macd_bc_V230803", c, params={}):
-                tok = str(s.value).split("_", 1)[0]
-                if "背驰" in tok:
-                    div = tok
+            # W50（2026-09-19 实测）：V230803 在 czsc 1.0.1 恒输出
+            # 其他/多头/空头、**从不输出 顶/底背驰**（120 票快照 + 40 票
+            # 滚动回放 12000 行均零命中）——W34 起背驰列全空即此因。
+            # 换用 tas_macd_bc_V240307（MACD 柱子背驰，实测同日 11/120
+            # 命中顶/底背驰），并保留 V230803 兼容回退（防 czsc 升版改名）。
+            div = ""
+            for bc_name in ("tas_macd_bc_V240307", "tas_macd_bc_V230803"):
+                try:
+                    for s in n.call_signal(bc_name, c, params={}):
+                        tok = str(s.value).split("_", 1)[0]
+                        if "背驰" in tok:
+                            div = tok
+                            break
+                except Exception as e:
+                    ok = False
+                    logger.debug(
+                        f"背驰信号失败({series.symbol}/{bc_name}): {str(e)[:80]}")
+                if div:
                     break
         except Exception as e:
             ok = False

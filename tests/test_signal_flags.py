@@ -64,12 +64,27 @@ def test_signal_flags_second_buy_bottom_bc(monkeypatch):
             return [_Sig("一买任意_1")]        # 「一买任意」须被排除
         if name == "cxt_second_bs_V240524":
             return [_Sig("二买_5_20")]
-        if name == "tas_macd_bc_V230803":
-            return [_Sig("底背驰_1")]
+        if name == "tas_macd_bc_V240307":
+            return [_Sig("底背驰_第2次_任意_0")]
         return [_Sig("其他_1")]
     _patch_native(monkeypatch, behavior)
     bs, div, ok = CzscAdapter().signal_flags(_series())
     assert bs == "二买" and div == "底背驰" and ok is True
+
+
+def test_signal_flags_bc_fallback_v230803(monkeypatch):
+    """W50：V240307 抛异常（旧版 czsc 无此信号）→ 回退 V230803 取标签。"""
+    def behavior(name):
+        if name == "tas_macd_bc_V240307":
+            raise RuntimeError("no such signal")
+        if name == "tas_macd_bc_V230803":
+            return [_Sig("顶背驰_1")]
+        return [_Sig("其他_1")]
+    _patch_native(monkeypatch, behavior)
+    bs, div, ok = CzscAdapter().signal_flags(_series())
+    assert div == "顶背驰"                      # 回退路径出标签
+    assert ok is False                          # 但异常仍如实上报
+
 
 
 def test_chan_score_matches_label_table():

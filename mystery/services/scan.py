@@ -16,8 +16,13 @@ from typing import Any, Dict, List, Optional
 from ..core.scan_signals import classify
 from ..store.db import MysteryDB
 from .analyze import AnalysisService
+from .task_lock import TaskBusyError, clear_progress, report_progress
 
 logger = logging.getLogger(__name__)
+
+# 扫描前自动同步：最新交易日的行情覆盖率下限（低于此值视为「数据不是最新」）。
+# 只看 MAX(date) 太宽松——库里少量票有当天数据就会误判已最新。
+_MIN_COVERAGE = float(os.environ.get('MYSTERY_AUTO_SYNC_MIN_COVERAGE', '0.8'))
 
 
 def _write_scan_batch(db, results: List[Dict[str, Any]], failed: int,
@@ -138,7 +143,9 @@ def _hold_scan_lock(db_path: str, enabled: bool = True):
             if e.errno in (errno.EACCES, errno.EAGAIN):
                 fh.seek(0)
                 who = (fh.read() or '').strip() or '其他进程'
-                raise RuntimeError(
+                # W49：换 TaskBusyError（RuntimeError 子类，既有
+                # except RuntimeError 调用点兼容），CLI 统一 exit 3
+                raise TaskBusyError(
                     f"已有扫描在运行（{who}）。W25 约定：每日 18:00 cron 为"
                     "自选扫描固定写手；并发扫描被拒绝，请等其结束后重试。"
                 ) from e
@@ -166,6 +173,97 @@ def _warn_fail_rate(results: List[dict], failed: int) -> None:
                        f"查当日管线日志与 ths/tdx 可用性")
 
 
+def _lag_reason(db_latest: str, latest: str, cov_n: int, cov_all: int,
+                coverage: float) -> str:
+    """落后原因的精确表述（日期落后 / 日期已到但覆盖不足，两种情形分开写）。"""
+    if not db_latest:
+        return f"库内无 daily 行情，最新交易日 {latest}"
+    if db_latest < latest:
+        return f"库最新 {db_latest} < 最新交易日 {latest}"
+    return (f"库最新 {db_latest} 覆盖不足（{cov_n}/{cov_all} = "
+            f"{coverage:.0%} < {_MIN_COVERAGE:.0%}）")
+
+
+def _ensure_scan_data(codes: List[str], svc: AnalysisService,
+                      cfg: Optional[Dict], auto_sync: bool) -> str:
+    """扫描前行情时效检查 + 自动同步（auto_sync 关时只报告不动作）。
+
+    规则（与 calendar.get_latest_trade_date 同口径）：
+    - 库内 daily 最新 >= 真实最新交易日 → 已最新，跳过；
+    - 落后且**已收盘**（≥15:30）→ 触发一次全量行情同步（全市场增量；
+      upsert 幂等按 date 覆盖，自然覆盖未收盘时写入的盘中行情）；
+    - 落后且**未收盘** → 只更新本次扫描需要分析的股票（symbols=codes），
+      不做全量同步（避免盘中全量拉取污染/超时）。
+    同步失败不阻断扫描（warning 后继续）。
+    """
+    if not auto_sync:
+        return "auto_sync 关闭，跳过行情检查"
+    from ..adapters.calendar import (_CLOSE_HOUR, _CLOSE_MINUTE,
+                                     get_latest_trade_date, is_trade_day)
+    try:
+        latest = get_latest_trade_date()
+    except Exception as e:
+        logger.warning(f"[scan] 获取最新交易日失败，跳过自动同步: {str(e)[:80]}")
+        return f"获取最新交易日失败（{str(e)[:40]}），未同步"
+    if not latest:
+        return "无法获取最新交易日，跳过自动同步"
+    try:
+        conn = svc.market.db._connect()
+        try:
+            row = conn.execute(
+                "SELECT MAX(date) FROM stock_kline_data WHERE period='daily'"
+            ).fetchone()
+            db_latest = str(row[0]) if row and row[0] else ""
+            # 覆盖率：最新日有数据的股票数 / 库内股票总数。只看 MAX(date)
+            # 太宽松——库里只有几只票有当天数据时会被误判「已最新」，
+            # 扫描仍拿旧行情（实测 09-28 仅 2 只有数据却判已最新）。
+            cov_n, cov_all = 0, 0
+            if db_latest:
+                cov_n = conn.execute(
+                    "SELECT COUNT(DISTINCT code) FROM stock_kline_data "
+                    "WHERE period='daily' AND date=?", (db_latest,)).fetchone()[0] or 0
+                cov_all = conn.execute(
+                    "SELECT COUNT(DISTINCT code) FROM stock_kline_data "
+                    "WHERE period='daily'").fetchone()[0] or 0
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"[scan] 库内行情最新日查询失败: {str(e)[:80]}")
+        db_latest, cov_n, cov_all = "", 0, 0
+    coverage = (cov_n / cov_all) if cov_all else 0.0
+    if db_latest and db_latest >= latest and coverage >= _MIN_COVERAGE:
+        return (f"行情已最新（库 {db_latest} ≥ 最新交易日 {latest}，"
+                f"覆盖 {cov_n}/{cov_all} = {coverage:.0%}），无需同步")
+
+    from .sync import sync_market
+    now = datetime.now()
+    # 已收盘 = 过 15:30 或今天非交易日（周末/节假日没有盘中行情，
+    # 落后时直接全量补齐，不走「仅更新待分析股票」）
+    closed = (now.hour > _CLOSE_HOUR or
+              (now.hour == _CLOSE_HOUR and now.minute >= _CLOSE_MINUTE))
+    if not closed:
+        try:
+            closed = not is_trade_day(now)
+        except Exception:
+            closed = False
+    try:
+        if closed:
+            # 已收盘/非交易日：全量同步一次（DuckDB 批量预同步 + 增量，
+            # upsert 幂等按 date 覆盖，自然覆盖盘中写入的未收盘行情）
+            out = sync_market(cfg=cfg)
+            return (f"行情落后（{_lag_reason(db_latest, latest, cov_n, cov_all, coverage)}），"
+                    f"已收盘 → 全量同步：synced={out.get('synced')} "
+                    f"failed={out.get('failed')}")
+        # 未收盘：只更新本次扫描需要分析的股票
+        out = sync_market(symbols=codes, cfg=cfg)
+        return (f"行情落后（{_lag_reason(db_latest, latest, cov_n, cov_all, coverage)}），"
+                f"未收盘 → 仅更新本次扫描 {len(codes)} 只："
+                f"synced={out.get('synced')} failed={out.get('failed')}")
+    except Exception as e:
+        logger.warning(f"[scan] 自动行情同步失败（继续扫描）: {str(e)[:100]}")
+        return f"自动行情同步失败（{str(e)[:60]}），继续扫描"
+
+
 def scan_market(limit: Optional[int] = None,
                 watchlist: Optional[List[str]] = None,
                 include_detail: bool = False,
@@ -176,18 +274,38 @@ def scan_market(limit: Optional[int] = None,
                 progress_cb=None,
                 job_holder: Optional[list] = None,
                 scan_type: Optional[str] = None,
-                force: bool = False) -> List[Dict[str, Any]]:
+                force: bool = False,
+                auto_sync: Optional[bool] = None) -> List[Dict[str, Any]]:
     """扫描入口（W25：持久化扫描全程持互斥锁；--force/no_persist 不加锁）。
 
     实现见 _scan_market_impl。db_path 解析口径与 MarketDataClient 一致。
+    :param auto_sync: 扫描前自动确保行情最新（None=默认开；no_persist/force
+          调试路径默认关）。已收盘且行情落后 → 全量同步；未收盘 → 仅更新
+          本次扫描股票；已最新 → 跳过。见 _ensure_scan_data。
     """
     db_path = MysteryDB(db_path=(cfg or {}).get('db_path')).db_path
     with _hold_scan_lock(db_path, enabled=(not force and not no_persist)):
-        return _scan_market_impl(
-            limit=limit, watchlist=watchlist, include_detail=include_detail,
-            cfg=cfg, universe=universe, min_score=min_score,
-            no_persist=no_persist, progress_cb=progress_cb,
-            job_holder=job_holder, scan_type=scan_type, force=force)
+        # W49：包一层心跳写 progress_scan.json——Web 状态区实时显示
+        # （手动后台扫描走 progress_cb，cron/CLI 直跑也留进度）。
+        inner_cb = progress_cb
+
+        def _cb(d: int, t: int, _code: str = '') -> None:
+            report_progress(db_path, 'scan', d, t, label=_code)
+            if inner_cb is not None:
+                try:
+                    inner_cb(d, t)
+                except Exception:
+                    pass
+
+        try:
+            return _scan_market_impl(
+                limit=limit, watchlist=watchlist, include_detail=include_detail,
+                cfg=cfg, universe=universe, min_score=min_score,
+                no_persist=no_persist, progress_cb=_cb,
+                job_holder=job_holder, scan_type=scan_type, force=force,
+                auto_sync=auto_sync)
+        finally:
+            clear_progress(db_path, 'scan')
 
 
 def _scan_market_impl(limit: Optional[int] = None,
@@ -200,7 +318,8 @@ def _scan_market_impl(limit: Optional[int] = None,
                 progress_cb=None,
                 job_holder: Optional[list] = None,
                 scan_type: Optional[str] = None,
-                force: bool = False) -> List[Dict[str, Any]]:
+                force: bool = False,
+                auto_sync: Optional[bool] = None) -> List[Dict[str, Any]]:
     """扫描市场，返回 AnalysisResult.to_dict() 列表（按分数降序）。
 
     :param watchlist: 指定代码列表（优先）
@@ -214,6 +333,8 @@ def _scan_market_impl(limit: Optional[int] = None,
     :param scan_type: 落库类型（W18 同类型只保留最新一份）；None 自动推断：
            watchlist→'watchlist'、universe→'sector'、否则 'market'
     :param force: 跳过 W25 扫描互斥锁（仅脚本调试用）
+    :param auto_sync: 扫描前自动确保行情最新（None=默认开；no_persist/force
+          调试路径默认关）
     """
     if scan_type is None:
         if watchlist:
@@ -232,6 +353,15 @@ def _scan_market_impl(limit: Optional[int] = None,
         codes = [s['code'] for s in svc.market.fetch_stock_list()]
     if limit:
         codes = codes[:limit]
+
+    # 扫描前确保行情最新：已收盘且落后 → 全量同步；未收盘 → 仅更新
+    # 本次扫描股票；已最新 → 跳过（no_persist/force 调试路径默认关）
+    if auto_sync is None:
+        auto_sync = not (no_persist or force)
+    if auto_sync:
+        note = _ensure_scan_data(codes, svc, cfg, auto_sync)
+        if note:
+            logger.info(f"[scan] {note}")
 
     # W15：全市场扫描并行（对齐 daily W11/W13）。实测单只 ~0.9s，5222 只
     # 串行 ~80min；ThreadPool 受 GIL 限制几乎无收益（32 只 29.7s vs 串行 29.3s），

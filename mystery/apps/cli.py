@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Optional
 
 from ..config import load_config, output_dir
+from ..services.task_lock import TaskBusyError
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +208,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
                           min_score=args.min_score, cfg=args.cfg,
                           no_persist=args.no_persist,
                           watchlist=watchlist,
-                          force=getattr(args, 'force', False))
+                          force=getattr(args, 'force', False),
+                          auto_sync=not getattr(args, 'no_auto_sync', False))
     if args.report and results:
         _write_scan_report(results, args)
     if args.signal:
@@ -512,6 +514,9 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--no-persist", action="store_true", help="只打印不写库")
     p.add_argument("--force", action="store_true",
                    help="跳过 W25 扫描互斥锁（并发危险，仅调试用）")
+    p.add_argument("--no-auto-sync", action="store_true",
+                   help="扫描前不自动同步行情（默认：已收盘落后→全量同步，"
+                        "未收盘→仅更新本次扫描股票）")
     p.set_defaults(func=_cmd_scan)
 
     p = sub.add_parser("sync", help="行情同步（断点续跑，支持多周期）")
@@ -582,6 +587,12 @@ def main(argv: Optional[list] = None) -> int:
     except NotImplementedError as e:
         print(f"[{args.cmd}] 尚未实现（P{e}）", file=sys.stderr)
         return 2
+    except TaskBusyError as e:
+        # W49：写库任务互斥——同类任务已在跑时给出明确提示（exit 3，
+        # 区别于普通失败 1；daily_pipeline.sh 据此识别不重复拉库）
+        print(f"[{args.cmd}] 已有任务进行中：{e}。本命令退出，未新开任务。",
+              file=sys.stderr)
+        return 3
     except Exception as e:  # noqa: BLE001
         print(f"[{args.cmd}] 失败: {e}", file=sys.stderr)
         return 1

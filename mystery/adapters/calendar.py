@@ -89,22 +89,13 @@ def _get_db_max_date() -> Optional[str]:
         return None
 
 
-def get_latest_trade_date(now: Optional[datetime] = None) -> Optional[str]:
-    """真实最新交易日：
-
-    1. 在线交易日历（TTL 缓存）≤ 今天的最大交易日；盘中(15:30 前)回退上一交易日。
-    2. 在线失败 → 本地库 MAX(date)。
-    """
+def _calendar_dates() -> List[str]:
+    """日历三层缓存取数：进程内存（TTL 600s）→ 磁盘（24h）→ akshare 在线。"""
     global _calendar_cache, _calendar_ts
-    now = now or datetime.now()
-    today = now.date()
-
     with _calendar_lock:
         if _calendar_cache is None or time.time() - _calendar_ts > _CALENDAR_TTL:
-            # 1) 磁盘缓存（24h）：进程冷启动不再打在线
             dates = _load_disk_calendar()
             if not dates:
-                # 2) akshare 在线；成功则落盘供下次冷启动使用
                 dates = _fetch_online_calendar()
                 if dates:
                     _save_disk_calendar(dates)
@@ -113,6 +104,31 @@ def get_latest_trade_date(now: Optional[datetime] = None) -> Optional[str]:
                 _calendar_ts = time.time()
         else:
             dates = _calendar_cache
+    return dates or []
+
+
+def is_trade_day(d: Optional[datetime] = None) -> bool:
+    """该日是否交易日（同一日历缓存；日历不可用 → 周一~周五兜底）。
+
+    扫描前自动同步用它把「周末/节假日」也视为已收盘：这些日子没有盘中
+    行情，落后时直接走全量同步，而不是「仅更新待分析股票」。
+    """
+    day = (d or datetime.now()).date().isoformat()
+    dates = _calendar_dates()
+    if dates:
+        return day in set(dates)
+    return (d or datetime.now()).weekday() < 5
+
+
+def get_latest_trade_date(now: Optional[datetime] = None) -> Optional[str]:
+    """真实最新交易日：
+
+    1. 在线交易日历（TTL 缓存）≤ 今天的最大交易日；盘中(15:30 前)回退上一交易日。
+    2. 在线失败 → 本地库 MAX(date)。
+    """
+    now = now or datetime.now()
+    today = now.date()
+    dates = _calendar_dates()
 
     if dates:
         if now.hour < _CLOSE_HOUR or \

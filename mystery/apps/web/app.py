@@ -161,6 +161,41 @@ def _recent_jobs(limit: int = 20) -> list:
         conn.close()
 
 
+def _render_running_tasks(db_path: str):
+    """W49：写库任务互斥锁 + 进度心跳——显示正在运行的任务及进度。
+
+    心跳文件由 mystery.services.task_lock 写 <db>.tasks.json；
+    running_tasks() 只列锁仍真实持有的条目（崩溃残留自动忽略）。
+    """
+    try:
+        from mystery.services.task_lock import running_tasks
+        tasks = running_tasks(db_path)
+    except Exception as e:
+        st.caption(f"任务心跳读取失败：{e}")
+        return
+    if not tasks:
+        st.caption("无正在运行的任务")
+        return
+    st.subheader("正在运行的任务")
+    for t in tasks:
+        label = (t.get('label') or t.get('name') or '任务')
+        line = label
+        if t.get('pid'):
+            line += f"（pid {t['pid']}"
+            line += "，存活" if t.get('pid_alive') else "，进程已退出"
+            line += "）"
+        holder = (t.get('holder') or '').strip()
+        if holder:
+            line += f" · 持有者 {holder}"
+        pct = t.get('pct')
+        if pct is None:
+            st.info(f"⏳ {line} · 进度未知")
+        else:
+            st.progress(min(max(float(pct), 0.0), 1.0),
+                        text=f"{line} · {int(float(pct) * 100)}%"
+                             f"（{t.get('done')}/{t.get('total')}）")
+
+
 def _render_bg_tasks():
     """后台任务列表：运行中自动刷新 + 完成/失败态 + 查看结果。"""
     with _bg_lock():
@@ -302,6 +337,10 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
                     f"/{row.get('data_source') or '-'}",
             # W34：日/周背驰共振（core 纯函数单一实现，只展示不进分）
             '背驰共振': _bc_resonance(row.get('chan') or {}) or '-',
+            # W50：日线背驰单列（用户点名要求扫描结果直接可见；只读 payload
+            # chan.1d.divergence，不重算。旧 job 无值显示 -，重扫后填充）
+            '日线背驰': ((row.get('chan') or {}).get('1d') or {}).get(
+                'divergence') or '-',
             '详情': f"?stock={row['symbol']}&nav_key={nav_key}&nav_idx={idx}{at_qs}",
         }
         # W16：年线系统 7 项具体条件 + 主升浪 8 项具体指标（只展示不改判）
@@ -666,6 +705,10 @@ def render_stock(d: dict):
                     f"{(' · ' + _pos) if _pos else ''}"
                     f"{(' · 离开中枢' + ('上' if cs.get('leave_zs') == 'up' else '下')) if cs.get('leave_zs') else ''}"
                     f"{(' · 末笔/中枢比 ' + str(cs.get('bi_stretch'))) if cs.get('bi_stretch') is not None else ''}"
+                    # W50：单级别背驰/买卖点显式化（此前只在共振行合并展示，
+                    # 且信号源恒空）；MACD 柱背驰口径 tas_macd_bc_V240307。
+                    f" · 背驰 {cs.get('divergence') or '无'}"
+                    f" · 买卖点 {cs.get('bs_flag') or '无'}"
                     f" · {cs.get('engine')} {cs.get('engine_ver')}")
                 if _pos:
                     st.caption("结构摘要加深仅供展示，未进综合分")
@@ -1079,6 +1122,10 @@ def view_system():
     cfg = load_config()
     svc = _service()
     db = svc.market.db
+    # W49：写库任务互斥锁 + 进度心跳（cron/CLI/手动同通道）。
+    # 心跳文件由 task_lock 写 <db>.tasks.json；running_tasks 只列
+    # 锁仍真实持有的条目（崩溃残留自动忽略）。
+    _render_running_tasks(db.db_path)
     try:
         import importlib.util
         czsc_ok = importlib.util.find_spec("czsc") is not None
