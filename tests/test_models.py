@@ -63,7 +63,7 @@ def test_analysis_result_to_dict_json_serializable():
     assert d["chan"]["1d"]["bis"][0]["direction"] == "up"
     # 关键字段
     assert d["score"] == 85.0
-    assert d["rule_ver"] == "mystery-1.22.30-compat"
+    assert d["rule_ver"] == "mystery-1.22.30-compat-patgate"
     # 整体 JSON 可序列化
     s = json.dumps(d, ensure_ascii=False)
     assert '"贵州茅台"' in s

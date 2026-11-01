@@ -117,6 +117,6 @@ def test_fill_financial_true_tries_online(_svc):
 
 def test_cache_key_differs_by_fill_flag():
     fp = bars_fingerprint(_bars())
-    k0 = make_cache_key("qfq", "mystery-1.22.30-compat", "D1|C0|S0|F0", "", fp)
-    k1 = make_cache_key("qfq", "mystery-1.22.30-compat", "D1|C0|S0|F1", "", fp)
+    k0 = make_cache_key("qfq", "mystery-1.22.30-compat-patgate", "D1|C0|S0|F0", "", fp)
+    k1 = make_cache_key("qfq", "mystery-1.22.30-compat-patgate", "D1|C0|S0|F1", "", fp)
     assert k0 != k1

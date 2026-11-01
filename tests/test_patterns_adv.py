@@ -102,6 +102,25 @@ def test_gap_none():
     assert P.detect_gap(bars)["gap_up"] is False
 
 
+def test_gap_min_pct_gate():
+    """W41 修复：最近一次跳空幅度 < GAP_MIN_PCT 视为噪声，不计为有效缺口（避免 100% 命中）。"""
+    gate = P.GAP_MIN_PCT
+    # 微小跳空（低于闸门约 0.6%）→ 视为噪声，不计入
+    bars = _flat_bars(30, base=10.0, step=0.0)
+    bars[-2] = _bar(10.0, 10.2, 9.8, 10.0)
+    bars[-1] = _bar(round(10.2 * (1 + (gate - 0.6) / 100.0), 4), 10.6, 10.2, 10.45)
+    r = P.detect_gap(bars)
+    assert r["hit"] is False
+    assert r["gap_up"] is False
+    # 达闸门以上的跳空（高于闸门约 1%）→ 计入
+    bars2 = _flat_bars(30, base=10.0, step=0.0)
+    bars2[-2] = _bar(10.0, 10.2, 9.8, 10.0)
+    bars2[-1] = _bar(round(10.2 * (1 + (gate + 1.0) / 100.0), 4), 10.9, 10.4, 10.8)
+    r2 = P.detect_gap(bars2)
+    assert r2["hit"] is True
+    assert r2["gap_up"] is True
+
+
 # ---------------- 低位地量 ----------------
 
 def test_low_ground_volume_hit():

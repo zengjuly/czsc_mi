@@ -41,7 +41,7 @@ def test_fingerprint_sensitivity():
 
 def test_cache_key_attribution():
     fp = bars_fingerprint(_bars())
-    k = lambda adj, flags, ver: make_cache_key(adj, 'mystery-1.22.30-compat',
+    k = lambda adj, flags, ver: make_cache_key(adj, 'mystery-1.22.30-compat-patgate',
                                                flags, ver, fp)
     assert k('qfq', 'D1|C0|S0|E0', '') == k('qfq', 'D1|C0|S0|E0', '')
     assert k('qfq', 'D1|C0|S0|E0', '') != k('qfq', 'D0|C0|S0|E0', '')  # detail
@@ -78,7 +78,7 @@ def test_result_payload_restore_equivalent():
         mystery=MysteryBreakdown(signal={'综合评分': 71.5},
                                  resonance={'x': 1}),
         sector={'行业名称': '白酒'}, financial={'PE': 25.0},
-        rule_ver='mystery-1.22.30-compat', czsc_ver='test')
+        rule_ver='mystery-1.22.30-compat-patgate', czsc_ver='test')
     d = r.to_dict()
     r2 = A._result_from_payload(d)
     assert r2.to_dict() == d

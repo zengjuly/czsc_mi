@@ -17,7 +17,7 @@ FREQ_1D = "1d"
 FREQ_1W = "1w"
 FREQ_1M = "1M"
 
-RULE_VER = "mystery-1.22.30-compat"
+RULE_VER = "mystery-1.22.30-compat-patgate"  # W41：缺口最小幅度闸门(patterns_adv.detect_gap)修复过灵敏，须失效旧缓存
 # 010.md 6C：混合分路径（结构开+分开关）的新 S_chan 规则口径
 RULE_VER_CHAN = "mystery-0.10.0-chan"
 

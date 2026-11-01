@@ -1181,7 +1181,7 @@ def view_system():
         "混合分开关": "开" if chan_score_enabled() else "关（默认）",
         "czsc 可导入": "✅" if czsc_ok else "❌（pip install -e '.[chan]'）",
         "czsc 版本": czsc_ver or "-",
-        "rule_ver": "mystery-1.22.30-compat",
+        "rule_ver": "mystery-1.22.30-compat-patgate",
         "库内 kline 最新日": kline_latest or "空",
         "data_source.primary": (cfg.get("data_source") or {}).get("primary", "-"),
         "data_source.fallback": (cfg.get("data_source") or {}).get("fallback", []),

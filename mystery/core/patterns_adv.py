@@ -35,6 +35,7 @@ LOW_RETRACE = 0.15             # 低位门闩：回撤 ≥15% 视为低位（同
 CONSOLIDATION_RANGE = 0.12     # 横盘判定：缺口前区间振幅(高-低)/低 < 12%
 RALLY_PCT = 0.35               # 连续大涨判定：缺口前20日涨幅 ≥35%
 EXHAUST_GAP_PCT = 3.0          # 衰竭缺口：跳空幅度 ≥3%
+GAP_MIN_PCT = 1.0              # 缺口最小幅度闸门：跳空幅度 <1% 视为噪声不计入（W41 修复过灵敏）
 FILL_CONFIRM_DAYS = 3          # 三日不补确认
 
 _GAP_EPS = 1e-6
@@ -126,10 +127,19 @@ def detect_gap(daily_bars) -> Dict[str, Any]:
         return {"hit": False, "gap_up": False, "gap_type": None,
                 "gap_magnitude_pct": 0.0, "unfilled_days": 0,
                 "detail": {"原因": "近段无向上跳空缺口"}}
+
     g = bs[gap_idx]
     prev = bs[gap_idx - 1]
     gap_level = prev.high                       # 缺口位（昨高）
     gap_mag = (g.open - prev.high) / prev.high * 100.0 if prev.high > 0 else 0.0
+    # W41 修复：最小幅度闸门——仅当「最近一次」跳空幅度达阈值才计入有效缺口，
+    # 不向前回溯历史大缺口（否则陈旧跳空仍会触发信号）。过滤 <1% 微小噪声跳空，
+    # 把 +4/±6 权重从「非选择型」(原 100% 命中) 收敛为「有区分度」(约 30%)。
+    if gap_mag < GAP_MIN_PCT:
+        return {"hit": False, "gap_up": False, "gap_type": None,
+                "gap_magnitude_pct": round(gap_mag, 2), "unfilled_days": 0,
+                "detail": {"原因": f"最近跳空幅度 {gap_mag:.2f}% < 闸门 {GAP_MIN_PCT}%（视为噪声）",
+                           "缺口位": round(gap_level, 2)}}
     closes = [b.close for b in bs]
 
     # —— 缺口前语境（取缺口前 40 根，最少 10 根）——
