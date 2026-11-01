@@ -11,8 +11,11 @@ import pandas as pd
 
 from .indicators import enrich_indicators
 from .models import BarSeries, MarketContext, MysteryBreakdown
+from .multi_period import compute_multi_period_factor
 from .mystery_rules import MysteryLogic
 from .patterns import PatternRecognition
+from .patterns_adv import (detect_bullish_engulfing, detect_gap,
+                           detect_low_ground_volume)
 from .platform import analyze_adaptive_platform
 
 
@@ -217,4 +220,27 @@ def run_mystery(daily: BarSeries,
     else:
         bd.platform = {'平台状态': '未知', '突破信号': False, '买横信号': False,
                        '平台范围': None, '详情': []}
+    # 多周期方向因子（G1）：月线基线权重 + 周/日同向共振加分 − 逆势降权；
+    # 挂入 bd.signal 供 scorer.combine(mpd_enabled) 接入最终综合分（展示亦可见）。
+    try:
+        bd.signal['多周期方向因子'] = compute_multi_period_factor(
+            daily_df, weekly_df, monthly_df)
+    except Exception as e:  # noqa: BLE001
+        bd.signal['多周期方向因子'] = {'error': f'多周期方向因子计算异常: {e}'}
+    # 高信噪比形态（G4 提升：展示 → 信号）：直接吃 daily.bars，零 IO。
+    # 挂入 bd.signal 供 scan_signals.classify（扫描维度）与 scorer.combine
+    # (pattern_weight) 读取；明细挂入 bd.patterns 供报表展示。
+    try:
+        eng = detect_bullish_engulfing(daily.bars)
+        gap = detect_gap(daily.bars)
+        low = detect_low_ground_volume(daily.bars)
+        bd.signal['强势反包阳'] = bool(eng['hit'])
+        bd.signal['向上跳空'] = bool(gap['gap_up'])
+        bd.signal['缺口类型'] = gap['gap_type']           # '突破'/'持续'/'衰竭'/None
+        bd.signal['低位地量'] = bool(low['hit'])
+        bd.patterns['强势反包阳'] = eng
+        bd.patterns['缺口'] = gap
+        bd.patterns['低位地量'] = low
+    except Exception as e:  # noqa: BLE001
+        bd.signal.setdefault('形态检测异常', f'{e}')
     return bd

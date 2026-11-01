@@ -20,6 +20,19 @@ chan:
   freqs: [1d, 1w]
   plot: zs_box            # 主图=中枢盒（plotly 自绘）；lightweight 仅作官方校验图
 
+# 多周期方向因子（G1）：月线基线权重 + 周/日同向共振加分 − 逆势降权，
+# 接入综合分。默认关——保持与 1.22.30 金标完全可比；env MYSTERY_MPD_SCORE=1
+# 或本项改 true 即开启（叠加因子，不改动 1.22.30 量纲本身）。权重常量在
+# mystery/core/multi_period.py（改权重须升 models.RULE_VER）。
+# 注：本 scoring 段是「活的特征开关」，由 multi_period_factor_enabled() 读取；
+# 与 W41 所述「死权重配置」不同，改这里确实会生效（仅开/关因子，不动权重数值）。
+scoring:
+  multi_period_factor: false
+  # 高信噪比形态轻加权（G4）：强势反包阳/突破缺口/低位地量 加分，衰竭缺口 降权。
+  # 默认关——保持 1.22.30 金标可比；env MYSTERY_PATTERN_WEIGHT=1 或本项改 true 开启。
+  # 权重常量在 mystery/core/scorer.py（PAT_W_*），改权重须升 models.RULE_VER。
+  pattern_weight: false
+
 # 注意（W41）：原 scoring 权重段是死配置（无任何代码读取；0.55/0.25/0.20
 # 硬编码于 mystery/core/scorer.py combine()，AGENTS §2.5 冻结）。已删除，
 # 防止运维改这里误以为调了混合分。要动权重必须改代码+升 rule_ver。

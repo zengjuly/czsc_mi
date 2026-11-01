@@ -754,6 +754,36 @@ def render_stock(d: dict):
                          expanded=False):
             _render_technical(tech)
 
+    # ---------- G4 高级形态（强势反包阳/缺口/低位地量），仅展示/轻加权 ----------
+    _pat = m.get('patterns', {}) or {}
+    _eng = _pat.get('强势反包阳') or {}
+    _gap = _pat.get('缺口') or {}
+    _low = _pat.get('低位地量') or {}
+    if _eng or _gap or _low:
+        with st.expander("高级形态（强势反包阳/缺口/低位地量）", expanded=False):
+            if _eng:
+                _ed = _eng.get('detail', {}) or {}
+                st.markdown(f"**强势反包阳**：{'✅ 命中' if _eng.get('hit') else '仅基础吞没'}"
+                            f"（{_ed.get('强度', '-')}）")
+                st.markdown(f"- 昨阴 {_ed.get('昨阴', '-')} → 今阳 {_ed.get('今阳', '-')}"
+                            f" · 放量确认 {_ed.get('放量确认')} · 回撤 {_ed.get('回撤%')}%"
+                            f" · 站上MA5 {_ed.get('站上MA5')}")
+            if _gap and _gap.get('gap_up'):
+                _gd = _gap.get('detail', {}) or {}
+                _gt = _gap.get('gap_type')
+                _warn = " ⚠️**卖/减仓信号**" if _gt == '衰竭' else ""
+                st.markdown(f"**向上跳空缺口[{_gt}]**：幅度 {_gap.get('gap_magnitude_pct')}%{_warn}")
+                st.markdown(f"- 缺口位 {_gd.get('缺口位')} · 前20日涨幅 {_gd.get('前20日涨幅%')}%"
+                            f" · 横盘前兆 {_gd.get('横盘前兆')} · 站上MA20 {_gd.get('站上MA20')}"
+                            f" · 三日不补 {'✅' if _gd.get('三日不补') else '❌'}")
+            if _low:
+                _ld = _low.get('detail', {}) or {}
+                st.markdown(f"**低位地量**：{'✅ 命中' if _low.get('hit') else '未命中'}"
+                            f"（低位 {_low.get('低位')} · 量能压缩 {_low.get('量能压缩')}）")
+                st.markdown(f"- 回撤 {_ld.get('回撤%')}% · 近20日地量 {_ld.get('近20日地量')}"
+                            f" · 量/60日均量 {_ld.get('量/60日均量')}"
+                            f" · 长期缩量(MA20<MA60) {_ld.get('MA20<MA60(长期缩量)')}")
+
     fin = d.get('financial', {}) or {}
     if fin:
         c1, c2, c3, c4 = st.columns(4)

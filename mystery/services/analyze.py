@@ -61,6 +61,24 @@ def chan_score_enabled() -> bool:
     return bool((load_config().get('chan') or {}).get('score', False))
 
 
+def multi_period_factor_enabled() -> bool:
+    """多周期方向因子（G1）接入综合分开关：env MYSTERY_MPD_SCORE →
+    config scoring.multi_period_factor（默认关，保持 1.22.30 金标可比）。"""
+    v = os.environ.get('MYSTERY_MPD_SCORE')
+    if v is not None:
+        return v.strip().lower() in ('1', 'true', 'on', 'yes')
+    return bool((load_config().get('scoring') or {}).get('multi_period_factor', False))
+
+
+def pattern_weight_enabled() -> bool:
+    """高信噪比形态轻加权（G4）开关：env MYSTERY_PATTERN_WEIGHT →
+    config scoring.pattern_weight（默认关，保持 1.22.30 金标可比）。"""
+    v = os.environ.get('MYSTERY_PATTERN_WEIGHT')
+    if v is not None:
+        return v.strip().lower() in ('1', 'true', 'on', 'yes')
+    return bool((load_config().get('scoring') or {}).get('pattern_weight', False))
+
+
 def market_env_summary(market) -> Dict[str, Any]:
     """大盘滤网快照（W37，单一实现，四方展示只读调用）。
 
@@ -401,7 +419,9 @@ class AnalysisService:
         bd = self.run_rules(daily, weekly, monthly, ctx, include_detail)
         # 混合分开关：chan_enabled AND chan_score_enabled（结构展示 ≠ 混合分）
         score, advice, true_res = _scorer.combine(bd, chan,
-                                                  mix_enabled=mix)
+                                                  mix_enabled=mix,
+                                                  mpd_enabled=multi_period_factor_enabled(),
+                                                  pattern_weight=pattern_weight_enabled())
         last = daily.bars[-1]
         name = self.market.db.get_stock_name(internal) or ''
         turnover_20 = _avg_turnover_20(daily)

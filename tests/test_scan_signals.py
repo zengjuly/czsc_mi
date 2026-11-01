@@ -169,6 +169,12 @@ def test_no_signals_default():
         "true_resonance": False,
         "turnover_20": None,
         "price_pos": None,
+        "bull_engulf": False,
+        "gap_up": False,
+        "gap_breakout": False,
+        "gap_continuation": False,
+        "gap_exhaustion": False,
+        "low_ground_volume": False,
         "labels": [],
     }
 

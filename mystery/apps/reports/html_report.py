@@ -50,6 +50,8 @@ th { background: #f0f2f9; }
 .detail summary { cursor: pointer; color: #667eea; font-weight: 600; }
 .signal-tag { display: inline-block; background: #e8f5e9; color: #2e7d32;
               border-radius: 12px; padding: 2px 10px; margin-right: 6px; font-size: .82em; }
+.signal-tag.pat { background: #e3f2fd; color: #1565c0; }
+.signal-tag.warn { background: #ffebee; color: #c62828; }
 footer { color: #aaa; font-size: .8em; text-align: center; margin-top: 20px; }
 .qa { color: #667; font-size: .85em; background: #f4f5fb; border-radius: 6px; padding: 6px 10px; }
 </style>
@@ -78,6 +80,40 @@ def _badge(score: Any) -> str:
     return f'<span class="badge {cls}">{_fmt(s)}</span>'
 
 
+def _pattern_blocks(pat: Dict[str, Any]):
+    """G4：从 mystery.patterns 生成 (tags, reasons)。
+
+    tags = HTML 标签串列表（signal-tag 样式）；reasons = 判定依据行列表。
+    """
+    tags: List[str] = []
+    reasons: List[str] = []
+    if not pat:
+        return tags, reasons
+    eng = pat.get("强势反包阳") or {}
+    gap = pat.get("缺口") or {}
+    low = pat.get("低位地量") or {}
+    if eng.get("hit"):
+        tags.append('<span class="signal-tag pat">强势反包阳</span>')
+        det = eng.get("detail", {}) or {}
+        reasons.append(f"强势反包阳：昨阴 {det.get('昨阴', '')} → 今阳 "
+                       f"{det.get('今阳', '')}（{det.get('强度', '')}）")
+    gt = gap.get("gap_type")
+    if gap.get("gap_up"):
+        if gt == "衰竭":
+            tags.append('<span class="signal-tag warn">缺口·衰竭(卖)</span>')
+        else:
+            tags.append(f'<span class="signal-tag pat">{_esc("缺口·" + str(gt or ""))}</span>')
+        det = gap.get("detail", {}) or {}
+        fill = "（三日不补✅）" if det.get("三日不补") else ""
+        reasons.append(f"向上跳空缺口[{gt}]：幅度 {gap.get('gap_magnitude_pct')}%{fill}")
+    if low.get("hit"):
+        tags.append('<span class="signal-tag pat">低位地量</span>')
+        det = low.get("detail", {}) or {}
+        reasons.append(f"低位地量：回撤 {det.get('回撤%')}% · "
+                       f"量/60日均量 {det.get('量/60日均量')}")
+    return tags, reasons
+
+
 def _stock_card(d: Dict[str, Any]) -> str:
     m = d.get("mystery", {}) or {}
     vap = m.get("vap_atr", {}) or {}
@@ -101,6 +137,10 @@ def _stock_card(d: Dict[str, Any]) -> str:
     # W32b：换手分档 + 风格标签（只读 core 纯函数，缺 turn → 未知）
     from ...core.turnover_tag import tags_from_result
     _tg = tags_from_result(d)
+    # G4：高级形态（强势反包阳/缺口/低位地量）标签 —— 来自 mystery.patterns
+    _pat = m.get("patterns", {}) or {}
+    _pat_tags, _pat_reasons = _pattern_blocks(_pat)
+    labels.extend(_pat_tags)
     tags = "".join(labels)
 
     metrics = [
@@ -131,6 +171,8 @@ def _stock_card(d: Dict[str, Any]) -> str:
         reasons.append(line)
     for line in (res.get("详情") or [])[:4]:
         reasons.append(line)
+    # G4：高级形态判定依据（展示，不进综合分；轻加权开关另计）
+    reasons.extend(_pat_reasons)
     reason_html = "".join(f"<li>{_esc(x)}</li>" for x in reasons)
 
     chan = d.get("chan", {}) or {}

@@ -201,6 +201,26 @@ def _detail_flat(d: Dict[str, Any]) -> Dict[str, Any]:
     for i, line in enumerate((vap.get("详情") or [])[:4], 1):
         rows.append((section, f"VAP详情{i}", line))
 
+    # G4：高级形态（强势反包阳/缺口/低位地量）—— 来自 mystery.patterns（仅展示/轻加权）
+    _pat = m.get("patterns", {}) or {}
+    _eng = _pat.get("强势反包阳") or {}
+    _gap = _pat.get("缺口") or {}
+    _low = _pat.get("低位地量") or {}
+    _eng_det = _eng.get("detail", {}) or {}
+    _gap_det = _gap.get("detail", {}) or {}
+    _low_det = _low.get("detail", {}) or {}
+    sec_rows("高级形态", [
+        ("强势反包阳(信号)", _flag(_eng.get("hit"))),
+        ("反包强度", _eng_det.get("强度", "-")),
+        ("缺口(向上跳空)", _flag(_gap.get("gap_up"))),
+        ("缺口类型", _gap.get("gap_type") or "-"),
+        ("跳空幅度%", _gap.get("gap_magnitude_pct")),
+        ("三日不补", _flag(_gap_det.get("三日不补"))),
+        ("低位地量(信号)", _flag(_low.get("hit"))),
+        ("回撤%", _low_det.get("回撤%")),
+        ("量/60日均量", _low_det.get("量/60日均量")),
+    ])
+
     sec_rows("财务", [
         ("PE", fin.get("PE")),
         ("PB", fin.get("PB")),

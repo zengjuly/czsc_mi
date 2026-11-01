@@ -7,6 +7,10 @@
   - 无 turnover_20 → chip_low=False + chip_low_unknown=True（禁止 unknown 当 True）。
   - 有换手但 <2% 且不满足低位 → chip_quiet=True（高位缩量，不进 chip_low 过滤）。
   - 换手 ≥2% → chip_low / chip_quiet 均 False。
+- 高信噪比形态（G4 提升：展示 → 信号，patterns_adv 在 run_mystery 算好）：
+  直接读 ``mystery.signal`` 的布尔/类型字段，不重算 K 线。
+  bull_engulf（强势反包阳）、gap_up / gap_breakout / gap_continuation / gap_exhaustion
+  （缺口三类）、low_ground_volume（低位地量，量能压缩 + 低位）。
   不 fetch_bars、不重算 VAP。
 """
 from __future__ import annotations
@@ -42,7 +46,9 @@ def _price_pos(d: Dict[str, Any]) -> Any:
 
 def classify(d: Dict[str, Any]) -> Dict[str, Any]:
     """返回稳定键：vap_atr_break / chip_low / chip_low_unknown / chip_quiet /
-    true_resonance / turnover_20 / price_pos / labels。
+    true_resonance / turnover_20 / price_pos / labels /
+    bull_engulf / gap_up / gap_breakout / gap_continuation / gap_exhaustion /
+    low_ground_volume。
     """
     out: Dict[str, Any] = {
         "vap_atr_break": False,
@@ -52,6 +58,12 @@ def classify(d: Dict[str, Any]) -> Dict[str, Any]:
         "true_resonance": bool(d.get("true_resonance")),
         "turnover_20": None,
         "price_pos": None,
+        "bull_engulf": False,
+        "gap_up": False,
+        "gap_breakout": False,
+        "gap_continuation": False,
+        "gap_exhaustion": False,
+        "low_ground_volume": False,
         "labels": [],
     }
     m = d.get("mystery", {}) or {}
@@ -102,13 +114,41 @@ def classify(d: Dict[str, Any]) -> Dict[str, Any]:
 
     if out["true_resonance"]:
         out["labels"].append("真三振")
+
+    # 高信噪比形态（G4 提升：展示 → 信号）：直接读 mystery.signal 已算好的布尔/类型。
+    sig = m.get("signal", {}) or {}
+    out["bull_engulf"] = bool(sig.get("强势反包阳"))
+    out["gap_up"] = bool(sig.get("向上跳空"))
+    gtype = sig.get("缺口类型")
+    out["gap_breakout"] = bool(gtype == "突破")
+    out["gap_continuation"] = bool(gtype == "持续")
+    out["gap_exhaustion"] = bool(gtype == "衰竭")
+    out["low_ground_volume"] = bool(sig.get("低位地量"))
+    if out["bull_engulf"]:
+        out["labels"].append("强势反包阳")
+    if out["gap_breakout"]:
+        out["labels"].append("突破缺口")
+    elif out["gap_continuation"]:
+        out["labels"].append("持续缺口")
+    elif out["gap_exhaustion"]:
+        out["labels"].append("衰竭缺口")
+    if out["low_ground_volume"]:
+        out["labels"].append("低位地量")
     return out
 
 
 def filter_by_signal(results: list, signal: str) -> list:
-    """按信号名过滤扫描结果（signal ∈ vap_atr / chip_low / true_resonance）。"""
+    """按信号名过滤扫描结果（signal ∈ vap_atr / chip_low / true_resonance /
+    bull_engulf / gap / gap_breakout / gap_continuation / gap_exhaustion /
+    low_ground_volume）。
+    """
     key = {"vap_atr": "vap_atr_break", "chip_low": "chip_low",
-           "true_resonance": "true_resonance"}.get(signal)
+           "true_resonance": "true_resonance",
+           "bull_engulf": "bull_engulf", "gap": "gap_up",
+           "gap_breakout": "gap_breakout",
+           "gap_continuation": "gap_continuation",
+           "gap_exhaustion": "gap_exhaustion",
+           "low_ground_volume": "low_ground_volume"}.get(signal)
     if key is None:
         return results
     return [r for r in results if r.get(key)]
