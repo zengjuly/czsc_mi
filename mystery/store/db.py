@@ -705,6 +705,31 @@ class MysteryDB:
             finally:
                 conn.close()
 
+    def upsert_float_share_many(self, rows) -> int:
+        """批量 upsert 股本快照（单事务 executemany，消除逐行 commit 往返开销）。
+
+        rows: 可迭代对象，每元素为元组
+            (thscode, as_of, float_market_cap, last_price, float_shares[, source])；
+        source 缺省 'auction_final'。返回写入行数。
+        """
+        rows = list(rows)
+        if not rows:
+            return 0
+        norm = [(r[0], r[1], _f(r[2]), _f(r[3]), _f(r[4]),
+                 (r[5] if len(r) > 5 else 'auction_final')) for r in rows]
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO float_share_snapshot "
+                    "(thscode, as_of, float_market_cap, last_price, "
+                    " float_shares, source) VALUES (?,?,?,?,?,?)",
+                    norm)
+                conn.commit()
+            finally:
+                conn.close()
+        return len(norm)
+
     def get_float_share(self, thscode: str,
                         as_of_max: Optional[str] = None) -> Optional[Dict]:
         """取 as_of <= as_of_max 的最新股本快照（低频快照，事件才更新）。"""

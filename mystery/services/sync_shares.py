@@ -132,6 +132,7 @@ def _sync_shares_impl(codes: Optional[List[str]] = None,
 
     snaps = ths.get_auction_snapshot(thscodes, stage='final')
     written = small = failed = unchanged = 0
+    to_write = []  # 累积待写，循环后单事务批量提交
     total_steps = len(snaps) or 1
     report_progress(db.db_path, 'shares', 0, total_steps,
                     label=f"targets={len(codes)}")
@@ -156,13 +157,19 @@ def _sync_shares_impl(codes: Optional[List[str]] = None,
             if is_event and old and old.get('float_shares') \
                     and not shares_changed_enough(old['float_shares'], shares):
                 unchanged += 1      # 事件日股本未变：仍写新锚点 as_of
-            db.upsert_float_share(thscode, as_of,
-                                  it.get('float_market_cap'),
-                                  it.get('last_price'), shares)
-            written += 1
+            to_write.append((thscode, as_of,
+                             it.get('float_market_cap'),
+                             it.get('last_price'), shares))
         except Exception as e:  # noqa: BLE001 单票失败不阻断整批
             logger.debug(f"股本快照写入失败 {it.get('thscode')}: {str(e)[:60]}")
             failed += 1
+    if to_write:
+        try:
+            written = db.upsert_float_share_many(to_write)
+        except Exception as e:  # noqa: BLE001 批量写失败不阻断流程
+            logger.warning(f"[sync_shares] 批量写库失败: {str(e)[:80]}")
+            failed += len(to_write)
+            written = 0
     out = {'as_of': as_of, 'fetched': len(snaps), 'written': written,
            'skipped_small_change': small, 'unchanged_event': unchanged,
            'skipped_recent': skipped_recent,

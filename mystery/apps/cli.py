@@ -486,13 +486,22 @@ def _cmd_watchlist_import_tdx(args: argparse.Namespace) -> int:
 def _cmd_sync_tdx_boards(args: argparse.Namespace) -> int:
     from ..services import watchlist as _wl
 
-    r = _wl.sync_tdx_boards(args.cfg, boards=args.boards)
-    if not r.get("boards"):
+    r = _wl.sync_tdx_boards(args.cfg, boards=args.boards,
+                            force_full=args.force_full, dry_run=args.dry_run)
+    if not r.get("boards") and not r.get("dry_run"):
         print("未找到通达信自选板块（T0002/blocknew/*.blk；设 TDX_VIPDOC_DIR / "
               "TDX_BLOCKNEW_DIR）", file=sys.stderr)
         return 1
     print(json.dumps(r, ensure_ascii=False, indent=1))
     return 0
+
+
+def _cmd_refresh_board_names(args: argparse.Namespace) -> int:
+    from ..services import watchlist as _wl
+
+    r = _wl.refresh_board_names(args.cfg)
+    print(json.dumps(r, ensure_ascii=False, indent=1))
+    return 0 if r.get("ok") else 1
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -599,10 +608,17 @@ def main(argv: Optional[list] = None) -> int:
     wp = wsub.add_parser("import-tdx", help="从通达信本地自选 zxg.blk 导入（合并不覆盖）")
     wp.set_defaults(func=_cmd_watchlist_import_tdx)
     wp = wsub.add_parser("sync-boards",
-                         help="同步 tdx_local 自选板块（--boards 指定部分，省略则全部）")
+                         help="同步 tdx_local 自选板块（默认增量合并；--boards 指定部分，省略则全部）")
     wp.add_argument("--boards", nargs="+", metavar="板块名", default=None,
                     help="仅同步指定板块（可重复）。省略则同步全部板块。")
+    wp.add_argument("--force-full", action="store_true",
+                    help="整体覆盖而非增量合并（默认增量：保留已有 tdx 条目）")
+    wp.add_argument("--dry-run", action="store_true",
+                    help="仅预览增删差集，不写任何文件")
     wp.set_defaults(func=_cmd_sync_tdx_boards)
+    wp = wsub.add_parser("refresh-board-names",
+                         help="仅刷新板块展示名（重读 blocknew.cfg），不动自选股成员")
+    wp.set_defaults(func=_cmd_refresh_board_names)
 
     args = parser.parse_args(argv)
     args.cfg = load_config()

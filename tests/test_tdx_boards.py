@@ -185,3 +185,90 @@ def test_sync_tdx_boards_partial_ignores_unknown(patch_tdx):
     items = wl.load_watchlist_items()
     assert all(it["source"] != "tdx_local" for it in items)  # 未引入任何 tdx 股
 
+
+# ---------------- ② 刷新板块名称（不动 watchlist 成员） ----------------
+
+def test_refresh_board_names_restores_names_and_renames(patch_tdx, tmp_path):
+    """refresh_board_names 重读 blocknew.cfg 还原板块名，并重命名 watchlist
+    board 字段，但成员（股票集合）保持不变。"""
+    wl.sync_tdx_boards({})  # 建立正确快照 + watchlist
+    sym_before = set(wl.load_watchlist())
+
+    # 篡改：把快照名改成错名，并同步改 watchlist 的 board 字段
+    snap = wl.load_tdx_boards()
+    bad = {"BAD_自选": snap["boards"]["自选股"],
+           "BAD_龙头": snap["boards"]["龙头股"]}
+    with open(wl._DEFAULT_BOARDS_PATH, "w", encoding="utf-8") as f:
+        json.dump({**snap, "boards": bad}, f, ensure_ascii=False, indent=1)
+    items = wl.load_watchlist_items()
+    for it in items:
+        if it["source"] == "tdx_local":
+            it["board"] = ["BAD_自选" if b == "自选股" else
+                           ("BAD_龙头" if b == "龙头股" else b) for b in it["board"]]
+    wl._write_items(items)
+
+    r = wl.refresh_board_names({})
+    assert r["ok"] is True
+    assert set(wl.load_tdx_boards()["boards"].keys()) == {"自选股", "龙头股"}
+    # watchlist 成员不变，board 字段被重命名回正确名
+    assert set(wl.load_watchlist()) == sym_before
+    boards = {it["symbol"]: it["board"] for it in wl.load_watchlist_items()}
+    assert boards["600519.SH"] == ["自选股", "龙头股"]
+    assert boards["600036.SH"] == ["龙头股"]
+
+
+def test_refresh_board_names_without_sync_returns_false(patch_tdx, tmp_path):
+    """未同步过时 refresh 应返回 ok=False（先 sync-boards）。"""
+    # patch_tdx 仅 save_watchlist，未建 tdx_boards.json 快照
+    r = wl.refresh_board_names({})
+    assert r["ok"] is False
+
+
+# ---------------- ③ 增量合并（默认）vs 整体覆盖 --force-full / --dry-run ----------------
+
+def test_sync_incremental_preserves_added_at(patch_tdx, tmp_path):
+    """默认增量：保留仍属 union 的 tdx 条目元信息（added_at 不被重置）。"""
+    wl.sync_tdx_boards({})
+    items = wl.load_watchlist_items()
+    for it in items:
+        if it["symbol"] == "600519.SH":
+            it["added_at"] = "2000-01-01"
+    wl._write_items(items)
+    r = wl.sync_tdx_boards({})  # 增量
+    items2 = wl.load_watchlist_items()
+    six = [it for it in items2 if it["symbol"] == "600519.SH"][0]
+    assert six["added_at"] == "2000-01-01"   # 元信息保留
+    assert r["watchlist_added"] == 0
+    assert r["watchlist_removed"] == 0
+
+
+def test_sync_force_full_resets_added_at(patch_tdx, tmp_path):
+    """--force-full 整体覆盖：保留的 tdx 条目 added_at 被重建为今日。"""
+    wl.sync_tdx_boards({})
+    items = wl.load_watchlist_items()
+    for it in items:
+        if it["symbol"] == "600519.SH":
+            it["added_at"] = "2000-01-01"
+    wl._write_items(items)
+    r = wl.sync_tdx_boards({}, force_full=True)
+    assert r["force_full"] is True
+    items2 = wl.load_watchlist_items()
+    six = [it for it in items2 if it["symbol"] == "600519.SH"][0]
+    assert six["added_at"] == wl._today()   # 重建为今日
+
+
+def test_sync_dry_run_preview_only(patch_tdx, tmp_path):
+    """--dry-run 只预览差集，不写任何文件。"""
+    wl.sync_tdx_boards({})
+    d = patch_tdx
+    # 600519 同时从自选股与龙头股移除 → 真正移出 union
+    with open(os.path.join(d, "zxg.blk"), "wb") as f:
+        f.write("0000001\n".encode("gbk"))
+    with open(os.path.join(d, "龙头股.blk"), "wb") as f:
+        f.write("600036\n".encode("gbk"))
+    r = wl.sync_tdx_boards({}, dry_run=True)
+    assert r["dry_run"] is True
+    assert r["watchlist_removed"] == 1   # 预览应报告移除 600519
+    # 实际上未写：watchlist 仍含 600519
+    assert "600519.SH" in {it["symbol"] for it in wl.load_watchlist_items()}
+

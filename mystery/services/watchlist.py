@@ -260,14 +260,21 @@ def list_tdx_board_names(cfg: Optional[Dict] = None) -> List[str]:
 
 
 def sync_tdx_boards(cfg: Optional[Dict] = None,
-                    boards: Optional[List[str]] = None) -> Dict:
-    """从 tdx_local 同步自选板块（覆盖式，保证与通达信一致）。
+                    boards: Optional[List[str]] = None,
+                    force_full: bool = False,
+                    dry_run: bool = False) -> Dict:
+    """从 tdx_local 同步自选板块（默认增量合并，--force-full 才整体覆盖）。
 
     :param boards: 要同步的板块名列表；None / 空 → 同步全部板块。
-        同步后 data/tdx_boards.json 仅含所选板块（与通达信对应板块一致），
-        watchlist 中 source=tdx_local 的条目整体替换为所选板块并集。
+        同步后 data/tdx_boards.json 仅含所选板块（与通达信对应板块一致）。
+    :param force_full: True → 旧行为：watchlist 中 source=tdx_local 的条目
+        整体替换为所选板块并集（丢弃已有 tdx 条目的 added_at 等元信息）。
+        False（默认）→ 增量合并：保留仍属所选板块并集的 tdx 条目（仅刷新其
+        板块归属），仅按差集增删；绝不整体重写，避免误覆盖手工维护的自选股。
+    :param dry_run: True → 仅预览增删差集（watchlist_added/removed），
+        不写任何文件，便于确认后再真正执行。
     :return: {synced_at, source_dir, boards:{name:{file,n}}, total,
-              selected, watchlist_added, watchlist_removed}
+              selected, force_full, watchlist_added, watchlist_removed}
     """
     from ..adapters.tdx_local import resolve_blocknew_dirs
 
@@ -293,26 +300,26 @@ def sync_tdx_boards(cfg: Optional[Dict] = None,
     synced_at = _today()
     source_dir = dirs[0] if dirs else ""
 
-    # 1) 板块快照整体覆盖（仅含所选板块）
-    os.makedirs(os.path.dirname(_DEFAULT_BOARDS_PATH), exist_ok=True)
-    with open(_DEFAULT_BOARDS_PATH, "w", encoding="utf-8") as f:
-        json.dump({
-            "synced_at": synced_at,
-            "source_dir": source_dir,
-            "selected": bool(boards),
-            "boards": {name: {"file": b["file"], "codes": b["codes"]}
-                       for name, b in chosen.items()},
-        }, f, ensure_ascii=False, indent=1)
-
-    # 2) 自选股与 tdx 对齐：tdx 来源条目整体替换为所选板块并集
-    items = _load_items()
-    non_tdx = [it for it in items if it.get("source") != "tdx_local"]
-    existing_non_tdx = {it["symbol"] for it in non_tdx}
-    # 代码 → 所属板块列表
+    # 代码 → 所属板块列表（两条路径共用）
     sym_boards: Dict[str, List[str]] = {}
     for name, b in chosen.items():
         for c in b["codes"]:
             sym_boards.setdefault(c, []).append(name)
+
+    # 1) 板块快照（仅含所选板块，与通达信对应板块一致）
+    snap = {
+        "synced_at": synced_at,
+        "source_dir": source_dir,
+        "selected": bool(boards),
+        "boards": {name: {"file": b["file"], "codes": b["codes"]}
+                   for name, b in chosen.items()},
+    }
+
+    # 2) 自选股与 tdx 对齐
+    items = _load_items()
+    non_tdx = [it for it in items if it.get("source") != "tdx_local"]
+    existing_tdx = [it for it in items if it.get("source") == "tdx_local"]
+    existing_non_tdx = {it["symbol"] for it in non_tdx}
 
     get_name = None
     try:
@@ -321,25 +328,62 @@ def sync_tdx_boards(cfg: Optional[Dict] = None,
     except Exception:
         get_name = None
 
-    new_tdx = []
-    for sym in union:
-        if sym in existing_non_tdx:
-            continue  # 已是 manual/scan，不重复叠加 tdx 来源
+    def _make_tdx_item(sym: str) -> Dict:
         nm = ""
         if get_name is not None:
             try:
                 nm = get_name(sym) or ""
             except Exception:
                 nm = ""
-        new_tdx.append({"symbol": sym, "name": nm or "未知",
-                        "source": "tdx_local", "source_file": "",
-                        "board": sym_boards.get(sym, []),
-                        "added_at": synced_at})
+        return {"symbol": sym, "name": nm or "未知",
+                "source": "tdx_local", "source_file": "",
+                "board": sym_boards.get(sym, []),
+                "added_at": synced_at}
 
-    before = {it["symbol"] for it in items if it.get("source") == "tdx_local"}
-    added = len(new_tdx)
-    removed = len([s for s in before if s not in union])
-    _write_items(non_tdx + new_tdx)
+    if force_full:
+        # 整体覆盖（旧行为）：tdx 来源条目重建为所选板块并集
+        new_tdx = [_make_tdx_item(sym) for sym in union
+                   if sym not in existing_non_tdx]
+        merged = non_tdx + new_tdx
+        added = len(new_tdx)
+        removed = len([s for s in {it["symbol"] for it in existing_tdx}
+                       if s not in union])
+    else:
+        # 增量合并（默认）：保留仍属 union 的 tdx 条目（刷新其板块归属），
+        # 仅增删差集，不整体重写 → 不丢失手工维护以外的 tdx 元信息
+        kept = []
+        for it in existing_tdx:
+            if it["symbol"] in union:
+                it["board"] = sym_boards.get(it["symbol"], [])  # 刷新板块归属
+                kept.append(it)
+        kept_syms = {it["symbol"] for it in kept}
+        dropped = [it for it in existing_tdx if it["symbol"] not in union]
+        new_syms = [s for s in union if s not in kept_syms
+                    and s not in existing_non_tdx]
+        new_tdx = [_make_tdx_item(sym) for sym in new_syms]
+        merged = non_tdx + kept + new_tdx
+        added = len(new_tdx)
+        removed = len(dropped)
+
+    if dry_run:
+        # 仅预览差集，不写任何文件
+        return {
+            "dry_run": True,
+            "source_dir": source_dir,
+            "boards": {name: {"file": b["file"], "n": len(b["codes"])}
+                       for name, b in chosen.items()},
+            "total": len(union),
+            "selected": bool(boards),
+            "force_full": force_full,
+            "watchlist_added": added,
+            "watchlist_removed": removed,
+            "snapshot_boards": len(chosen),
+        }
+
+    os.makedirs(os.path.dirname(_DEFAULT_BOARDS_PATH), exist_ok=True)
+    with open(_DEFAULT_BOARDS_PATH, "w", encoding="utf-8") as f:
+        json.dump(snap, f, ensure_ascii=False, indent=1)
+    _write_items(merged)
 
     return {
         "synced_at": synced_at,
@@ -348,6 +392,7 @@ def sync_tdx_boards(cfg: Optional[Dict] = None,
                    for name, b in chosen.items()},
         "total": len(union),
         "selected": bool(boards),
+        "force_full": force_full,
         "watchlist_added": added,
         "watchlist_removed": removed,
     }
@@ -363,6 +408,64 @@ def load_tdx_boards() -> Optional[Dict]:
     except Exception as e:
         logger.warning(f"自选板块读取失败: {e}")
         return None
+
+
+def refresh_board_names(cfg: Optional[Dict] = None) -> Dict:
+    """仅刷新板块展示名（重读 blocknew.cfg/blockname.txt），不动 watchlist 成员。
+
+    用于两类场景，且都无需整体重同步（整体重同步会改写 watchlist）：
+    1. 通达信改了板块中文名；
+    2. W42.3 名称解析升级（改读 blocknew.cfg）后，让已同步的 tdx_boards.json
+       立即生效。
+
+    行为：
+    - 按各 .blk 文件重推导展示名，重建 tdx_boards.json 的板块名→成分股
+      （同名板块合并 codes）；保留 codes/file/selected/synced_at 等元信息；
+    - 同步把 watchlist 中 source=tdx_local 条目的 board 字符串重命名
+      （仅改名，不增删任何股票）。
+    未同步过时返回 {ok:False}（先 sync-boards）。
+    """
+    snap = load_tdx_boards()
+    if not snap or not snap.get("boards"):
+        return {"ok": False, "reason": "尚未同步过板块（先 sync-boards）",
+                "refreshed": 0}
+    from ..adapters.tdx_local import _board_name_of
+
+    # 1) 按文件重推导展示名，重建 boards（同名合并 codes）
+    new_boards: Dict[str, Dict] = {}
+    rename: Dict[str, str] = {}  # 旧名 → 新名
+    for old_name, b in snap["boards"].items():
+        fp = b.get("file", "")
+        new_name = _board_name_of(fp) if fp else old_name
+        rename[old_name] = new_name
+        if new_name in new_boards:
+            new_boards[new_name]["codes"] = sorted(
+                set(new_boards[new_name]["codes"]) | set(b.get("codes", [])))
+        else:
+            new_boards[new_name] = {"file": fp,
+                                    "codes": list(b.get("codes", []))}
+    snap["boards"] = new_boards
+    snap["refreshed_at"] = _today()
+    os.makedirs(os.path.dirname(_DEFAULT_BOARDS_PATH), exist_ok=True)
+    with open(_DEFAULT_BOARDS_PATH, "w", encoding="utf-8") as f:
+        json.dump(snap, f, ensure_ascii=False, indent=1)
+
+    # 2) 同步重命名 watchlist 中 tdx_local 条目的 board 字符串（纯改名）
+    items = _load_items()
+    renamed = 0
+    for it in items:
+        if it.get("source") != "tdx_local":
+            continue
+        boards = it.get("board") or []
+        new_list = [rename.get(x, x) for x in boards]
+        if new_list != boards:
+            it["board"] = new_list
+            renamed += 1
+    if renamed:
+        _write_items(items)
+
+    return {"ok": True, "refreshed": len(new_boards),
+            "renamed_watchlist": renamed, "refreshed_at": snap["refreshed_at"]}
 
 
 def list_tdx_boards() -> List[str]:
