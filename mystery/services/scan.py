@@ -65,6 +65,75 @@ def _write_scan_batch(db, results: List[Dict[str, Any]], failed: int,
         conn.close()
 
 
+def _open_resume_job(db, scan_type: str, trade_date: str):
+    """断点续跑：开/复用同 scan_type+交易日 的 working job。
+
+    返回 (job_id, done_symbols_set)。若已存在同类型同交易日 job 则复用
+    （取其已扫个股为 done），否则新建空 job。崩溃后二次 resume 仍可续。
+    """
+    conn = db._connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM scan_jobs WHERE scan_type=? AND trade_date=? "
+            "ORDER BY id DESC LIMIT 1", (scan_type, trade_date)).fetchone()
+        if row:
+            job_id = int(row[0])
+            done = {r[0] for r in conn.execute(
+                "SELECT DISTINCT symbol FROM scan_results WHERE job_id=?",
+                (job_id,)).fetchall()}
+            return job_id, done
+        cur = conn.execute(
+            "INSERT INTO scan_jobs (trade_date, started_at, finished_at, "
+            "n_ok, n_fail, scan_type) VALUES (?,?,?,?,?,?)",
+            (trade_date, datetime.now().isoformat(timespec="seconds"),
+             datetime.now().isoformat(timespec="seconds"), 0, 0, scan_type))
+        conn.commit()
+        return cur.lastrowid, set()
+    finally:
+        conn.close()
+
+
+def _append_scan_results(db, job_id: int, results: List[Dict[str, Any]],
+                         failed_inc: int) -> None:
+    """向 working job 增量追加结果（PRIMARY KEY(job_id,symbol) 幂等覆盖）。"""
+    import sqlite3
+    conn = db._connect()
+    try:
+        for r in results:
+            conn.execute(
+                "INSERT OR REPLACE INTO scan_results "
+                "(job_id, symbol, trade_date, score, true_resonance, "
+                "vap_atr_break, chip_low, payload_json) VALUES (?,?,?,?,?,?,?,?)",
+                (job_id, str(r.get("symbol", "")),
+                 str(r.get("trade_date", "")), r.get("score"),
+                 1 if r.get("true_resonance") else 0,
+                 1 if r.get("vap_atr_break") else 0,
+                 1 if r.get("chip_low") else 0,
+                 json.dumps(r, ensure_ascii=False)))
+        if failed_inc:
+            conn.execute(
+                "UPDATE scan_jobs SET n_fail = COALESCE(n_fail,0) + ? "
+                "WHERE id=?", (failed_inc, job_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _finalize_resume_job(db, job_id: int) -> None:
+    """收尾 working job：重算 n_ok、写 finished_at（n_fail 已在追加时累计）。"""
+    conn = db._connect()
+    try:
+        n_ok = conn.execute(
+            "SELECT COUNT(*) FROM scan_results WHERE job_id=?",
+            (job_id,)).fetchone()[0] or 0
+        conn.execute(
+            "UPDATE scan_jobs SET n_ok=?, finished_at=? WHERE id=?",
+            (n_ok, datetime.now().isoformat(timespec="seconds"), job_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _scan_worker(codes_batch: List[str], cfg: Optional[Dict],
                  include_detail: bool, min_score: Optional[float]):
     """进程池 worker：独立 AnalysisService 分析一批股票（W15 进程级并行）。
@@ -276,7 +345,8 @@ def scan_market(limit: Optional[int] = None,
                 scan_type: Optional[str] = None,
                 force: bool = False,
                 auto_sync: Optional[bool] = None,
-                board: Optional[str] = None) -> List[Dict[str, Any]]:
+                board: Optional[str] = None,
+                resume: bool = False) -> List[Dict[str, Any]]:
     """扫描入口（W25：持久化扫描全程持互斥锁；--force/no_persist 不加锁）。
 
     实现见 _scan_market_impl。db_path 解析口径与 MarketDataClient 一致。
@@ -319,7 +389,8 @@ def scan_market(limit: Optional[int] = None,
                 scan_type=(scan_type if scan_type is not None
                            else ('board' if board is not None else None)),
                 force=force,
-                auto_sync=auto_sync)
+                auto_sync=auto_sync,
+                resume=resume)
         finally:
             clear_progress(db_path, 'scan')
         # 标记板块归属（额外字段，不影响落库结构）
@@ -340,7 +411,8 @@ def _scan_market_impl(limit: Optional[int] = None,
                 job_holder: Optional[list] = None,
                 scan_type: Optional[str] = None,
                 force: bool = False,
-                auto_sync: Optional[bool] = None) -> List[Dict[str, Any]]:
+                auto_sync: Optional[bool] = None,
+                resume: bool = False) -> List[Dict[str, Any]]:
     """扫描市场，返回 AnalysisResult.to_dict() 列表（按分数降序）。
 
     :param watchlist: 指定代码列表（优先）
@@ -396,6 +468,28 @@ def _scan_market_impl(limit: Optional[int] = None,
     failed = 0
     done = 0
 
+    # ④ 断点续跑（--resume）：复用同 scan_type+交易日 的 working job，
+    # 跳过已完成个股；扫描过程按 chunk 增量落库，崩溃可二次续跑。
+    # 默认（resume=False）行为完全不变。
+    resume_job_id = None
+    if resume and not no_persist:
+        try:
+            from ..adapters.calendar import get_latest_trade_date
+            _td = get_latest_trade_date() or ""
+        except Exception:
+            _td = ""
+        resume_job_id, _done = _open_resume_job(
+            svc.market.db, scan_type, _td)
+        if _done:
+            codes = [c for c in codes if c not in _done]
+            total = len(codes)
+            if total == 0:
+                _finalize_resume_job(svc.market.db, resume_job_id)
+                logger.info(f"[scan] resume：无剩余个股，复用 job {resume_job_id}")
+                return scan_results_of(resume_job_id, cfg=cfg)
+        logger.info(f"[scan] resume：working job {resume_job_id}，"
+                    f"剩余 {total} 只（已完成 {len(_done)}）")
+
     if workers > 1 and total >= 16:
         import multiprocessing as mp
         from functools import partial
@@ -421,11 +515,17 @@ def _scan_market_impl(limit: Optional[int] = None,
                             progress_cb(done, total)
                         except Exception:
                             pass
+                    if resume_job_id is not None:
+                        _append_scan_results(svc.market.db, resume_job_id,
+                                             part, part_failed)
             logger.info(f"[scan] 完成 {len(results)} 只（失败 {failed} 只，"
                         f"processes={workers}）")
             _warn_fail_rate(results, failed)  # W41 #18：失败率>2% 上 warning
             results.sort(key=lambda x: (x.get('score') is not None,
                                         float(x.get('score') or -1)), reverse=True)
+            if resume_job_id is not None:
+                _finalize_resume_job(svc.market.db, resume_job_id)
+                return scan_results_of(resume_job_id, cfg=cfg)
             return _persist_or_return(results, failed, no_persist, svc,
                                       job_holder, scan_type)
         except Exception as e:
@@ -450,9 +550,14 @@ def _scan_market_impl(limit: Optional[int] = None,
                     pass
     logger.info(f"[scan] 完成 {len(results)} 只（失败 {failed} 只，"
                 f"threads={max(1, workers)}）")
+    if resume_job_id is not None and results:
+        _append_scan_results(svc.market.db, resume_job_id, results, failed)
     _warn_fail_rate(results, failed)  # W41 #18：失败率>2% 上 warning
     results.sort(key=lambda x: (x.get('score') is not None,
                                 float(x.get('score') or -1)), reverse=True)
+    if resume_job_id is not None:
+        _finalize_resume_job(svc.market.db, resume_job_id)
+        return scan_results_of(resume_job_id, cfg=cfg)
     return _persist_or_return(results, failed, no_persist, svc, job_holder,
                               scan_type)
 

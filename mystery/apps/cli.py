@@ -213,7 +213,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
                           no_persist=args.no_persist,
                           watchlist=watchlist, board=board,
                           force=getattr(args, 'force', False),
-                          auto_sync=not getattr(args, 'no_auto_sync', False))
+                          auto_sync=not getattr(args, 'no_auto_sync', False),
+                          resume=getattr(args, 'resume', False))
     if args.report and results:
         _write_scan_report(results, args)
     if args.signal:
@@ -545,6 +546,9 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--board", default=None,
                    help="仅扫某个 tdx_local 自选板块（需先 sync-tdx-boards 同步；"
                         "覆盖 --watchlist）")
+    p.add_argument("--resume", action="store_true",
+                   help="断点续跑：复用同 scan_type+交易日 的最近 job，"
+                        "跳过已完成个股，按 chunk 增量落库（崩溃可二次续跑）")
     p.set_defaults(func=_cmd_scan)
 
     p = sub.add_parser("sync", help="行情同步（断点续跑，支持多周期）")

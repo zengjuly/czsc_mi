@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import struct
+import json
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -128,8 +129,44 @@ def parse_blk_file(path: str) -> List[str]:
 # 板块名 → 展示名（通达信默认自选文件 zxg.blk 显示为「自选股」）。
 BOARD_NAME_MAP = {"zxg": "自选股"}
 
+# 外部代码→中文名映射（用户维护，覆盖 blocknew.cfg/文件名推导）。
+# 约 116 个通达信本就缩写的板块（如 AI/0131/MI）可在此补全行业名。
+# 文件不存在时自动创建空 {}，用户填入 {"代码(大写)": "中文名"} 即生效。
+BOARD_OVERRIDE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "data", "board_display_overrides.json")
+_BOARD_OVERRIDE_CACHE: Optional[Dict[str, str]] = None
+
 # 板块代码 → 展示名 的缓存（key = blocknew 目录元组，避免重复读盘）。
 _BLOCK_DISPLAY_CACHE = {}
+
+
+def _load_board_overrides() -> Dict[str, str]:
+    """读取外部板块名覆盖映射（带缓存；文件缺失则建空模板）。"""
+    global _BOARD_OVERRIDE_CACHE
+    if _BOARD_OVERRIDE_CACHE is not None:
+        return _BOARD_OVERRIDE_CACHE
+    try:
+        if not os.path.exists(BOARD_OVERRIDE_PATH):
+            try:
+                os.makedirs(os.path.dirname(BOARD_OVERRIDE_PATH), exist_ok=True)
+                with open(BOARD_OVERRIDE_PATH, "w", encoding="utf-8") as f:
+                    f.write("{}\n")
+            except OSError:
+                pass
+        with open(BOARD_OVERRIDE_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        _BOARD_OVERRIDE_CACHE = {str(k).upper(): str(v)
+                                 for k, v in (data or {}).items()}
+    except Exception:
+        _BOARD_OVERRIDE_CACHE = {}
+    return _BOARD_OVERRIDE_CACHE
+
+
+def reload_board_overrides() -> None:
+    """清空缓存，下次读取重新加载（CLI/web 改完映射后调用）。"""
+    global _BOARD_OVERRIDE_CACHE
+    _BOARD_OVERRIDE_CACHE = None
 
 
 def _decode_filename(name: str) -> str:
@@ -196,12 +233,16 @@ def _board_name_of(filename: str) -> str:
 
     优先级：
     1. BOARD_NAME_MAP 特例（如 zxg → 自选股）；
-    2. blocknew.cfg / blockname.txt 中的真实展示名（如 DL-S → 电力-算）；
-    3. 文件名 stem 的 GBK 还原（兜底，与通达信未命名板块一致）。
+    2. 外部覆盖映射（data/board_display_overrides.json，补全缩写板块）；
+    3. blocknew.cfg / blockname.txt 中的真实展示名（如 DL-S → 电力-算）；
+    4. 文件名 stem 的 GBK 还原（兜底，与通达信未命名板块一致）。
     '''
     stem = os.path.splitext(os.path.basename(filename))[0]
     if stem in BOARD_NAME_MAP:
         return BOARD_NAME_MAP[stem]
+    overrides = _load_board_overrides()
+    if stem.upper() in overrides:
+        return overrides[stem.upper()]
     dmap = _block_display_map()
     if stem.upper() in dmap:
         return dmap[stem.upper()]

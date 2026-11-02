@@ -429,7 +429,8 @@ def refresh_board_names(cfg: Optional[Dict] = None) -> Dict:
     if not snap or not snap.get("boards"):
         return {"ok": False, "reason": "尚未同步过板块（先 sync-boards）",
                 "refreshed": 0}
-    from ..adapters.tdx_local import _board_name_of
+    from ..adapters.tdx_local import _board_name_of, reload_board_overrides
+    reload_board_overrides()  # 外部覆盖映射可能已更新，先清缓存
 
     # 1) 按文件重推导展示名，重建 boards（同名合并 codes）
     new_boards: Dict[str, Dict] = {}
