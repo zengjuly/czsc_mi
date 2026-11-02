@@ -314,11 +314,15 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
     from mystery.apps.web.auth import make_auth_token
     at_tok = make_auth_token()
     at_qs = f"&at={at_tok}" if at_tok else ""
+    # 所属自选板块：一次加载 tdx 板块快照，逐行反查（与 Excel 报告一致）
+    _boards_snap = _wl.load_tdx_boards()
     for idx, row in enumerate(rows):
         item = {
             '序号': idx + 1,
             '代码': row['symbol'],
             '名称': row.get('name') or '未知',
+            '所属板块': ('·'.join(_wl.boards_of_symbol(row['symbol'], _boards_snap))
+                        if _boards_snap else ''),
             '评分': row.get('score'),
             '建议': row.get('advice', ''),
             '年线滤网': _sig_flag(row, '年线滤网'),
@@ -1028,6 +1032,9 @@ def view_stock():
         cur_item = next((it for it in items if it['symbol'] == cur), None)
         if cur_item:
             st.caption(f"自选来源：{_wl.source_label(cur_item['source'], cur_item.get('source_file') or '')}")
+            blist = _wl.boards_of_symbol(cur, _wl.load_tdx_boards())
+            if blist:
+                st.caption(f"所属自选板块：{'·'.join(blist)}")
             if st.button("从自选股移除", use_container_width=True):
                 _wl.remove_from_watchlist(cur)
                 st.rerun()

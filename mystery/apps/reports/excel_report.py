@@ -26,6 +26,7 @@ SUMMARY_COLS = [
     ("symbol", "代码"),
     ("name", "名称"),
     ("score", "综合评分"),
+    ("board", "所属自选板块"),
     ("advice", "操作建议"),
     ("true_resonance", "真三振"),
     ("sector_name", "行业"),
@@ -278,6 +279,13 @@ def _build_buffer(results: List[Dict[str, Any]]) -> "io.BytesIO":
     if rows:
         rows.sort(key=lambda r: (r["score"] is not None, float(r["score"] or -1)),
                   reverse=True)
+    # 所属自选板块：从 tdx 板块快照反查（与 Web 扫描结果表一致）。无论是否同步
+    # tdx 板块，本列都存在（未同步时为空白），避免 DataFrame 列重排出现 NaN。
+    from mystery.services import watchlist as _wl
+    _snap = _wl.load_tdx_boards()
+    for r in rows:
+        r["board"] = ("·".join(_wl.boards_of_symbol(r.get("symbol", ""), _snap))
+                      if _snap else "")
     df = pd.DataFrame(rows)
     # 固定列顺序：核心列 + 年线条件列 + 详情列（按出现顺序）
     col_order = [k for k, _ in SUMMARY_COLS]
