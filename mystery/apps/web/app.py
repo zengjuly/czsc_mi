@@ -826,9 +826,23 @@ def view_watchlist_subpage():
             st.rerun()
 
     c_imp, c_imp_btn = st.columns([3, 1])
-    c_imp.caption("通达信自选：本地 T0002/blocknew/zxg.blk（只读导入，合并不覆盖）")
-    if c_imp_btn.button("从通达信导入"):
-        with st.spinner("从通达信导入中..."):
+    c_imp.caption("通达信自选板块：本地 T0002/blocknew/*.blk（只读，覆盖式同步，"
+                  "与通达信保持一致）")
+    if c_imp_btn.button("同步全部自选板块", type="primary", key="sync_boards_btn"):
+        with st.spinner("从通达信同步全部自选板块..."):
+            r = _wl.sync_tdx_boards(load_config())
+        if r.get('boards'):
+            lines = [f"已同步 {len(r['boards'])} 个板块，合计 {r['total']} 只"
+                     f"（自选股 +{r['watchlist_added']} / -{r['watchlist_removed']}）"]
+            for bn, binfo in r['boards'].items():
+                lines.append(f"- {bn}（{binfo['file']}）：{binfo['n']} 只")
+            st.success("\n".join(lines))
+            st.rerun()
+        else:
+            st.warning("未找到通达信自选板块（T0002/blocknew/*.blk；请设置 "
+                       "TDX_VIPDOC_DIR / TDX_BLOCKNEW_DIR）")
+    if c_imp_btn.button("仅导入 zxg.blk（合并不覆盖）", key="import_zxg_btn"):
+        with st.spinner("导入中..."):
             r = _wl.import_from_tdx(load_config())
         if r.get('path'):
             st.success(f"导入 {r['imported']} 只（已存在跳过 {r['skipped']}）"
@@ -838,6 +852,27 @@ def view_watchlist_subpage():
             st.warning("未找到通达信自选文件 zxg.blk（请设置 TDX_VIPDOC_DIR / "
                        "TDX_BLOCKNEW_DIR，默认查 /mnt/c/new_tdx、/mnt/new_tdx 的 "
                        "T0002/blocknew）")
+
+    # 已同步板块总览 + 按板块扫描
+    boards = _wl.list_tdx_boards()
+    if boards:
+        st.divider()
+        st.subheader("已同步自选板块")
+        cols = st.columns(min(len(boards), 4))
+        for i, bn in enumerate(boards):
+            with cols[i % len(cols)]:
+                n = len(_wl.codes_of_board(bn))
+                st.caption(f"**{bn}**：{n} 只")
+        st.divider()
+        st.subheader("按自选板块扫描")
+        bsel = st.selectbox("选择板块", boards, key="board_scan_sel")
+        if st.button("🚀 后台扫描该板块", key="board_scan_btn",
+                     use_container_width=True):
+            _bg_launch(f"板块:{bsel}",
+                       lambda cb, holder, _b=bsel: scan_market(
+                           board=_b, include_detail=True,
+                           progress_cb=cb, job_holder=holder))
+            st.rerun()
 
     kw_col, add_col = st.columns([3, 1])
     with kw_col:
@@ -854,14 +889,20 @@ def view_watchlist_subpage():
     if not items:
         st.info("自选股为空")
         return
+    # 板块快照一次加载，避免每只重复 IO
+    _boards_snap = _wl.load_tdx_boards()
     st.caption(f"共 {len(items)} 只")
     for it in items:
         sym = it['symbol']
         name = it['name'] or '未知'
-        c1, c2, c3, c4, c5 = st.columns([1.1, 1.4, 1.4, 0.7, 0.7])
+        blist = _wl.boards_of_symbol(sym, _boards_snap)
+        src = _wl.source_label(it['source'], it.get('source_file') or '')
+        if blist:
+            src = f"{src} ｜ {'·'.join(blist)}"
+        c1, c2, c3, c4, c5 = st.columns([1.1, 1.4, 1.8, 0.7, 0.7])
         c1.markdown(f"`{sym}`")
         c2.write(name)
-        c3.write(_wl.source_label(it['source'], it.get('source_file') or ''))
+        c3.write(src)
         if c4.button("分析", key=f"an_{sym}"):
             st.session_state['_pending_symbol'] = sym
             st.session_state['subview'] = None

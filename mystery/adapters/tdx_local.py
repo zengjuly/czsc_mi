@@ -124,6 +124,50 @@ def parse_blk_file(path: str) -> List[str]:
     return dedup
 
 
+# ---------------- 自选板块（多 .blk 枚举） ----------------
+# 板块名 → 展示名（通达信默认自选文件 zxg.blk 显示为「自选股」）。
+BOARD_NAME_MAP = {"zxg": "自选股"}
+
+
+def _decode_filename(name: str) -> str:
+    """尽力从 latin-1/utf-8 混合字节里还原 GBK 中文文件名（乱码回退原名）。"""
+    try:
+        return name.encode('latin-1').decode('gbk')
+    except (UnicodeError, LookupError):
+        return name
+
+
+def _board_name_of(filename: str) -> str:
+    """从 .blk 文件名推导板块名（去扩展名 + zxg 特例 + GBK 还原）。"""
+    stem = os.path.splitext(os.path.basename(filename))[0]
+    if stem in BOARD_NAME_MAP:
+        return BOARD_NAME_MAP[stem]
+    return _decode_filename(stem)
+
+
+def list_blk_files() -> List[str]:
+    """枚举所有自选板块 .blk 文件（跨 blocknew 目录；同板块名仅取首个目录）。
+
+    :return: 绝对路径列表（按目录优先级 + 文件名升序）。
+    """
+    out: List[str] = []
+    seen_names: set = set()
+    for d in resolve_blocknew_dirs():
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for fn in sorted(names):
+            if not fn.lower().endswith('.blk'):
+                continue
+            bname = _board_name_of(fn)
+            if bname in seen_names:
+                continue  # 同板块名以首个命中目录为准
+            seen_names.add(bname)
+            out.append(os.path.join(d, fn))
+    return out
+
+
 class TdxLocalClient:
     """通达信本地客户端。"""
 

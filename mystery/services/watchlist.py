@@ -13,6 +13,8 @@ from datetime import date
 from typing import Dict, List, Optional
 
 from ..adapters.codes import normalize_symbol
+from ..adapters.tdx_local import (find_blk_file, parse_blk_file,
+                                  list_blk_files, _board_name_of)
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,12 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 _DEFAULT_WATCHLIST = os.environ.get(
     "MYSTERY_WATCHLIST",
     os.path.join(_REPO_ROOT, "data", "watchlist.json"),
+)
+# 通达信自选板块快照（data/ 已被 .gitignore，不入库）。每次同步整体覆盖，
+# 保证与 tdx_local 的 blocknew 完全一致。
+_DEFAULT_BOARDS_PATH = os.environ.get(
+    "MYSTERY_TDX_BOARDS",
+    os.path.join(_REPO_ROOT, "data", "tdx_boards.json"),
 )
 _DEFAULT_STOCKS = ['sh600519', 'sz000001', 'sh600150', 'sh600036',
                    'sz000858', 'sz300750']
@@ -38,7 +46,7 @@ def _today() -> str:
 
 def _default_items() -> List[Dict]:
     return [{"symbol": normalize_symbol(c), "name": "", "source": "manual",
-             "source_file": "", "added_at": _today()} for c in _DEFAULT_STOCKS]
+             "source_file": "", "board": [], "added_at": _today()} for c in _DEFAULT_STOCKS]
 
 
 def _normalize_item(it: Dict) -> Optional[Dict]:
@@ -54,6 +62,7 @@ def _normalize_item(it: Dict) -> Optional[Dict]:
         "name": str(it.get("name") or ""),
         "source": src,
         "source_file": str(it.get("source_file") or ""),
+        "board": it.get("board") if isinstance(it.get("board"), list) else [],
         "added_at": str(it.get("added_at") or ""),
     }
 
@@ -118,7 +127,7 @@ def save_watchlist(codes: List[str]) -> None:
         except Exception:
             continue
         items.append({"symbol": sym, "name": "", "source": "manual",
-                      "source_file": "", "added_at": today})
+                      "source_file": "", "board": [], "added_at": today})
     _write_items(items)
 
 
@@ -204,6 +213,157 @@ def import_from_tdx(cfg: Optional[Dict] = None,
         _write_items(items)
     return {"imported": imported, "skipped": len(codes) - imported,
             "path": path}
+
+
+# ---------------- 通达信自选板块（多 .blk 同步，与 tdx_local 保持一致） ----------------
+def enumerate_tdx_boards(cfg: Optional[Dict] = None) -> Dict[str, Dict]:
+    """枚举 tdx_local blocknew 全部 .blk → {板块名: {'file', 'codes'}}。
+
+    只读不写通达信；板块名由文件名推导（zxg→自选股，中文名尽力 GBK 还原）。
+    多个 blocknew 目录出现同名板块时，以首个命中目录为准。
+    """
+    cfg = cfg or {}
+    files = list_blk_files()
+    # config 直接指定 blocknew 目录时，其下 .blk 作为补充（自动探测之外的兜底）
+    extra_dir = (cfg.get("tdx") or {}).get("blocknew")
+    if extra_dir and os.path.isdir(extra_dir):
+        import glob as _glob
+        for fp in sorted(_glob.glob(os.path.join(extra_dir, "*.blk"))):
+            if fp not in files:
+                files.append(fp)
+    out: Dict[str, Dict] = {}
+    for fp in files:
+        name = _board_name_of(fp)
+        if name in out:
+            continue
+        out[name] = {"file": os.path.basename(fp),
+                     "codes": parse_blk_file(fp)}
+    return out
+
+
+def sync_tdx_boards(cfg: Optional[Dict] = None) -> Dict:
+    """从 tdx_local 同步全部自选板块（覆盖式，保证与通达信完全一致）。
+
+    1. 写 data/tdx_boards.json —— 整体覆盖，每次同步都是 tdx 当前真实快照；
+    2. 同步把 watchlist.json 中 source=tdx_local 的条目替换为板块并集
+       （去除 tdx 已删、补入 tdx 新增），manual/scan 条目不动 → 与 tdx 一致。
+
+    :return: {synced_at, source_dir, boards:{name:{file,n}}, total,
+              watchlist_added, watchlist_removed}
+    """
+    from ..adapters.tdx_local import resolve_blocknew_dirs
+
+    cfg = cfg or {}
+    dirs = resolve_blocknew_dirs()
+    boards = enumerate_tdx_boards(cfg)
+    union = sorted({c for b in boards.values() for c in b["codes"]})
+    synced_at = _today()
+    source_dir = dirs[0] if dirs else ""
+
+    # 1) 板块快照整体覆盖（一致性核心）
+    os.makedirs(os.path.dirname(_DEFAULT_BOARDS_PATH), exist_ok=True)
+    with open(_DEFAULT_BOARDS_PATH, "w", encoding="utf-8") as f:
+        json.dump({
+            "synced_at": synced_at,
+            "source_dir": source_dir,
+            "boards": {name: {"file": b["file"], "codes": b["codes"]}
+                       for name, b in boards.items()},
+        }, f, ensure_ascii=False, indent=1)
+
+    # 2) 自选股与 tdx 对齐：tdx 来源条目整体替换为板块并集
+    items = _load_items()
+    non_tdx = [it for it in items if it.get("source") != "tdx_local"]
+    existing_non_tdx = {it["symbol"] for it in non_tdx}
+    # 代码 → 所属板块列表
+    sym_boards: Dict[str, List[str]] = {}
+    for name, b in boards.items():
+        for c in b["codes"]:
+            sym_boards.setdefault(c, []).append(name)
+
+    get_name = None
+    try:
+        from ..adapters.market import MarketDataClient
+        get_name = MarketDataClient(cfg).db.get_stock_name
+    except Exception:
+        get_name = None
+
+    new_tdx = []
+    for sym in union:
+        if sym in existing_non_tdx:
+            continue  # 已是 manual/scan，不重复叠加 tdx 来源
+        nm = ""
+        if get_name is not None:
+            try:
+                nm = get_name(sym) or ""
+            except Exception:
+                nm = ""
+        new_tdx.append({"symbol": sym, "name": nm or "未知",
+                        "source": "tdx_local", "source_file": "",
+                        "board": sym_boards.get(sym, []),
+                        "added_at": synced_at})
+
+    before = {it["symbol"] for it in items if it.get("source") == "tdx_local"}
+    added = len(new_tdx)
+    removed = len([s for s in before if s not in union])
+    _write_items(non_tdx + new_tdx)
+
+    return {
+        "synced_at": synced_at,
+        "source_dir": source_dir,
+        "boards": {name: {"file": b["file"], "n": len(b["codes"])}
+                   for name, b in boards.items()},
+        "total": len(union),
+        "watchlist_added": added,
+        "watchlist_removed": removed,
+    }
+
+
+def load_tdx_boards() -> Optional[Dict]:
+    """读板块快照（data/tdx_boards.json）；未同步过返回 None。"""
+    if not os.path.exists(_DEFAULT_BOARDS_PATH):
+        return None
+    try:
+        with open(_DEFAULT_BOARDS_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"自选板块读取失败: {e}")
+        return None
+
+
+def list_tdx_boards() -> List[str]:
+    """已同步的板块名列表（顺序与文件一致）。"""
+    b = load_tdx_boards()
+    return list(b.get("boards", {}).keys()) if b else []
+
+
+def codes_of_board(name: str, boards: Optional[Dict] = None) -> List[str]:
+    """板块名 → 成分股代码列表（未同步/不存在返回空）。"""
+    b = boards or load_tdx_boards()
+    if not b:
+        return []
+    blk = b.get("boards", {}).get(name)
+    return list(blk.get("codes", [])) if blk else []
+
+
+def boards_of_symbol(symbol: str, boards: Optional[Dict] = None) -> List[str]:
+    """代码 → 所属板块名列表（未同步/无归属返回空）。"""
+    b = boards or load_tdx_boards()
+    if not b:
+        return []
+    return [name for name, blk in b.get("boards", {}).items()
+            if symbol in blk.get("codes", [])]
+
+
+def tdx_boards_summary() -> Dict:
+    """板块快照概要（Web 状态/日志用）。"""
+    b = load_tdx_boards()
+    if not b:
+        return {"synced": False}
+    return {"synced": True, "synced_at": b.get("synced_at"),
+            "source_dir": b.get("source_dir"),
+            "n_boards": len(b.get("boards", {})),
+            "boards": {name: len(blk.get("codes", []))
+                       for name, blk in b.get("boards", {}).items()}}
 
 
 def search_stock(keyword: str, limit: int = 10, cfg: Optional[Dict] = None) -> List[Dict]:

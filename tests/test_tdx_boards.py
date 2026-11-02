@@ -1,0 +1,138 @@
+"""test_tdx_boards — tdx_local 自选板块同步 + 划分（W42）。
+
+不依赖本机通达信：临时构造 blocknew/*.blk 并 monkeypatch 目录探测。
+"""
+from __future__ import annotations
+
+import json
+import os
+
+import pytest
+
+from mystery.adapters import tdx_local
+from mystery.services import watchlist as wl
+from mystery.services.scan import scan_market
+
+
+def _make_blocknew(tmp_path, files: dict) -> str:
+    """files: {filename: [code_lines]}。返回 blocknew 目录路径。"""
+    d = tmp_path / "T0002" / "blocknew"
+    d.mkdir(parents=True)
+    for fn, lines in files.items():
+        p = d / fn
+        p.write_bytes(("\n".join(lines) + "\n").encode("gbk"))
+    return str(d)
+
+
+@pytest.fixture
+def patch_tdx(monkeypatch, tmp_path):
+    """把 blocknew 目录重定向到 tmp，并把板块快照文件也重定向。"""
+    blk_dir = _make_blocknew(tmp_path, {
+        "zxg.blk": ["1600519", "0000001"],          # → 自选股
+        "龙头股.blk": ["1600519", "600036"],          # GBK 文件名
+    })
+    monkeypatch.setattr(tdx_local, "resolve_blocknew_dirs",
+                        lambda: [blk_dir])
+    boards_path = str(tmp_path / "tdx_boards.json")
+    monkeypatch.setattr(wl, "_DEFAULT_BOARDS_PATH", boards_path)
+    wl.save_watchlist([])  # 空自选起步
+    return blk_dir
+
+
+def test_enumerate_tdx_boards(patch_tdx):
+    boards = wl.enumerate_tdx_boards({})
+    assert "自选股" in boards          # zxg.blk → 自选股
+    assert "龙头股" in boards
+    assert set(boards["自选股"]["codes"]) == {"600519.SH", "000001.SZ"}
+    assert set(boards["龙头股"]["codes"]) == {"600519.SH", "600036.SH"}
+    assert boards["自选股"]["file"] == "zxg.blk"
+
+
+def test_sync_tdx_boards_writes_snapshot_and_reconciles(patch_tdx, tmp_path):
+    # 起始：000001.SZ 为手动自选（应保留，不被 tdx 覆盖）
+    wl.add_to_watchlist("000001.SZ", source="manual")
+    r = wl.sync_tdx_boards({})
+    assert r["total"] == 3
+    assert set(r["boards"].keys()) == {"自选股", "龙头股"}
+    assert r["watchlist_added"] == 2   # 600519 / 600036 新增 tdx
+    assert r["watchlist_removed"] == 0
+
+    # 快照文件已写入且与 tdx 一致
+    snap = wl.load_tdx_boards()
+    assert snap["boards"]["自选股"]["codes"] == ["600519.SH", "000001.SZ"]
+    assert set(snap["boards"]["龙头股"]["codes"]) == {"600519.SH", "600036.SH"}
+
+    # watchlist：手动 000001 保留；tdx 来源为板块并集（去重）
+    items = {it["symbol"]: it for it in wl.load_watchlist_items()}
+    assert items["000001.SZ"]["source"] == "manual"        # 不覆盖手动
+    assert items["600519.SH"]["source"] == "tdx_local"
+    assert items["600519.SH"]["board"] == ["自选股", "龙头股"]
+    assert items["600036.SH"]["board"] == ["龙头股"]
+
+
+def test_sync_tdx_boards_consistency_overwrite(patch_tdx, tmp_path):
+    """再同步：tdx 删除的股票要从 watchlist 的 tdx 来源中移除（与 tdx 一致）。"""
+    wl.sync_tdx_boards({})  # 首次同步，tdx 含 600519/000001/600036
+    # 把 600519 从两个板块都删掉，并给自选股新增 600999（龙头股仅留 600036）
+    d = patch_tdx
+    with open(os.path.join(d, "zxg.blk"), "wb") as f:
+        f.write("1600999\n0000001\n".encode("gbk"))
+    with open(os.path.join(d, "龙头股.blk"), "wb") as f:
+        f.write("600036\n".encode("gbk"))
+    r = wl.sync_tdx_boards({})
+    snap = wl.load_tdx_boards()
+    union = {c for b in snap["boards"].values() for c in b["codes"]}
+    assert "600519.SH" not in union
+    assert "600999.SH" in union
+    # 600519 原本是 tdx 来源 → 应被移除（removed 计入）
+    assert r["watchlist_removed"] == 1
+    items = {it["symbol"]: it for it in wl.load_watchlist_items()}
+    assert "600519.SH" not in items
+    assert "600999.SH" in items
+    assert items["600999.SH"]["source"] == "tdx_local"
+
+
+def test_board_classification_helpers(patch_tdx):
+    wl.sync_tdx_boards({})
+    assert set(wl.list_tdx_boards()) == {"自选股", "龙头股"}
+    assert wl.codes_of_board("自选股") == ["600519.SH", "000001.SZ"]
+    assert wl.codes_of_board("不存在") == []
+    assert wl.boards_of_symbol("600519.SH") == ["自选股", "龙头股"]
+    assert wl.boards_of_symbol("600036.SH") == ["龙头股"]
+    assert wl.boards_of_symbol("999999.SH") == []
+    s = wl.tdx_boards_summary()
+    assert s["synced"] is True
+    assert s["boards"]["自选股"] == 2
+
+
+def test_scan_market_board_tags_results(monkeypatch):
+    """scan_market(board=) 用板块成分股作 universe，并给结果打 board 标记。"""
+    monkeypatch.setattr(wl, "codes_of_board",
+                        lambda name, boards=None: ["600519.SH", "600036.SH"])
+    captured = {}
+
+    def fake_impl(**kwargs):
+        captured.update(kwargs)
+        return [{"symbol": "600519.SH", "score": 10},
+                {"symbol": "600036.SH", "score": 20}]
+    monkeypatch.setattr("mystery.services.scan._scan_market_impl", fake_impl)
+
+    res = scan_market(board="龙头股", force=True, no_persist=True)
+    assert [r["symbol"] for r in res] == ["600519.SH", "600036.SH"]
+    assert all(r.get("board") == "龙头股" for r in res)
+    # universe 应被设为板块成分股，scan_type=board
+    assert captured["universe"] == ["600519.SH", "600036.SH"]
+    assert captured["scan_type"] == "board"
+
+
+def test_scan_market_unknown_board_returns_empty(monkeypatch):
+    monkeypatch.setattr(wl, "codes_of_board", lambda name, boards=None: [])
+    called = {"n": 0}
+
+    def fake_impl(**kwargs):
+        called["n"] += 1
+        return [{"symbol": "x"}]
+    monkeypatch.setattr("mystery.services.scan._scan_market_impl", fake_impl)
+    res = scan_market(board="不存在的板块", force=True, no_persist=True)
+    assert res == []
+    assert called["n"] == 0  # 空板块不触发实际扫描

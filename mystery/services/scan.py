@@ -275,13 +275,16 @@ def scan_market(limit: Optional[int] = None,
                 job_holder: Optional[list] = None,
                 scan_type: Optional[str] = None,
                 force: bool = False,
-                auto_sync: Optional[bool] = None) -> List[Dict[str, Any]]:
+                auto_sync: Optional[bool] = None,
+                board: Optional[str] = None) -> List[Dict[str, Any]]:
     """扫描入口（W25：持久化扫描全程持互斥锁；--force/no_persist 不加锁）。
 
     实现见 _scan_market_impl。db_path 解析口径与 MarketDataClient 一致。
     :param auto_sync: 扫描前自动确保行情最新（None=默认开；no_persist/force
           调试路径默认关）。已收盘且行情落后 → 全量同步；未收盘 → 仅更新
           本次扫描股票；已最新 → 跳过。见 _ensure_scan_data。
+    :param board: 仅扫描某个 tdx_local 自选板块（需先 sync-tdx-boards 同步）；
+          结果会带 'board' 字段，scan_type 记为 'board'。
     """
     db_path = MysteryDB(db_path=(cfg or {}).get('db_path')).db_path
     with _hold_scan_lock(db_path, enabled=(not force and not no_persist)):
@@ -297,15 +300,33 @@ def scan_market(limit: Optional[int] = None,
                 except Exception:
                     pass
 
+        # board 筛选：从已同步板块中取成分股作为本次 universe
+        board_codes: Optional[List[str]] = None
+        if board is not None and universe is None:
+            from . import watchlist as _wl
+            board_codes = _wl.codes_of_board(board)
+            if not board_codes:
+                logger.warning(f"[scan] 板块「{board}」无成分股（未同步或不存在）")
+                return []
+
         try:
-            return _scan_market_impl(
+            results = _scan_market_impl(
                 limit=limit, watchlist=watchlist, include_detail=include_detail,
-                cfg=cfg, universe=universe, min_score=min_score,
+                cfg=cfg, universe=(universe if universe is not None else board_codes),
+                min_score=min_score,
                 no_persist=no_persist, progress_cb=_cb,
-                job_holder=job_holder, scan_type=scan_type, force=force,
+                job_holder=job_holder,
+                scan_type=(scan_type if scan_type is not None
+                           else ('board' if board is not None else None)),
+                force=force,
                 auto_sync=auto_sync)
         finally:
             clear_progress(db_path, 'scan')
+        # 标记板块归属（额外字段，不影响落库结构）
+        if board is not None:
+            for r in results:
+                r['board'] = board
+        return results
 
 
 def _scan_market_impl(limit: Optional[int] = None,

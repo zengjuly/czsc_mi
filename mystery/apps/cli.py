@@ -204,10 +204,14 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     if args.limit is None:
         args.limit = None if args.watchlist else 100
     watchlist = _wl.load_watchlist() if args.watchlist else None
+    board = getattr(args, 'board', None)
+    if board:
+        # 按板块扫描：忽略 --watchlist（板块 universe 优先）
+        watchlist = None
     results = scan_market(limit=args.limit, include_detail=True,
                           min_score=args.min_score, cfg=args.cfg,
                           no_persist=args.no_persist,
-                          watchlist=watchlist,
+                          watchlist=watchlist, board=board,
                           force=getattr(args, 'force', False),
                           auto_sync=not getattr(args, 'no_auto_sync', False))
     if args.report and results:
@@ -479,6 +483,18 @@ def _cmd_watchlist_import_tdx(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sync_tdx_boards(args: argparse.Namespace) -> int:
+    from ..services import watchlist as _wl
+
+    r = _wl.sync_tdx_boards(args.cfg)
+    if not r.get("boards"):
+        print("未找到通达信自选板块（T0002/blocknew/*.blk；设 TDX_VIPDOC_DIR / "
+              "TDX_BLOCKNEW_DIR）", file=sys.stderr)
+        return 1
+    print(json.dumps(r, ensure_ascii=False, indent=1))
+    return 0
+
+
 def main(argv: Optional[list] = None) -> int:
     # 未设 THS 路径时自动补 sibling Financial-API 默认（须在 load_config 前）
     _ensure_default_ths_env()
@@ -517,6 +533,9 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--no-auto-sync", action="store_true",
                    help="扫描前不自动同步行情（默认：已收盘落后→全量同步，"
                         "未收盘→仅更新本次扫描股票）")
+    p.add_argument("--board", default=None,
+                   help="仅扫某个 tdx_local 自选板块（需先 sync-tdx-boards 同步；"
+                        "覆盖 --watchlist）")
     p.set_defaults(func=_cmd_scan)
 
     p = sub.add_parser("sync", help="行情同步（断点续跑，支持多周期）")
@@ -577,8 +596,11 @@ def main(argv: Optional[list] = None) -> int:
 
     p = sub.add_parser("watchlist", help="自选股管理")
     wsub = p.add_subparsers(dest="wl_cmd", required=True)
-    wp = wsub.add_parser("import-tdx", help="从通达信本地自选 zxg.blk 导入")
+    wp = wsub.add_parser("import-tdx", help="从通达信本地自选 zxg.blk 导入（合并不覆盖）")
     wp.set_defaults(func=_cmd_watchlist_import_tdx)
+    wp = wsub.add_parser("sync-boards",
+                         help="同步 tdx_local 全部自选板块（覆盖式，与通达信一致）")
+    wp.set_defaults(func=_cmd_sync_tdx_boards)
 
     args = parser.parse_args(argv)
     args.cfg = load_config()
