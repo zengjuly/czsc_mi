@@ -128,21 +128,85 @@ def parse_blk_file(path: str) -> List[str]:
 # 板块名 → 展示名（通达信默认自选文件 zxg.blk 显示为「自选股」）。
 BOARD_NAME_MAP = {"zxg": "自选股"}
 
+# 板块代码 → 展示名 的缓存（key = blocknew 目录元组，避免重复读盘）。
+_BLOCK_DISPLAY_CACHE = {}
+
 
 def _decode_filename(name: str) -> str:
-    """尽力从 latin-1/utf-8 混合字节里还原 GBK 中文文件名（乱码回退原名）。"""
+    '''尽力从 latin-1/utf-8 混合字节里还原 GBK 中文文件名（乱码回退原名）。'''
     try:
         return name.encode('latin-1').decode('gbk')
     except (UnicodeError, LookupError):
         return name
 
 
+def _parse_block_display_map(dirs) -> Dict[str, str]:
+    '''从 blocknew 目录解析「板块代码 → 展示名」映射。
+
+    通达信自定义板块（blocknew）的真实展示名通常存于：
+    - ``blockname.txt``：每行 ``CODE 展示名``（或仅展示名，按 .blk 顺序）；
+    - ``blocknew.cfg``：以 \x00 分隔的 (展示名, 代码) 成对记录（本环境实测格式）。
+
+    返回 {板块代码(大写): 展示名}。
+    '''
+    m: Dict[str, str] = {}
+    for d in dirs:
+        # 1) blockname.txt（部分通达信版本）
+        bn = os.path.join(d, "blockname.txt")
+        if os.path.isfile(bn):
+            try:
+                with open(bn, "r", encoding="gbk", errors="replace") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            m[parts[0].upper()] = parts[1]
+                        else:
+                            m[parts[0].upper()] = parts[0]
+            except OSError:
+                pass
+        # 2) blocknew.cfg（\x00 分隔的 展示名/代码 对，实测为本环境格式）
+        cfg = os.path.join(d, "blocknew.cfg")
+        if os.path.isfile(cfg):
+            try:
+                raw = open(cfg, "rb").read()
+                toks = [t for t in raw.decode("gbk", "replace").split("\x00")
+                        if t.strip()]
+                for i in range(0, len(toks) - 1, 2):
+                    name, code = toks[i], toks[i + 1]
+                    if code:
+                        m[code.upper()] = name
+            except OSError:
+                pass
+    return m
+
+
+def _block_display_map() -> Dict[str, str]:
+    '''带缓存的板块代码→展示名映射（按 blocknew 目录区分）。'''
+    dirs = tuple(resolve_blocknew_dirs())
+    if dirs not in _BLOCK_DISPLAY_CACHE:
+        _BLOCK_DISPLAY_CACHE[dirs] = _parse_block_display_map(dirs)
+    return _BLOCK_DISPLAY_CACHE[dirs]
+
+
 def _board_name_of(filename: str) -> str:
-    """从 .blk 文件名推导板块名（去扩展名 + zxg 特例 + GBK 还原）。"""
+    '''从 .blk 文件推导板块展示名。
+
+    优先级：
+    1. BOARD_NAME_MAP 特例（如 zxg → 自选股）；
+    2. blocknew.cfg / blockname.txt 中的真实展示名（如 DL-S → 电力-算）；
+    3. 文件名 stem 的 GBK 还原（兜底，与通达信未命名板块一致）。
+    '''
     stem = os.path.splitext(os.path.basename(filename))[0]
     if stem in BOARD_NAME_MAP:
         return BOARD_NAME_MAP[stem]
+    dmap = _block_display_map()
+    if stem.upper() in dmap:
+        return dmap[stem.upper()]
     return _decode_filename(stem)
+
 
 
 def list_blk_files() -> List[str]:
