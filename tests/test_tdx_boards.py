@@ -136,3 +136,52 @@ def test_scan_market_unknown_board_returns_empty(monkeypatch):
     res = scan_market(board="不存在的板块", force=True, no_persist=True)
     assert res == []
     assert called["n"] == 0  # 空板块不触发实际扫描
+
+
+def test_list_tdx_board_names(patch_tdx):
+    names = wl.list_tdx_board_names({})
+    assert "自选股" in names
+    assert "龙头股" in names
+    assert len(names) == 2  # 轻量枚举，不解析成分股，仅文件名级
+
+
+def test_sync_tdx_boards_partial_selection(patch_tdx):
+    """只同步选定板块：快照与 tdx_local 条目都仅含所选板块。"""
+    # 当前已无手动股；仅同步「龙头股」板块
+    r = wl.sync_tdx_boards({}, boards=["龙头股"])
+    assert r["total"] == 2                       # 600519 / 600036
+    assert set(r["boards"].keys()) == {"龙头股"}  # 自选股不在快照里
+    assert r["selected"] is True
+
+    snap = wl.load_tdx_boards()
+    assert set(snap["boards"].keys()) == {"龙头股"}
+    assert "自选股" not in snap["boards"]
+
+    # watchlist 的 tdx_local 条目 = 龙头股并集（不含自选股板块的 000001）
+    items = {it["symbol"]: it for it in wl.load_watchlist_items()}
+    assert set(items.keys()) == {"600519.SH", "600036.SH"}
+    assert items["600519.SH"]["board"] == ["龙头股"]
+    # selected 标记写入快照
+    assert snap["selected"] is True
+
+
+def test_sync_tdx_boards_partial_then_add(patch_tdx):
+    """先同步龙头股，再叠加自选股：多选即增量（默认已勾选已同步）。"""
+    wl.sync_tdx_boards({}, boards=["龙头股"])
+    r = wl.sync_tdx_boards({}, boards=["龙头股", "自选股"])
+    assert set(r["boards"].keys()) == {"龙头股", "自选股"}
+    assert r["total"] == 3                       # 600519 / 600036 / 000001
+    items = {it["symbol"]: it for it in wl.load_watchlist_items()}
+    # 600519 现在同时属于两个板块
+    assert set(items["600519.SH"]["board"]) == {"龙头股", "自选股"}
+
+
+def test_sync_tdx_boards_partial_ignores_unknown(patch_tdx):
+    """指定不存在的板块名 → 跳过，不报错；返回空。"""
+    r = wl.sync_tdx_boards({}, boards=["不存在的板块"])
+    assert r["boards"] == {}
+    assert r["total"] == 0
+    assert r["selected"] is True
+    items = wl.load_watchlist_items()
+    assert all(it["source"] != "tdx_local" for it in items)  # 未引入任何 tdx 股
+

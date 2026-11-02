@@ -241,42 +241,76 @@ def enumerate_tdx_boards(cfg: Optional[Dict] = None) -> Dict[str, Dict]:
     return out
 
 
-def sync_tdx_boards(cfg: Optional[Dict] = None) -> Dict:
-    """从 tdx_local 同步全部自选板块（覆盖式，保证与通达信完全一致）。
+def list_tdx_board_names(cfg: Optional[Dict] = None) -> List[str]:
+    """仅枚举 tdx_local 全部自选板块名（不解析成分股，供 UI 勾选用，轻量）。"""
+    cfg = cfg or {}
+    files = list_blk_files()
+    extra_dir = (cfg.get("tdx") or {}).get("blocknew")
+    if extra_dir and os.path.isdir(extra_dir):
+        import glob as _glob
+        for fp in sorted(_glob.glob(os.path.join(extra_dir, "*.blk"))):
+            if fp not in files:
+                files.append(fp)
+    out: List[str] = []
+    for fp in files:
+        name = _board_name_of(fp)
+        if name not in out:
+            out.append(name)
+    return out
 
-    1. 写 data/tdx_boards.json —— 整体覆盖，每次同步都是 tdx 当前真实快照；
-    2. 同步把 watchlist.json 中 source=tdx_local 的条目替换为板块并集
-       （去除 tdx 已删、补入 tdx 新增），manual/scan 条目不动 → 与 tdx 一致。
 
+def sync_tdx_boards(cfg: Optional[Dict] = None,
+                    boards: Optional[List[str]] = None) -> Dict:
+    """从 tdx_local 同步自选板块（覆盖式，保证与通达信一致）。
+
+    :param boards: 要同步的板块名列表；None / 空 → 同步全部板块。
+        同步后 data/tdx_boards.json 仅含所选板块（与通达信对应板块一致），
+        watchlist 中 source=tdx_local 的条目整体替换为所选板块并集。
     :return: {synced_at, source_dir, boards:{name:{file,n}}, total,
-              watchlist_added, watchlist_removed}
+              selected, watchlist_added, watchlist_removed}
     """
     from ..adapters.tdx_local import resolve_blocknew_dirs
 
     cfg = cfg or {}
     dirs = resolve_blocknew_dirs()
-    boards = enumerate_tdx_boards(cfg)
-    union = sorted({c for b in boards.values() for c in b["codes"]})
+    all_boards = enumerate_tdx_boards(cfg)
+
+    # 选定要同步的板块
+    if boards:
+        selected = [b for b in boards if b in all_boards]
+        skipped = [b for b in boards if b not in all_boards]
+        if skipped:
+            logger.warning("指定同步的板块在 tdx 中不存在，已跳过：%s", skipped)
+    else:
+        selected = list(all_boards.keys())
+    if not selected:
+        return {"synced_at": _today(), "source_dir": dirs[0] if dirs else "",
+                "boards": {}, "total": 0, "selected": bool(boards),
+                "watchlist_added": 0, "watchlist_removed": 0}
+
+    chosen = {name: all_boards[name] for name in selected}
+    union = sorted({c for b in chosen.values() for c in b["codes"]})
     synced_at = _today()
     source_dir = dirs[0] if dirs else ""
 
-    # 1) 板块快照整体覆盖（一致性核心）
+    # 1) 板块快照整体覆盖（仅含所选板块）
     os.makedirs(os.path.dirname(_DEFAULT_BOARDS_PATH), exist_ok=True)
     with open(_DEFAULT_BOARDS_PATH, "w", encoding="utf-8") as f:
         json.dump({
             "synced_at": synced_at,
             "source_dir": source_dir,
+            "selected": bool(boards),
             "boards": {name: {"file": b["file"], "codes": b["codes"]}
-                       for name, b in boards.items()},
+                       for name, b in chosen.items()},
         }, f, ensure_ascii=False, indent=1)
 
-    # 2) 自选股与 tdx 对齐：tdx 来源条目整体替换为板块并集
+    # 2) 自选股与 tdx 对齐：tdx 来源条目整体替换为所选板块并集
     items = _load_items()
     non_tdx = [it for it in items if it.get("source") != "tdx_local"]
     existing_non_tdx = {it["symbol"] for it in non_tdx}
     # 代码 → 所属板块列表
     sym_boards: Dict[str, List[str]] = {}
-    for name, b in boards.items():
+    for name, b in chosen.items():
         for c in b["codes"]:
             sym_boards.setdefault(c, []).append(name)
 
@@ -311,8 +345,9 @@ def sync_tdx_boards(cfg: Optional[Dict] = None) -> Dict:
         "synced_at": synced_at,
         "source_dir": source_dir,
         "boards": {name: {"file": b["file"], "n": len(b["codes"])}
-                   for name, b in boards.items()},
+                   for name, b in chosen.items()},
         "total": len(union),
+        "selected": bool(boards),
         "watchlist_added": added,
         "watchlist_removed": removed,
     }

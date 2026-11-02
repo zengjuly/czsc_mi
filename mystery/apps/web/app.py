@@ -825,13 +825,15 @@ def view_watchlist_subpage():
             st.session_state['subview'] = None
             st.rerun()
 
-    c_imp, c_imp_btn = st.columns([3, 1])
-    c_imp.caption("通达信自选板块：本地 T0002/blocknew/*.blk（只读，覆盖式同步，"
-                  "与通达信保持一致）")
-    if c_imp_btn.button("同步全部自选板块", type="primary", key="sync_boards_btn"):
-        with st.spinner("从通达信同步全部自选板块..."):
-            r = _wl.sync_tdx_boards(load_config())
-        if r.get('boards'):
+    st.divider()
+    st.subheader("通达信自选板块同步")
+    st.caption("本地 T0002/blocknew/*.blk（只读，覆盖式同步，与通达信保持一致）。"
+               "勾选要同步的板块，未勾选的不会同步；已同步板块默认勾选。")
+
+    def _run_sync(boards):
+        with st.spinner("从通达信同步自选板块..."):
+            r = _wl.sync_tdx_boards(load_config(), boards=boards)
+        if r.get("boards"):
             lines = [f"已同步 {len(r['boards'])} 个板块，合计 {r['total']} 只"
                      f"（自选股 +{r['watchlist_added']} / -{r['watchlist_removed']}）"]
             for bn, binfo in r['boards'].items():
@@ -841,7 +843,32 @@ def view_watchlist_subpage():
         else:
             st.warning("未找到通达信自选板块（T0002/blocknew/*.blk；请设置 "
                        "TDX_VIPDOC_DIR / TDX_BLOCKNEW_DIR）")
-    if c_imp_btn.button("仅导入 zxg.blk（合并不覆盖）", key="import_zxg_btn"):
+
+    try:
+        available = _wl.list_tdx_board_names(load_config())
+    except Exception:
+        available = []
+    current = _wl.list_tdx_boards()
+    default_sel = [b for b in current if b in available]
+
+    if not available:
+        st.info("未检测到通达信自选板块（T0002/blocknew/*.blk；请设置 "
+                "TDX_VIPDOC_DIR / TDX_BLOCKNEW_DIR）。")
+        if st.button("同步全部自选板块", key="sync_boards_all_btn", type="primary"):
+            _run_sync(None)
+    else:
+        sel = st.multiselect("选择要同步的自选板块", available,
+                             default=default_sel, key="board_sync_sel")
+        c1, c2 = st.columns(2)
+        if c1.button("同步所选板块", key="sync_boards_sel_btn", type="primary"):
+            if not sel:
+                st.warning("请至少勾选一个板块")
+            else:
+                _run_sync(sel)
+        if c2.button("同步全部板块", key="sync_boards_all_btn"):
+            _run_sync(None)
+
+    if st.button("仅导入 zxg.blk（合并不覆盖）", key="import_zxg_btn"):
         with st.spinner("导入中..."):
             r = _wl.import_from_tdx(load_config())
         if r.get('path'):

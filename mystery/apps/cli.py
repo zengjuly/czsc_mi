@@ -486,7 +486,7 @@ def _cmd_watchlist_import_tdx(args: argparse.Namespace) -> int:
 def _cmd_sync_tdx_boards(args: argparse.Namespace) -> int:
     from ..services import watchlist as _wl
 
-    r = _wl.sync_tdx_boards(args.cfg)
+    r = _wl.sync_tdx_boards(args.cfg, boards=args.boards)
     if not r.get("boards"):
         print("未找到通达信自选板块（T0002/blocknew/*.blk；设 TDX_VIPDOC_DIR / "
               "TDX_BLOCKNEW_DIR）", file=sys.stderr)
@@ -599,7 +599,9 @@ def main(argv: Optional[list] = None) -> int:
     wp = wsub.add_parser("import-tdx", help="从通达信本地自选 zxg.blk 导入（合并不覆盖）")
     wp.set_defaults(func=_cmd_watchlist_import_tdx)
     wp = wsub.add_parser("sync-boards",
-                         help="同步 tdx_local 全部自选板块（覆盖式，与通达信一致）")
+                         help="同步 tdx_local 自选板块（--boards 指定部分，省略则全部）")
+    wp.add_argument("--boards", nargs="+", metavar="板块名", default=None,
+                    help="仅同步指定板块（可重复）。省略则同步全部板块。")
     wp.set_defaults(func=_cmd_sync_tdx_boards)
 
     args = parser.parse_args(argv)
