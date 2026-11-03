@@ -161,6 +161,7 @@ class MysteryBreakdown:
     patterns: Dict[str, Any] = field(default_factory=dict)    # 形态识别
     checklist8: Dict[str, Any] = field(default_factory=dict)  # 主升浪8项
     technical: Dict[str, Any] = field(default_factory=dict)   # W5 技术面明细快照（均线排列/破五反五/量价/筹码/换手率/多周期，仅展示）
+    stage: Dict[str, Any] = field(default_factory=dict)        # 阶段识别+突破质量（吸筹/洗盘/拉升/派发 + 回踩确认/假突破）
 
     def to_dict(self) -> Dict[str, Any]:
         return _todict(self)

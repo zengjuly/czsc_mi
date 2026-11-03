@@ -64,6 +64,11 @@ def classify(d: Dict[str, Any]) -> Dict[str, Any]:
         "gap_continuation": False,
         "gap_exhaustion": False,
         "low_ground_volume": False,
+        "stage": "未知",
+        "breakout_quality": "无",
+        "has_breakout": False,
+        "breakout_confirm": False,
+        "false_breakout": False,
         "labels": [],
     }
     m = d.get("mystery", {}) or {}
@@ -134,6 +139,24 @@ def classify(d: Dict[str, Any]) -> Dict[str, Any]:
         out["labels"].append("衰竭缺口")
     if out["low_ground_volume"]:
         out["labels"].append("低位地量")
+    # 阶段识别 + 突破质量（吸筹/洗盘/拉升/派发 + 回踩确认/假突破）
+    stage_info = m.get("stage", {}) or {}
+    stg = stage_info.get("stage", "未知")
+    out["stage"] = stg
+    if stg and stg != "未知":
+        out["labels"].append(f"{stg}阶段")
+    bq = (stage_info.get("breakout", {}) or {}).get("quality", "无")
+    out["breakout_quality"] = bq
+    out["has_breakout"] = bool(
+        (stage_info.get("breakout", {}) or {}).get("has_breakout", False))
+    out["breakout_confirm"] = (bq == "回踩确认")
+    out["false_breakout"] = (bq == "假突破")
+    if bq == "回踩确认":
+        out["labels"].append("回踩确认突破")
+    elif bq == "假突破":
+        out["labels"].append("假突破回避")
+    elif bq == "直接突破":
+        out["labels"].append("直接突破")
     return out
 
 
@@ -148,7 +171,10 @@ def filter_by_signal(results: list, signal: str) -> list:
            "gap_breakout": "gap_breakout",
            "gap_continuation": "gap_continuation",
            "gap_exhaustion": "gap_exhaustion",
-           "low_ground_volume": "low_ground_volume"}.get(signal)
+           "low_ground_volume": "low_ground_volume",
+           "breakout": "has_breakout",
+           "breakout_confirm": "breakout_confirm",
+           "false_breakout": "false_breakout"}.get(signal)
     if key is None:
         return results
     return [r for r in results if r.get(key)]

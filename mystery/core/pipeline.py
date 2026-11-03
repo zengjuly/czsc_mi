@@ -17,6 +17,7 @@ from .patterns import PatternRecognition
 from .patterns_adv import (detect_bullish_engulfing, detect_gap,
                            detect_low_ground_volume)
 from .platform import analyze_adaptive_platform
+from .stage import analyze_stage
 
 
 def series_to_df(series: Optional[BarSeries]) -> Optional[pd.DataFrame]:
@@ -217,6 +218,18 @@ def run_mystery(daily: BarSeries,
                 platform=bd.platform)
         except Exception as e:  # noqa: BLE001
             bd.technical = {'latest_date': '', 'detail': [f'分析异常: {e}']}
+        # 阶段识别 + 突破质量（吸筹/洗盘/拉升/派发 + 回踩确认/假突破）
+        try:
+            bd.stage = analyze_stage(daily_df, stock_code=daily.symbol)
+        except Exception as e:  # noqa: BLE001
+            bd.stage = {'stage': '未知', 'detail': [f'阶段识别异常: {e}']}
+        try:
+            if bd.platform and bd.stage:
+                bq = bd.stage.get('breakout')
+                if bq:
+                    bd.platform['突破质量'] = bq
+        except Exception:  # noqa: BLE001
+            pass
     else:
         bd.platform = {'平台状态': '未知', '突破信号': False, '买横信号': False,
                        '平台范围': None, '详情': []}

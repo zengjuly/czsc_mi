@@ -175,6 +175,11 @@ def test_no_signals_default():
         "gap_continuation": False,
         "gap_exhaustion": False,
         "low_ground_volume": False,
+        "stage": "未知",
+        "breakout_quality": "无",
+        "has_breakout": False,
+        "breakout_confirm": False,
+        "false_breakout": False,
         "labels": [],
     }
 

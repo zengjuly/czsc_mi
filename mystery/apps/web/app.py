@@ -737,6 +737,17 @@ def render_stock(d: dict):
               if plat else "-")
     c4.metric("主升浪8项满足", m.get('checklist8', {}).get('满足数量', '-'))
 
+    # 阶段识别 + 突破质量（吸筹/洗盘/拉升/派发 + 回踩确认/假突破）
+    stg = m.get('stage', {}) or {}
+    if stg:
+        bq = (stg.get('breakout', {}) or {}).get('quality', '无')
+        st.markdown(
+            f"**阶段识别**：`{stg.get('stage', '未知')}`"
+            f"（筹码峰位移 {_fmt(stg.get('metrics', {}).get('poc_slope_20'))}）"
+            f" ｜ **突破质量**：`{bq}`"
+            + ("（回踩不破，可进）" if bq == '回踩确认'
+               else "（假突破，回避）" if bq == '假突破' else ""))
+
     with st.expander("主升浪 8 项指标", expanded=False):
         cl = m.get('checklist8', {})
         items = {k: v for k, v in cl.items()
@@ -1099,9 +1110,10 @@ def view_scan():
             for j in jobs}
     pick = st.selectbox("选择扫描任务查看结果", list(opts.keys()), key="scan_job_pick")
     job_id = opts[pick]
-    sig = st.radio("信号过滤", ["全部", "真三振", "VAP-ATR突破", "筹码低位"],
+    sig = st.radio("信号过滤", ["全部", "真三振", "VAP-ATR突破", "筹码低位", "回踩确认突破", "假突破"],
                    horizontal=True, key="scan_job_sig")
-    sig_map = {"全部": None, "真三振": "true_resonance",
+    sig_map = {"全部": None, "真三振": "true_resonance", "回踩确认突破": "breakout_confirm",
+               "假突破": "false_breakout",
                "VAP-ATR突破": "vap_atr", "筹码低位": "chip_low"}
     rows = scan_results_of(job_id, signal=sig_map[sig])
     st.caption(f"job #{job_id}（{sig}）共 {len(rows)} 只")
@@ -1270,9 +1282,10 @@ def view_system():
         pick = st.selectbox("选择扫描任务查看结果", list(opts.keys()),
                             key="sys_job_pick")
         job_id = opts[pick]
-        sig = st.radio("信号过滤", ["全部", "真三振", "VAP-ATR突破", "筹码低位"],
+        sig = st.radio("信号过滤", ["全部", "真三振", "VAP-ATR突破", "筹码低位", "回踩确认突破", "假突破"],
                        horizontal=True, key="sys_job_sig")
-        sig_map = {"全部": None, "真三振": "true_resonance",
+        sig_map = {"全部": None, "真三振": "true_resonance", "回踩确认突破": "breakout_confirm",
+               "假突破": "false_breakout",
                    "VAP-ATR突破": "vap_atr", "筹码低位": "chip_low"}
         rows = scan_results_of(job_id, signal=sig_map[sig])
         st.caption(f"job #{job_id}（{sig}）共 {len(rows)} 只")
