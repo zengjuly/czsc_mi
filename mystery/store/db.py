@@ -351,7 +351,8 @@ class MysteryDB:
                     return str(row[0]) if row and row[0] else ""
                 finally:
                     conn.close()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"行业名读取失败: {e}")
             return ""
 
     def get_primary_industry(self, stock_code: str) -> Optional[tuple]:
@@ -654,7 +655,8 @@ class MysteryDB:
                     return fin
                 finally:
                     conn.close()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"财务数据读取失败: {e}")
             return {}
 
     # ---------------- 缠论缓存 ----------------
