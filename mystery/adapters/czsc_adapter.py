@@ -362,11 +362,17 @@ class CzscAdapter:
                                                             "close": "收盘价",
                                                             "dt": "日期"}),
                               freq)
-                bars = [Bar(dt=str(r["日期"])[:10], open=float(r["开盘价"]),
-                            high=float(r["最高价"]), low=float(r["最低价"]),
-                            close=float(r["收盘价"]), volume=float(r["成交量"]),
-                            amount=float(r["成交额"]))
-                        for _, r in df.iterrows()]
+                _dt = df["日期"].astype(str).str[:10].tolist()
+                _o = df["开盘价"].astype(float).tolist()
+                _h = df["最高价"].astype(float).tolist()
+                _l = df["最低价"].astype(float).tolist()
+                _c = df["收盘价"].astype(float).tolist()
+                _v = df["成交量"].astype(float).tolist()
+                _a = df["成交额"].astype(float).tolist()
+                bars = [Bar(dt=d, open=o, high=h, low=l, close=c,
+                            volume=v, amount=a)
+                        for d, o, h, l, c, v, a in zip(
+                            _dt, _o, _h, _l, _c, _v, _a)]
                 series = BarSeries(symbol=daily.symbol, freq=freq,
                                    adjust=daily.adjust, bars=bars,
                                    source=f"{daily.source}:resample")
