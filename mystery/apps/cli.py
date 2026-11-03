@@ -14,6 +14,7 @@ import argparse
 import json
 import logging
 import sys
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -179,6 +180,31 @@ def _write_scan_report(results, args) -> None:
     print(f"报告已生成: {html}")
     if qa_line:
         print(f"[换手QA] {qa_line}")
+    if (rc := _suffix_orphans_hard_fail()):
+        return rc
+    return 0
+
+
+def _suffix_orphans_hard_fail() -> int:
+    """W48 收口：suffix_orphans 默认仅 QA WARN（不阻断 cron）。
+
+    设环境变量 MYSTERY_SUFFIX_ORPHANS_FAIL=1 时升级为硬失败：库内仍存在
+    suffix_orphans 孤儿行（W46 回潮）则返回退出码 4，供 daily_pipeline.sh /
+    cron 据此告警。默认（未设开关）返回 0，不打断流程。
+    """
+    if not os.environ.get("MYSTERY_SUFFIX_ORPHANS_FAIL"):
+        return 0
+    try:
+        from ..store.db import MysteryDB
+        orphan = MysteryDB().data_fingerprint().get("suffix_orphans") or 0
+    except Exception:  # noqa: BLE001 指纹读取失败不应阻断主流程
+        return 0
+    if orphan:
+        print(f"ERROR: K线表存在 {orphan} 行 suffix_orphans 孤儿"
+              f"（W46 回潮），MYSTERY_SUFFIX_ORPHANS_FAIL 已开启 → exit 4",
+              file=sys.stderr)
+        return 4
+    return 0
 
 
 def _print_db_fingerprint() -> None:
@@ -242,6 +268,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     n_quiet = sum(1 for r in results if r.get('chip_quiet'))
     print(f"\n共 {len(results)} 只 | 真三振 {n_tr} | VAP-ATR突破 {n_vap} | "
           f"筹码低位 {n_chip}（换手未知 {n_unknown} / 高位缩量 {n_quiet}）")
+    if (rc := _suffix_orphans_hard_fail()):
+        return rc
     return 0
 
 
