@@ -93,7 +93,7 @@ def calculate_adaptive_vap_atr(data: pd.DataFrame, n: int = 60, atr_m: int = 14,
     df['platform_upper'] = df['poc'] + k * df['matr']
     df['platform_lower'] = df['poc'] - k * df['matr']
     is_breakout = ((df[col_close] > df['platform_upper']) & (df[col_close] > df[col_open])
-                   & (gravity > 0.5) & ~is_limit_up.shift(1).fillna(False))
+                   & (gravity > 0.5) & is_limit_up.shift(1).fillna(False).eq(False))
     df['is_breakout'] = is_breakout.fillna(False)
     return df
 
