@@ -8,38 +8,52 @@ import io
 import contextlib
 import os
 
+import pytest
+
 from mystery.apps import cli
 import mystery.store.db as dbmod
 
 
-def _patch_db(orphan_count, boom=False):
-    class _DB:
-        def data_fingerprint(self):
-            if boom:
-                raise RuntimeError("db locked")
-            return {"suffix_orphans": orphan_count}
-    dbmod.MysteryDB = lambda: _DB()
+@pytest.fixture
+def _patch_db():
+    """临时把 dbmod.MysteryDB 换成无参桩，测试结束还原，避免泄漏到其他用例。
+
+    原实现用裸模块赋值（无 teardown），会让桩对象泄漏到同会话后续用例，
+    导致其它测试里 MysteryDB(db_path=...) 调用撞上无参 lambda 报 TypeError。
+    """
+    orig = dbmod.MysteryDB
+
+    def _apply(orphan_count, boom=False):
+        class _DB:
+            def data_fingerprint(self):
+                if boom:
+                    raise RuntimeError("db locked")
+                return {"suffix_orphans": orphan_count}
+        dbmod.MysteryDB = lambda: _DB()
+
+    yield _apply
+    dbmod.MysteryDB = orig
 
 
-def test_default_warn_returns_zero():
+def test_default_warn_returns_zero(_patch_db):
     os.environ.pop("MYSTERY_SUFFIX_ORPHANS_FAIL", None)
     _patch_db(5)
     assert cli._suffix_orphans_hard_fail() == 0
 
 
-def test_flag_off_with_orphans_is_zero():
+def test_flag_off_with_orphans_is_zero(_patch_db):
     os.environ["MYSTERY_SUFFIX_ORPHANS_FAIL"] = ""
     _patch_db(5)
     assert cli._suffix_orphans_hard_fail() == 0
 
 
-def test_flag_on_no_orphans_returns_zero():
+def test_flag_on_no_orphans_returns_zero(_patch_db):
     os.environ["MYSTERY_SUFFIX_ORPHANS_FAIL"] = "1"
     _patch_db(0)
     assert cli._suffix_orphans_hard_fail() == 0
 
 
-def test_flag_on_with_orphans_returns_four():
+def test_flag_on_with_orphans_returns_four(_patch_db):
     os.environ["MYSTERY_SUFFIX_ORPHANS_FAIL"] = "1"
     _patch_db(3)
     buf = io.StringIO()
@@ -49,7 +63,7 @@ def test_flag_on_with_orphans_returns_four():
     assert "exit 4" in buf.getvalue()
 
 
-def test_fingerprint_error_degrades_to_zero():
+def test_fingerprint_error_degrades_to_zero(_patch_db):
     os.environ["MYSTERY_SUFFIX_ORPHANS_FAIL"] = "1"
     _patch_db(0, boom=True)
     assert cli._suffix_orphans_hard_fail() == 0
