@@ -368,6 +368,10 @@ class AnalysisService:
         if not daily.bars:
             raise RuntimeError(f"[{symbol}] 无日K数据（本地库/在线源均失败）")
         trade_date = str(daily.bars[-1].dt)[:10]
+        # W优化⑥：日K指纹只算一次（O(n) vol_sum 遍历），缓存键/结果/落库
+        # 三处复用，避免全市场冷缓存扫描时每票 3× 重复计算。
+        from ..store.cache import bars_fingerprint
+        fp = bars_fingerprint(daily.bars)
         # ---- 缓存读（W23）----
         ck = None
         # 010.md 6C：混合分路径（结构开+分开关）用新规则口径 ver；分关不变
@@ -375,15 +379,13 @@ class AnalysisService:
         rule = RULE_VER_CHAN if mix else RULE_VER
         if use_cache and cache_allowed(daily):
             try:
-                from ..store.cache import AnalysisCache, bars_fingerprint, \
-                    make_cache_key
+                from ..store.cache import AnalysisCache, make_cache_key
                 from ..adapters.czsc_adapter import czsc_version
                 ver = czsc_version() if chan_enabled() else ''
                 # W36 P1-1：F 位入键——扫描链(F=0)缺 ROE 的 unknown 结果
                 # 不得被个股详情(F=1,在线补齐)误命中，反之亦然。
                 flags = (f"D{int(include_detail)}|C{int(chan_enabled())}"
                          f"|S{int(chan_score_enabled())}|F{int(fill_financial)}")
-                fp = bars_fingerprint(daily.bars)
                 ck = make_cache_key(
                     daily.adjust, rule, flags, ver, fp)
                 hit = AnalysisCache(self.market.db).get(
@@ -430,7 +432,6 @@ class AnalysisService:
         if chan:
             from ..adapters.czsc_adapter import czsc_version
             czsc_ver = czsc_version()
-        from ..store.cache import bars_fingerprint as _fp
         result = AnalysisResult(
             symbol=internal,
             name=name,
@@ -448,20 +449,20 @@ class AnalysisService:
             financial=ctx.financial,
             rule_ver=rule,
             czsc_ver=czsc_ver,
-            bars_fingerprint=_fp(daily.bars)[:8],   # W33 诊断展示
+            bars_fingerprint=fp[:8],   # W33 诊断展示（W优化⑥：复用单次计算）
             data_source=daily.source,               # W33 诊断展示
         )
         # ---- 缓存写（W23）----
         if ck is not None:
             try:
-                from ..store.cache import AnalysisCache, bars_fingerprint
+                from ..store.cache import AnalysisCache
                 AnalysisCache(self.market.db).put(
                     result.symbol, result.trade_date, ck, result.to_dict(),
                     adjust=daily.adjust, rule_ver=result.rule_ver,
                     chan_enabled=chan_enabled(),
                     chan_score=chan_score_enabled(),
                     czsc_ver=czsc_ver, include_detail=include_detail,
-                    fingerprint=bars_fingerprint(daily.bars))
+                    fingerprint=fp)
             except Exception as e:
                 logger.debug(f"[cache] 写缓存失败({symbol}): {str(e)[:80]}")
         return result

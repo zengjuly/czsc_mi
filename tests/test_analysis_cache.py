@@ -209,3 +209,33 @@ def test_scan_cache_env_gate(monkeypatch):
     assert scan_cache_enabled() is False
     monkeypatch.setenv('MYSTERY_SCAN_CACHE', '1')
     assert scan_cache_enabled() is True
+
+
+def test_fingerprint_computed_once_per_call(db, monkeypatch):
+    """W优化⑥：每票 analyze_one_stock 只算一次日K指纹（O(n) vol_sum 遍历），
+    缓存键 / 结果字段 / 缓存落库三处复用，不再 3× 重复计算。
+
+    cache hit、cache miss、use_cache=False 三种路径都应恰好调用 1 次。
+    """
+    import mystery.store.cache as cache
+    _patch_env(monkeypatch)
+    orig = cache.bars_fingerprint
+    counter = {'n': 0}
+
+    def counting_fp(bars):
+        counter['n'] += 1
+        return orig(bars)
+    monkeypatch.setattr(cache, 'bars_fingerprint', counting_fp)
+
+    svc, calls = _make_service(monkeypatch, db)
+    counter['n'] = 0
+    svc.analyze_one_stock('600519.SH')          # cache miss：算 1 次
+    assert counter['n'] == 1, 'cache miss 也应只算一次'
+
+    counter['n'] = 0
+    svc.analyze_one_stock('600519.SH')          # cache hit：仍只算 1 次
+    assert counter['n'] == 1, 'cache hit 只算一次（指纹用于键+命中回填）'
+
+    counter['n'] = 0
+    svc.analyze_one_stock('600519.SH', use_cache=False)  # 关缓存：仍只算 1 次
+    assert counter['n'] == 1, 'use_cache=False 只算一次（结果/落库复用）'
