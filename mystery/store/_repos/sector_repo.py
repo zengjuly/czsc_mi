@@ -105,6 +105,10 @@ class SectorRepoMixin(BaseRepoMixin):
 
             W39：sector_kline 只有读路径没有写路径导致停更近一月——同步统一走
             sync_sector_kline（fuyao index-historical 归一通道），本方法为其唯一写入口。
+
+            性能：iterrows 逐行构建参数元组改为 .values+zip 向量化（保留
+            float()/int(v) if pd.notna(v) else 0 / str(dd)[:10] 语义；缺失的
+            volume/amount 列兜底为 0，与原 r.get() 容错等价）。
             """
             if df is None or df.empty:
                 return 0
@@ -117,16 +121,20 @@ class SectorRepoMixin(BaseRepoMixin):
             need = {'date', 'open', 'high', 'low', 'close'}
             if not need.issubset(d.columns):
                 raise ValueError(f"sector_kline 缺列: {sorted(need - set(d.columns))}")
-            rows = []
-            for _, r in d.iterrows():
-                vol = r.get('volume')
-                amt = r.get('amount')
-                rows.append((code, sector_name or code,
-                             str(r['date'])[:10],
-                             float(r['open']), float(r['high']),
-                             float(r['low']), float(r['close']),
-                             int(vol) if pd.notna(vol) else 0,
-                             float(amt) if pd.notna(amt) else 0.0))
+            # 缺失 volume/amount 列时兜底 0（与原 r.get() 返回 None → 0 一致）。
+            vols = d['volume'] if 'volume' in d.columns else pd.Series(0, index=d.index)
+            amts = d['amount'] if 'amount' in d.columns else pd.Series(0.0, index=d.index)
+            rows = [
+                (code, sector_name or code,
+                 str(dd)[:10],
+                 float(o), float(h), float(l), float(c),
+                 int(v) if pd.notna(v) else 0,
+                 float(a) if pd.notna(a) else 0.0)
+                for dd, o, h, l, c, v, a in zip(
+                    d['date'].values, d['open'].values, d['high'].values,
+                    d['low'].values, d['close'].values,
+                    vols.values, amts.values)
+            ]
             with self._lock:
                 conn = self._connect()
                 try:
