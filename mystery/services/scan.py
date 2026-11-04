@@ -46,19 +46,24 @@ def _write_scan_batch(db, results: List[Dict[str, Any]], failed: int,
             "n_ok, n_fail, scan_type) VALUES (?,?,?,?,?,?)",
             (trade_date or "", started, started, len(results), failed, scan_type))
         job_id = cur.lastrowid
-        for r in results:
-            conn.execute(
+        # W60（P2-4 同思路）：逐行 INSERT → executemany 批量，5000+ 票从
+        # 数千次往返降为单次批量（语义零回归，仍是先 DELETE 旧 job 再整批 INSERT）。
+        _rows = [
+            (job_id,
+             str(r.get("symbol", "")),
+             str(r.get("trade_date", "")),
+             r.get("score"),
+             1 if r.get("true_resonance") else 0,
+             1 if r.get("vap_atr_break") else 0,
+             1 if r.get("chip_low") else 0,
+             json.dumps(r, ensure_ascii=False))
+            for r in results
+        ]
+        if _rows:
+            conn.executemany(
                 "INSERT INTO scan_results (job_id, symbol, trade_date, score, "
                 "true_resonance, vap_atr_break, chip_low, payload_json) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (job_id,
-                 str(r.get("symbol", "")),
-                 str(r.get("trade_date", "")),
-                 r.get("score"),
-                 1 if r.get("true_resonance") else 0,
-                 1 if r.get("vap_atr_break") else 0,
-                 1 if r.get("chip_low") else 0,
-                 json.dumps(r, ensure_ascii=False)))
+                "VALUES (?,?,?,?,?,?,?,?)", _rows)
         conn.commit()
         return job_id
     finally:
@@ -99,17 +104,23 @@ def _append_scan_results(db, job_id: int, results: List[Dict[str, Any]],
     import sqlite3
     conn = db._connect()
     try:
-        for r in results:
-            conn.execute(
+        # W60：逐行 INSERT OR REPLACE → executemany 批量（断点续跑增量落库，
+        # PRIMARY KEY(job_id,symbol) 幂等覆盖语义不变）。
+        _rows = [
+            (job_id, str(r.get("symbol", "")),
+             str(r.get("trade_date", "")), r.get("score"),
+             1 if r.get("true_resonance") else 0,
+             1 if r.get("vap_atr_break") else 0,
+             1 if r.get("chip_low") else 0,
+             json.dumps(r, ensure_ascii=False))
+            for r in results
+        ]
+        if _rows:
+            conn.executemany(
                 "INSERT OR REPLACE INTO scan_results "
                 "(job_id, symbol, trade_date, score, true_resonance, "
                 "vap_atr_break, chip_low, payload_json) VALUES (?,?,?,?,?,?,?,?)",
-                (job_id, str(r.get("symbol", "")),
-                 str(r.get("trade_date", "")), r.get("score"),
-                 1 if r.get("true_resonance") else 0,
-                 1 if r.get("vap_atr_break") else 0,
-                 1 if r.get("chip_low") else 0,
-                 json.dumps(r, ensure_ascii=False)))
+                _rows)
         if failed_inc:
             conn.execute(
                 "UPDATE scan_jobs SET n_fail = COALESCE(n_fail,0) + ? "
