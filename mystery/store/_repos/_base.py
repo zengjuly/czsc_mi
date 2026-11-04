@@ -10,6 +10,37 @@ from ._helpers import *
 
 STORE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+class _ConnWrapper:
+    """连接代理：转发所有属性到真实 sqlite3.Connection。
+
+    复用期内 close() 为 no-op（连接归线程持有，进程/线程退出由 OS 回收），
+    消除每操作开关连接的抖动；不改变任何查询结果或事务语义。
+    """
+    __slots__ = ("_real",)
+
+    def __init__(self, real):
+            object.__setattr__(self, "_real", real)
+
+    def __getattr__(self, name):
+            return getattr(object.__getattribute__(self, "_real"), name)
+
+    def __setattr__(self, name, value):
+            if name == "_real":
+                object.__setattr__(self, name, value)
+            else:
+                setattr(object.__getattribute__(self, "_real"), name, value)
+
+    def close(self):
+            # 复用期内不真正关闭；释放由线程/进程退出兜底
+            pass
+
+    def _dispose(self):
+            try:
+                object.__getattribute__(self, "_real").close()
+            except Exception:
+                pass
+
+
 class BaseRepoMixin:
     """所有业务 Repo Mixin 的基类：提供 sqlite 短连接（WAL）、库初始化（建表+按序迁移）与线程锁。MysteryDB 通过多重继承聚合各业务 Mixin。"""
     def __init__(self, db_path: Optional[str] = None):
@@ -17,15 +48,38 @@ class BaseRepoMixin:
             self.db_path = db_path or _DEFAULT_DB
             os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
             self._lock = threading.RLock()
+            self._conn_local = threading.local()  # W61：每线程复用同一连接
             self._init_db()
     def _connect(self) -> sqlite3.Connection:
-            """打开短连接 sqlite（timeout=30, check_same_thread=False）并开启 WAL；PRAGMA 失败静默忽略。"""
-            conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
-            try:
-                conn.execute("PRAGMA journal_mode=WAL")
-            except Exception:
-                pass
-            return conn
+            """线程级连接复用（W61）：同一线程内复用同一底层 sqlite 连接。
+
+            旧实现每次 _connect() 都新建并关闭连接（含 WAL pragma），单票
+            analyze_one_stock 内 fetch_bars/get_industry/get_financial/
+            get_stock_name/cache.get/cache.put 共 11~13 次开闭；全市场扫描
+            数千票 = 数万次连接抖动。改为每线程持有一个连接（threading.local），
+            复用期内 close() 经 _ConnWrapper 变 no-op，进程/线程退出由 OS 回收。
+            每次复用前若残留未提交事务则 rollback，保证事务语义不变；读路径
+            不产生写锁、多连接经 WAL 并发安全；写入仍走既有 _lock + commit。
+            """
+            local = self._conn_local
+            w = getattr(local, "wrapper", None)
+            if w is not None:
+                # 清掉上一次操作异常路径遗留的未提交事务
+                try:
+                    if w.in_transaction:
+                        w.rollback()
+                except Exception:
+                    w = None
+            if w is None:
+                real = sqlite3.connect(self.db_path, timeout=30,
+                                       check_same_thread=False)
+                try:
+                    real.execute("PRAGMA journal_mode=WAL")
+                except Exception:
+                    pass
+                w = _ConnWrapper(real)
+                local.wrapper = w
+            return w
     def _init_db(self) -> None:
             """库不存在或缺表时执行 schema.sql（幂等 CREATE TABLE IF NOT EXISTS），
             再按文件名顺序执行 migrations/*.sql（W21，006.md 阶段 1）。

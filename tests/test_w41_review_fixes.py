@@ -64,10 +64,14 @@ def test_bj_segments_inference():
     assert _dot("乱码XX") == "乱码XX"  # 宽容回退语义保留
 
 
-def test_data_fingerprint_closes_connection(tmp_path):
+def test_data_fingerprint_reuses_connection(tmp_path):
+    """W61 后契约变更：同线程内 data_fingerprint 复用同一连接，而非每调用关闭。
+
+    原 test_data_fingerprint_closes_connection 锁定「每次用完即关」的无泄漏契约；
+    W61（MysteryDB._connect 线程级复用）改为每线程持有一条连接（受线程数上界
+    约束，同样无泄漏），故此处改为锁定复用语义 + close() 复用期内为 no-op。
+    """
     from mystery.store.db import MysteryDB
-    db = MysteryDB(db_path=str(tmp_path / "fp.db"))
-    before = len(sqlite3.Connection.__subclasses__() and []) or 0  # noqa: F841
     opened = []
     real_connect = sqlite3.connect
 
@@ -78,19 +82,19 @@ def test_data_fingerprint_closes_connection(tmp_path):
 
     sqlite3.connect = spy
     try:
+        db = MysteryDB(db_path=str(tmp_path / "fp.db"))  # 构造时已开 1 条
+        n_after_init = len(opened)
         db.data_fingerprint()
-        db.data_fingerprint()
+        db.data_fingerprint()  # 同线程复用，不应再开新连接
     finally:
         sqlite3.connect = real_connect
-    # 两次调用后所有句柄都已 close（对已关闭连接执行 SQL 会抛）
-    assert len(opened) >= 2, "spy 未捕获到连接（可能绕过了 sqlite3.connect）"
-    for c in opened:
-        try:
-            c.execute("SELECT 1")
-            closed_ok = False
-        except sqlite3.ProgrammingError:
-            closed_ok = True
-        assert closed_ok, "data_fingerprint 泄漏了未关闭的 SQLite 连接"
+    # 两次 data_fingerprint 复用同一条连接：真实 sqlite.connect 不再新增
+    assert len(opened) == n_after_init, (
+        f"期望同线程复用、不再开新连接，init 后开了 {len(opened) - n_after_init} 条")
+    # 复用期内 close() 为 no-op：底层真实连接仍可用（未真正关闭，无泄漏上界约束内）
+    c = db._connect()
+    c.close()
+    assert c._real.execute("SELECT 1").fetchone() == (1,)
 
 
 # ---- 第二批（本周项收口）----
