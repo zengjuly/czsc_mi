@@ -533,6 +533,35 @@ def _cmd_refresh_board_names(args: argparse.Namespace) -> int:
     return 0 if r.get("ok") else 1
 
 
+def _cmd_audit(args: argparse.Namespace) -> int:
+    """只读数据质量审计（不改变任何写入行为）。"""
+    from ..store import db as dbmod
+    from ..store.audit import audit_kline
+    db = dbmod.MysteryDB()
+    report = audit_kline(db.db_path, period=args.period)
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, default=str))
+        return 0
+    print(f"数据库: {report['db_path']}")
+    print(f"周期: {report['period']}  总行数: {report['row_count']}")
+    checks = report["checks"]
+    print("--- 质量问题 ---")
+    print(f"  重复主键 (code,date,period): {checks['duplicate_pk']}")
+    print(f"  空/非正收盘价:               {checks['null_or_nonpos_close']}")
+    print(f"  OHLC 逻辑错误:               {checks['invalid_ohlc']}")
+    print(f"  量>0 但额缺失:               {checks['volume_no_amount']}")
+    print(f"  交易日跳空(>7天):            {checks['date_gaps_gt_7d']}")
+    if args.verbose:
+        for key in ("duplicate_pk", "null_or_nonpos_close", "invalid_ohlc",
+                    "volume_no_amount", "date_gaps_gt_7d"):
+            samples = report["samples"].get(key) or []
+            if samples:
+                print(f"\n样本[{key}]（前 {len(samples)} 条）:")
+                for s in samples[:20]:
+                    print("  ", s)
+    return 0
+
+
 def main(argv: Optional[list] = None) -> int:
     # 未设 THS 路径时自动补 sibling Financial-API 默认（须在 load_config 前）
     _ensure_default_ths_env()
@@ -651,6 +680,13 @@ def main(argv: Optional[list] = None) -> int:
     wp = wsub.add_parser("refresh-board-names",
                          help="仅刷新板块展示名（重读 blocknew.cfg），不动自选股成员")
     wp.set_defaults(func=_cmd_refresh_board_names)
+
+    p = sub.add_parser("audit", help="只读数据质量审计（重复主键/空收盘价/OHLC异常/跳空）")
+    p.add_argument("--period", default="daily",
+                   choices=["daily", "weekly", "monthly"])
+    p.add_argument("--json", action="store_true", help="输出 JSON（便于 CI/管道）")
+    p.add_argument("--verbose", action="store_true", help="打印问题样本")
+    p.set_defaults(func=_cmd_audit)
 
     args = parser.parse_args(argv)
     args.cfg = load_config()
