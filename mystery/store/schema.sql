@@ -46,15 +46,8 @@ CREATE TABLE IF NOT EXISTS stock_financial_data (
 CREATE INDEX IF NOT EXISTS idx_financial_query
     ON stock_financial_data (code, report_date DESC);
 
--- 4. 分析结果缓存表
-CREATE TABLE IF NOT EXISTS mystery_analysis_cache (
-    stock_code      TEXT NOT NULL,
-    period          TEXT NOT NULL,
-    last_trade_date TEXT NOT NULL,
-    report_json     TEXT NOT NULL,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (stock_code, period, last_trade_date)
-);
+-- 4. （已清理）原 mystery_analysis_cache 为孤儿死表：无代码引用，真实分析结果缓存为 analysis_cache（migrations/002_analysis_cache.sql 创建）。
+--    清理见 migrations/004_drop_orphan_analysis_cache.sql（DROP TABLE IF EXISTS，幂等）。
 
 -- 5. 行业板块指数行情表（真实指数，非个股抽样）
 CREATE TABLE IF NOT EXISTS sector_kline (

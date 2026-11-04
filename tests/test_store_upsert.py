@@ -26,7 +26,7 @@ def test_schema_bootstrap():
         conn.close()
     for t in ["stock_kline_data", "stock_industry_info", "stock_financial_data",
               "sector_kline", "sector_meta", "stock_sector_rel",
-              "sector_constituents", "mystery_analysis_cache", "chan_cache"]:
+              "sector_constituents", "chan_cache"]:
         assert t in tables, f"缺表 {t}"
 
 

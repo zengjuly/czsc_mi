@@ -292,3 +292,5 @@ czsc-mi analyze --stock sh600519
   `sync-shares`（W27d）兜底。上游若加列再扩 WHERE，不猜列名硬筛。
 - tdx_api（tdx-api 容器）已实现并挂进 fallback，但容器未运行时会快速失败降级，
   不影响主链（db → ths_official 正常时不会触达）。
+
+    - `mystery_analysis_cache` 孤儿死表已清理（W59）：schema.sql 历史定义删除，新增迁移 `migrations/004_drop_orphan_analysis_cache.sql`（DROP TABLE IF EXISTS，幂等）。调查确认无任何业务代码引用（真实分析结果缓存为 `analysis_cache`，由 002 迁移创建）。
