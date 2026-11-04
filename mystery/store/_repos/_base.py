@@ -11,12 +11,15 @@ from ._helpers import *
 STORE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 class BaseRepoMixin:
+    """所有业务 Repo Mixin 的基类：提供 sqlite 短连接（WAL）、库初始化（建表+按序迁移）与线程锁。MysteryDB 通过多重继承聚合各业务 Mixin。"""
     def __init__(self, db_path: Optional[str] = None):
+            """初始化 db_path（缺省取 MYSTERY_DB_PATH 或仓库默认库），创建父目录与线程锁，并执行库初始化（建表+迁移）。"""
             self.db_path = db_path or _DEFAULT_DB
             os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
             self._lock = threading.RLock()
             self._init_db()
     def _connect(self) -> sqlite3.Connection:
+            """打开短连接 sqlite（timeout=30, check_same_thread=False）并开启 WAL；PRAGMA 失败静默忽略。"""
             conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
             try:
                 conn.execute("PRAGMA journal_mode=WAL")

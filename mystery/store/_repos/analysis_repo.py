@@ -10,6 +10,7 @@ from ._base import BaseRepoMixin
 from ._helpers import *
 
 class AnalysisRepoMixin(BaseRepoMixin):
+    """财务快照（stock_financial_data）列级 upsert/get 与缠论结构缓存（chan_cache）读写。"""
     def set_financial(self, code: str, report_date: str,
                           roe=None, roe_avg=None, np_margin=None, gp_margin=None,
                           pe=None, pb=None, eps_ttm=None, divid_cash=None) -> None:
@@ -70,6 +71,7 @@ class AnalysisRepoMixin(BaseRepoMixin):
                 return {}
     def get_chan_cache(self, symbol: str, freq: str, trade_date: str,
                            czsc_ver: str) -> Optional[str]:
+            """按 symbol/freq/trade_date/czsc_ver 精确读取缠论结构缓存 payload，未命中返回 None。"""
             with self._lock:
                 conn = self._connect()
                 try:
@@ -82,6 +84,7 @@ class AnalysisRepoMixin(BaseRepoMixin):
                     conn.close()
     def set_chan_cache(self, symbol: str, freq: str, trade_date: str,
                            czsc_ver: str, payload_json: str) -> None:
+            """写入/覆盖缠论结构缓存（symbol/freq/trade_date/czsc_ver/payload_json）。"""
             with self._lock:
                 conn = self._connect()
                 try:

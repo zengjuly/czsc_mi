@@ -10,6 +10,7 @@ from ._base import BaseRepoMixin
 from ._helpers import *
 
 class ScanRepoMixin(BaseRepoMixin):
+    """扫描相关 K 线读取：空 turn 缺口行捕获（null_turn_rows / between）、set_turn 仅填空不覆盖、turnover_coverage 覆盖率 QA。"""
     def null_turn_rows(self, trade_date: str,
                            codes: Optional[List[str]] = None) -> List[Dict]:
             """指定交易日 turn IS NULL 且 volume 有效的日K行 [{code,date,volume}]。"""

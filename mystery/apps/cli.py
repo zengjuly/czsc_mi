@@ -52,6 +52,7 @@ def _ensure_default_ths_env() -> None:
 
 
 def _cmd_analyze(args: argparse.Namespace) -> int:
+    """处理 `czsc-mi analyze`：单票深度分析，结果 JSON 输出到 stdout。return 0。"""
     from ..services.analyze import analyze_one_stock
 
     result = analyze_one_stock(args.stock, include_detail=not args.quick,
@@ -61,6 +62,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def _cmd_daily(args: argparse.Namespace) -> int:
+    """处理 `czsc-mi daily`：对自选/指定标的并发分析，生成 Excel/HTML 日报（含换手 QA 行与大盘滤网），按分排序；无结果或失败返回 1。"""
     from ..apps.reports.excel_report import write_excel
     from ..apps.reports.html_report import write_html
     from ..services import watchlist as _wl
@@ -221,6 +223,7 @@ def _print_db_fingerprint() -> None:
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
+    """处理 `czsc-mi scan`：全市场/自选/板块扫描并落 scan_jobs/scan_results；可选 --report 生成日报、--signal 过滤；末尾做 suffix_orphans 硬失败检查。"""
     from ..core.scan_signals import filter_by_signal
     from ..services import watchlist as _wl
     from ..services.scan import scan_market
@@ -274,6 +277,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 
 
 def _cmd_sync(args: argparse.Namespace) -> int:
+    """处理 `czsc-mi sync`：多周期行情同步（断点续跑；days/force/symbols/limit），输出 JSON。"""
     from ..services.sync import sync_market
 
     periods = list(dict.fromkeys(args.period or ['daily']))
@@ -285,6 +289,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 
 
 def _cmd_sync_shares(args: argparse.Namespace) -> int:
+    """处理 `czsc-mi sync-shares`：流通股本快照刷新；--from-adjustments 走除权事件增量路径（无事件零 HTTP 秒回）。"""
     from ..services.sync_shares import sync_shares
 
     if getattr(args, 'from_adjustments', False):
@@ -304,6 +309,7 @@ def _cmd_sync_shares(args: argparse.Namespace) -> int:
 
 
 def _cmd_sync_turnover(args: argparse.Namespace) -> int:
+    """处理 `czsc-mi sync-turnover`：每日空 turn 本地回算（纯派生不打 HTTP）；自检 calc_float 异常时非零退出。"""
     from datetime import datetime
 
     from ..services.sync_turnover import sync_turnover
@@ -483,6 +489,7 @@ def _turnover_qa_line(db, results, trade_date: str) -> str:
 
 
 def _cmd_sector_sync(args: argparse.Namespace) -> int:
+    """处理 `czsc-mi sector-sync`：同步板块成分股到 stock_sector_rel。"""
     from ..services.sync import sync_sector_constituents
 
     out = sync_sector_constituents(args.sector, cfg=args.cfg, limit=args.limit)
@@ -491,6 +498,7 @@ def _cmd_sector_sync(args: argparse.Namespace) -> int:
 
 
 def _cmd_sector_sync_kline(args: argparse.Namespace) -> int:
+    """处理 `czsc-mi sector-sync-kline`：增量同步板块指数日K 到 sector_kline（支持 full_since 全量重建）。"""
     from ..services.sync import sync_sector_kline
 
     out = sync_sector_kline(cfg=args.cfg, days=args.days,
@@ -501,6 +509,7 @@ def _cmd_sector_sync_kline(args: argparse.Namespace) -> int:
 
 
 def _cmd_watchlist_import_tdx(args: argparse.Namespace) -> int:
+    """处理 `watchlist import-tdx`：从通达信 zxg.blk 导入自选（合并不覆盖）。"""
     from ..services import watchlist as _wl
 
     r = _wl.import_from_tdx(args.cfg)
@@ -513,6 +522,7 @@ def _cmd_watchlist_import_tdx(args: argparse.Namespace) -> int:
 
 
 def _cmd_sync_tdx_boards(args: argparse.Namespace) -> int:
+    """处理 `watchlist sync-boards`：同步 tdx_local 自选板块（增量合并/覆盖/dry-run）。"""
     from ..services import watchlist as _wl
 
     r = _wl.sync_tdx_boards(args.cfg, boards=args.boards,
@@ -526,6 +536,7 @@ def _cmd_sync_tdx_boards(args: argparse.Namespace) -> int:
 
 
 def _cmd_refresh_board_names(args: argparse.Namespace) -> int:
+    """处理 `watchlist refresh-board-names`：仅刷新板块展示名（不动自选成员）。"""
     from ..services import watchlist as _wl
 
     r = _wl.refresh_board_names(args.cfg)
@@ -564,6 +575,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[list] = None) -> int:
     # 未设 THS 路径时自动补 sibling Financial-API 默认（须在 load_config 前）
+    """czsc-mi 命令入口：注入默认 THS 环境后构建 argparse 子命令（analyze/daily/scan/sync/sync-shares/sync-turnover/sector-sync/sector-sync-kline/watchlist/audit），分发到各 _cmd_*；统一映射 NotImplementedError(2)/TaskBusyError(3)/通用异常(1)。"""
     _ensure_default_ths_env()
     parser = argparse.ArgumentParser(prog="czsc-mi", description="Mistery 趋势交易分析")
     sub = parser.add_subparsers(dest="cmd", required=True)

@@ -10,6 +10,7 @@ from ._base import BaseRepoMixin
 from ._helpers import *
 
 class MetaRepoMixin(BaseRepoMixin):
+    """证券元信息读取、数据指纹（data_fingerprint）与换手覆盖率 QA 统计（stock_industry_info / stock_sector_rel）。"""
     def get_stock_list(self, stock_only: bool = True) -> List[Dict]:
             """证券列表 [{code, name}]，code 形如 sh.600519。"""
             with self._lock:

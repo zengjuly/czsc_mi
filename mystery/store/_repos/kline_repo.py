@@ -49,6 +49,7 @@ def _build_kline_rows(rows: pd.DataFrame, codes, period: str) -> List[tuple]:
 
 
 class KlineRepoMixin(BaseRepoMixin):
+    """K 线行情（stock_kline_data）读写：load 升序读取、kline_last_date 新鲜度、upsert/upsert_many 向量化写入（turn 用 COALESCE 保旧值、_t 拦假0）。"""
     def load_kline(self, code: str, period: str = 'daily',
                        start_date: Optional[str] = None,
                        end_date: Optional[str] = None) -> pd.DataFrame:

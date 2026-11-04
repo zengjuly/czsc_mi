@@ -10,11 +10,13 @@ from ._base import BaseRepoMixin
 from ._helpers import *
 
 class ShareRepoMixin(BaseRepoMixin):
+    """流通股本快照（float_share_snapshot）读写：单/批 upsert 与按 as_of 取最新快照。"""
     def upsert_float_share(self, thscode: str, as_of: str,
                                float_market_cap: Optional[float],
                                last_price: Optional[float],
                                float_shares: Optional[float],
                                source: str = 'auction_final') -> None:
+            """upsert 单只流通股本快照（thscode, as_of, 市值/现价/流通股，_f 归一；source 缺省 auction_final）。"""
             with self._lock:
                 conn = self._connect()
                 try:

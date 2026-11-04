@@ -10,6 +10,7 @@ from ._base import BaseRepoMixin
 from ._helpers import *
 
 class SectorRepoMixin(BaseRepoMixin):
+    """板块指数 K 线（sector_kline）与板块元数据/成分关系（sector_meta / stock_sector_rel）读写，代码归一 ths_ 前缀。"""
     def get_sector_kline(self, sector_code: str) -> Optional[pd.DataFrame]:
             """板块指数 K 线（升序，中文列：收盘价/成交额…）。自动归一 ths_ 前缀。"""
             code = str(sector_code)

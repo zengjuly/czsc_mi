@@ -111,6 +111,7 @@ def _invalidate_analysis(conn: sqlite3.Connection, codes) -> None:
         pass
 
 def _f(v: Any) -> Optional[float]:
+    """通用浮点归一：None / NaN / 不可转换值 → None，其余转 float。写入端标量清洗，与读端容错同源。"""
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return None
     try:
