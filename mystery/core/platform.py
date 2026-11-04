@@ -9,7 +9,6 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 
-
 def calculate_adaptive_lookback(data: pd.DataFrame, min_lookup: int = 10,
                                 max_lookup: int = 60,
                                 turnover_col: Optional[str] = None) -> Dict[str, Any]:
@@ -43,7 +42,6 @@ def calculate_adaptive_lookback(data: pd.DataFrame, min_lookup: int = 10,
     result['detail'] = (f'换手率自适应周期: 近20日日均换手{avg_turnover:.2f}%, '
                         f'理论N={theoretical_n:.1f}日, 自适应N={adaptive_n}日')
     return result
-
 
 def calculate_adaptive_vap_atr(data: pd.DataFrame, n: int = 60, atr_m: int = 14,
                                k: float = 1.8, market_type: str = 'MainBoard',
@@ -96,7 +94,6 @@ def calculate_adaptive_vap_atr(data: pd.DataFrame, n: int = 60, atr_m: int = 14,
                    & (gravity > 0.5) & is_limit_up.shift(1).fillna(False).eq(False))
     df['is_breakout'] = is_breakout.fillna(False)
     return df
-
 
 def analyze_adaptive_platform(data: pd.DataFrame, stock_code: str = '',
                               n: Optional[int] = None, atr_m: Optional[int] = None,
@@ -164,7 +161,3 @@ def analyze_adaptive_platform(data: pd.DataFrame, stock_code: str = '',
         result['详情'].append(f'自适应平台计算异常: {e}')
     return result
 
-
-def cns_adaptive_vap_atr(df: pd.DataFrame, n: int = 60, atr_m: int = 14,
-                         k: float = 1.8, market_type: str = 'MainBoard') -> pd.DataFrame:
-    return calculate_adaptive_vap_atr(df, n=n, atr_m=atr_m, k=k, market_type=market_type)

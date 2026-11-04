@@ -11,7 +11,7 @@
 """
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 # 换手合理区间（%）：日换手理论可近 100%（极端新股），>80 视为数据错误
 TURN_MIN, TURN_MAX = 0.0, 80.0

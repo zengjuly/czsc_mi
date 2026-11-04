@@ -9,7 +9,6 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-
 class PatternRecognition:
     """头肩 / 双重 / 三角形 / 楔形 形态识别。"""
 
@@ -260,6 +259,3 @@ class PatternRecognition:
             self.logger.error(f'❌ 识别所有形态异常: {e}')
             return {'主要形态': '异常', '详情': [f'识别异常: {e}']}
 
-
-def recognize_patterns(daily: pd.DataFrame, **kwargs) -> Dict[str, Any]:
-    return PatternRecognition().recognize_all_patterns(daily)

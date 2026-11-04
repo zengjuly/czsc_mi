@@ -25,24 +25,12 @@ def calculate_ma(data: pd.DataFrame, periods: Optional[List[int]] = None) -> pd.
         result[f'MA{period}'] = result['收盘价'].rolling(window=period).mean()
     return result
 
-
-def calculate_ema(data: pd.DataFrame, periods: Optional[List[int]] = None) -> pd.DataFrame:
-    if periods is None:
-        periods = [20]
-    result = data.copy()
-    close_col = '收盘价' if '收盘价' in result.columns else 'close'
-    for p in periods:
-        result[f'EMA{p}'] = result[close_col].ewm(span=p, adjust=False).mean()
-    return result
-
-
 def calculate_ma_slope(data: pd.DataFrame, period: int = 5, slope_period: int = 5) -> pd.DataFrame:
     result = data.copy()
     ma_col = f'MA{period}'
     if ma_col in result.columns:
         result[f'{ma_col}_斜率'] = result[ma_col].diff(periods=slope_period) / slope_period
     return result
-
 
 def calculate_ma_arrangement(data: pd.DataFrame) -> pd.DataFrame:
     """均线排列：1 多头 / 0 混合 / -1 空头；缺列返回原样。"""
@@ -77,7 +65,6 @@ def calculate_ma_arrangement(data: pd.DataFrame) -> pd.DataFrame:
         np.where(np.isnan(arrangement), np.nan, 0.0))
     return result
 
-
 def analyze_ma_signals(data: pd.DataFrame) -> pd.DataFrame:
     """均线金叉/死叉信号 + 突破MA20信号。"""
     result = data.copy()
@@ -107,7 +94,6 @@ def analyze_ma_signals(data: pd.DataFrame) -> pd.DataFrame:
     result['突破信号'] = brk
     return result
 
-
 # ---------------- 趋势（MACD / RSI） ----------------
 
 def calculate_macd(data: pd.DataFrame, fast_period: int = 12, slow_period: int = 26,
@@ -121,7 +107,6 @@ def calculate_macd(data: pd.DataFrame, fast_period: int = 12, slow_period: int =
     result['MACD_Area'] = result['MACD'].cumsum()
     result = result.drop(['EMA12', 'EMA26'], axis=1)
     return result
-
 
 def analyze_macd_signals(data: pd.DataFrame) -> pd.DataFrame:
     result = data.copy()
@@ -156,7 +141,6 @@ def analyze_macd_signals(data: pd.DataFrame) -> pd.DataFrame:
     result['MACD_柱状图信号'] = s3
     return result
 
-
 def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     """RSI（W41 #11 口径注记：SMA 均值版，非 Wilder ewm 平滑）。
 
@@ -176,7 +160,6 @@ def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     result = result.drop(['delta', 'gain', 'loss', 'avg_gain', 'avg_loss', 'rs'],
                          axis=1, errors='ignore')
     return result
-
 
 def analyze_rsi_signals(data: pd.DataFrame, oversold: float = 30,
                         overbought: float = 70) -> pd.DataFrame:
@@ -200,7 +183,6 @@ def analyze_rsi_signals(data: pd.DataFrame, oversold: float = 30,
     s2[2:] = up3.astype(np.int64) - down3.astype(np.int64)
     result['RSI_趋势信号'] = s2
     return result
-
 
 def calculate_trend_strength(data: pd.DataFrame) -> pd.DataFrame:
     result = data.copy()
@@ -233,7 +215,6 @@ def calculate_trend_strength(data: pd.DataFrame) -> pd.DataFrame:
         result['趋势强度_normalized'] = 0
     return result
 
-
 # ---------------- 动能（量比 / 换手率 / 量价） ----------------
 
 def calculate_volume_ratio(data: pd.DataFrame, period: int = 5) -> pd.DataFrame:
@@ -245,7 +226,6 @@ def calculate_volume_ratio(data: pd.DataFrame, period: int = 5) -> pd.DataFrame:
     result['量比'] = result['成交量'] / result['VMA']
     result = result.drop(['VMA'], axis=1)
     return result
-
 
 def calculate_turnover_rate(data: pd.DataFrame) -> pd.DataFrame:
     result = data.copy()
@@ -265,7 +245,6 @@ def calculate_turnover_rate(data: pd.DataFrame) -> pd.DataFrame:
     zone[finite & (turnover >= 8)] = '放量'
     result['换手率区域'] = zone
     return result
-
 
 def calculate_volume_signals(data: pd.DataFrame) -> pd.DataFrame:
     result = data.copy()
@@ -294,7 +273,6 @@ def calculate_volume_signals(data: pd.DataFrame) -> pd.DataFrame:
     result['成交量突破信号'] = s2
     return result
 
-
 def calculate_price_momentum(data: pd.DataFrame) -> pd.DataFrame:
     result = data.copy()
     result['价格变化率1日'] = result['收盘价'].pct_change() * 100
@@ -316,7 +294,6 @@ def calculate_price_momentum(data: pd.DataFrame) -> pd.DataFrame:
     state[(momentum > -5) & (momentum <= 0)] = '弱势'
     result['动能状态'] = state
     return result
-
 
 def calculate_volume_price_relation(data: pd.DataFrame) -> pd.DataFrame:
     result = data.copy()
@@ -363,7 +340,6 @@ def calculate_volume_price_relation(data: pd.DataFrame) -> pd.DataFrame:
     obv_sig[1:] = up.astype(float) - down.astype(float)
     result['OBV信号'] = obv_sig
     return result
-
 
 # ---------------- 加工链（main.py _calculate_all_indicators 复刻） ----------------
 

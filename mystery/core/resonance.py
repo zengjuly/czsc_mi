@@ -13,7 +13,6 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-
 def analyze_market_trend(index_data: pd.DataFrame) -> Dict[str, Any]:
     """大盘趋势：收盘价 vs MA20/MA60 + 近120日位置。"""
     result = {'趋势方向': '未知', '强度': 0, 'MA20状态': '未知', 'MA60状态': '未知',
@@ -65,7 +64,6 @@ def analyze_market_trend(index_data: pd.DataFrame) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f'❌ 分析市场趋势异常: {e}')
         return {'趋势方向': '异常', '详情': [f'分析异常: {e}']}
-
 
 def analyze_industry_trend(industry_data: Dict[str, pd.DataFrame], lookback: int = 10) -> Dict[str, Any]:
     """行业趋势（industry_data: {名称: K线df}）。"""
@@ -144,7 +142,6 @@ def analyze_industry_trend(industry_data: Dict[str, pd.DataFrame], lookback: int
         logger.error(f'❌ 分析行业趋势异常: {e}')
         return {**empty_result, '详情': [f'分析异常: {e}']}
 
-
 def calculate_industry_score_from_sector(sector_kline: pd.DataFrame) -> float:
     """板块指数 K 线（升序，含 收盘价/成交额）→ 行业强度分（0~25，>12.5 向上）。
 
@@ -176,15 +173,6 @@ def calculate_industry_score_from_sector(sector_kline: pd.DataFrame) -> float:
     except Exception as e:
         logger.error(f'❌ 行业指数趋势分异常: {e}')
         return 12.5
-
-
-def industry_trend_from_kline(sector_kline: pd.DataFrame) -> Optional[bool]:
-    """板块指数 K 线 → 行业趋势布尔（>12.5 向上）。"""
-    score = calculate_industry_score_from_sector(sector_kline)
-    if score is None:
-        return None
-    return bool(score > 12.5)
-
 
 def analyze_capital_flow(stock_data: Optional[pd.DataFrame]) -> Dict[str, Any]:
     """资金活跃度：量比/成交额/换手率。"""
@@ -228,7 +216,6 @@ def analyze_capital_flow(stock_data: Optional[pd.DataFrame]) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f'❌ 资金活跃度分析异常: {e}')
         return empty
-
 
 def calculate_resonance_score(individual_result: Dict, market_result: Dict,
                               industry_result: Dict,
@@ -293,28 +280,3 @@ def calculate_resonance_score(individual_result: Dict, market_result: Dict,
         return {'总共振评分': 0, '共振级别': '异常', 'score': 0, 'level': '异常',
                 'is_true_three_strike': False, '详情': [f'分析异常: {e}']}
 
-
-class ResonanceAnalyzer:
-    """兼容容器（纯函数门面，供旧调用风格使用）。"""
-
-    def analyze_market_trend(self, index_data: pd.DataFrame) -> Dict[str, Any]:
-        return analyze_market_trend(index_data)
-
-    def analyze_industry_trend(self, industry_data: Dict[str, pd.DataFrame],
-                               lookback: int = 10) -> Dict[str, Any]:
-        return analyze_industry_trend(industry_data, lookback=lookback)
-
-    def calculate_industry_score_from_sector(self, sector_code: str, db_path: str = None,
-                                             marketdb_df: pd.DataFrame = None) -> float:
-        if marketdb_df is not None:
-            return calculate_industry_score_from_sector(marketdb_df)
-        raise RuntimeError("core 层禁止查库：请先取板块K线 DataFrame 再调用")
-
-    def analyze_capital_flow(self, stock_data: Optional[pd.DataFrame]) -> Dict[str, Any]:
-        return analyze_capital_flow(stock_data)
-
-    def calculate_resonance_score(self, individual_result: Dict, market_result: Dict,
-                                  industry_result: Dict,
-                                  capital_result: Optional[Dict] = None) -> Dict[str, Any]:
-        return calculate_resonance_score(individual_result, market_result,
-                                         industry_result, capital_result)

@@ -195,26 +195,6 @@ class SectorRepoMixin(BaseRepoMixin):
                 finally:
                     conn.close()
             return [r[0] for r in rows]
-    def upsert_sector_meta(self, sector_code: str, sector_name: str,
-                               parent_type: str = '行业/概念',
-                               is_active: int = 1) -> None:
-            """upsert 板块元数据（保持入参原格式写入，与存量混格式兼容）。"""
-            with self._lock:
-                conn = self._connect()
-                try:
-                    conn.execute(
-                        "INSERT INTO sector_meta (sector_code, sector_name, parent_type, "
-                        "base_code, is_active, last_sync_date) VALUES (?,?,?,?,?,"
-                        "date('now','localtime')) "
-                        "ON CONFLICT(sector_code) DO UPDATE SET "
-                        "sector_name=excluded.sector_name, parent_type=excluded.parent_type, "
-                        "is_active=excluded.is_active, last_sync_date=excluded.last_sync_date",
-                        (str(sector_code).strip(), str(sector_name).strip(),
-                         parent_type, str(sector_code).strip().split('.')[-1]
-                         .replace('ths_', '')[:6], int(is_active)))
-                    conn.commit()
-                finally:
-                    conn.close()
     def ensure_sector_meta(self, sector_code: str) -> None:
             """板块元数据存在则只刷新 last_sync_date；不存在才插入占位行。
 
