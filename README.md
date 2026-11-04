@@ -53,6 +53,10 @@ czsc-mi sync-shares --watchlist
 czsc-mi sync-turnover --watchlist --date YYYY-MM-DD
 # 周日 10:00 cron（W27d）：全市场股本铺快照，断点重跑安全
 scripts/weekly_shares.sh
+
+# 只读数据质量巡检（W58）：重复主键/异常 OHLC/量额缺失/交易日跳空
+czsc-mi audit --period daily
+czsc-mi audit --period daily --json --verbose   # CI/流水线 JSON 输出
 ```
 
 ## 测试
@@ -65,7 +69,7 @@ pytest -m integration                   # 原机集成（需 MYSTERY_DB_PATH + T
 ## 阶段
 
 > **从零部署/配置/使用/验收完整指导见 [`docs/014.md`](docs/014.md)**；
-> 当前实现状态权威 = `DESIGN_DOCUMENT.md` §9（W20–W48 全记录，v0.10.23）。
+> 当前实现状态权威 = `DESIGN_DOCUMENT.md` §9（W20–W58 全记录，v0.10.27）。
 > 以下仅保留 P0–W5 早期里程碑摘要。
 
 - P0 骨架（models / 包结构 / 空 Adapter 接口）✅

@@ -120,6 +120,9 @@ analyze_one_stock(symbol):
   `sync --period daily [--period weekly] --days 365 [--symbols ...] [--limit] [--force]`
   （断点 `data/sync_checkpoint.json`，参数变化丢弃旧断点，中断再跑跳过已完成；
   周/月由日K重采样写入；证券列表为空报错退出）
+- 审计：`czsc-mi audit --period daily [--json] [--verbose]`（W58 新增，纯只读
+  巡检 `stock_kline_data`：重复主键/空非正收盘价/OHLC 逻辑错误/量>0 额缺失/
+  交易日跳空>7天；不执行任何写操作，适合定期/CI 巡检）。
 - Web：`streamlit run mystery/apps/web/app.py`（七视图：个股/自选/扫描/板块钻取/
   真三振池/系统状态/板块强度表，只调 Service；session 只存结果 dict；
   渲染与计算分离，不用 st.stop()；个股页 chan 开启时 plotly 自绘缠论图，
@@ -147,7 +150,7 @@ analyze_one_stock(symbol):
 
 ## 8. 测试与验收
 
-- `pytest -q -m "not integration"`：213 passed（models/core 合成 OHLC/czsc adapter
+- `pytest -q -m "not integration"`：358 passed, 15 deselected（models/core 合成 OHLC/czsc adapter
   mock K 线/金标 ≤ 1/scan_signals 三类信号/缠论图 plot_figure/technical 快照/
   Excel 单汇总页回归 + CLI 默认 THS 环境注入回归 + 换手覆盖率 QA + 除权事件股本重拉；
   web 页面冒烟自 v0.10.14 起归入 integration 池：`pytest -m integration` 本机跑）。
