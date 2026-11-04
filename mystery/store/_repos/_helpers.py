@@ -94,17 +94,19 @@ def _invalidate_analysis(conn: sqlite3.Connection, codes) -> None:
 
     与 K 线写入同一连接/事务；表缺失（未迁移）时静默跳过。
     在 commit 之前调用，随同一事务提交。
+
+    codes 只做一次 _dot 归一，两条 DELETE 复用同一参数列表，
+    避免对同批 code 重复归一（多票批量写入热路径上省掉近半 Python 开销）。
     """
+    params = [(_dot(c),) for c in codes]
     try:
         conn.executemany(
-            "DELETE FROM analysis_cache WHERE symbol=?",
-            [(_dot(c),) for c in codes])
+            "DELETE FROM analysis_cache WHERE symbol=?", params)
     except sqlite3.Error:
         pass
     try:
         conn.executemany(
-            "DELETE FROM chan_cache WHERE symbol=?",
-            [(_dot(c),) for c in codes])
+            "DELETE FROM chan_cache WHERE symbol=?", params)
     except sqlite3.Error:
         pass
 
