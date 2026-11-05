@@ -36,11 +36,14 @@ from mystery.services.analyze import (AnalysisService, chan_enabled,  # noqa: E4
 from mystery.services.scan import (scan_market, latest_scan_job,  # noqa: E402
                                    scan_results_of)
 from mystery.services import watchlist as _wl  # noqa: E402
-from .views.stock import *
-from .views.scan import *
-from .views.sector import *
-from .views.system import *
-from .views.components import *
+# W64：必须走绝对导入。app.py 由 `streamlit run ...app.py` 以脚本方式加载
+# （__package__ 为空），相对导入会抛 "attempted relative import with no known
+# parent package"。顶部已把项目根插入 sys.path，故 mystery.apps.web.views.* 可解析。
+from mystery.apps.web.views.stock import *  # noqa: E402,F403
+from mystery.apps.web.views.scan import *  # noqa: E402,F403
+from mystery.apps.web.views.sector import *  # noqa: E402,F403
+from mystery.apps.web.views.system import *  # noqa: E402,F403
+from mystery.apps.web.views.components import *  # noqa: E402,F403
 
 def main():
     # W42 v0.10.15: 访问鉴权门（~/.config/czsc_mi/web_auth.json 存在即启用；

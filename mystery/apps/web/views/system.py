@@ -2,6 +2,9 @@ from __future__ import annotations
 import logging
 import streamlit as st
 from .components import *
+# W64：拆分后跨 view 复用函数需显式导入（原单文件 app.py 同命名空间可直接调）。
+from .scan import _render_excel_download, _render_scan_table
+from .stock import _add_watchlist_widget
 
 def view_system():
     st.header("系统状态（只读）")
