@@ -1,9 +1,13 @@
 from __future__ import annotations
 import logging
+from datetime import datetime
+
 import streamlit as st
 from .components import *
 # W64：拆分后跨 view 复用函数需显式导入（原单文件 app.py 同命名空间可直接调）。
 from .stock import _add_watchlist_widget
+
+logger = logging.getLogger(__name__)
 
 # 年线系统 7 项具体条件（src 键 → 展示列名）[P2-3：原 app.py 顶层常量，随 _scan_table_data 迁入]
 _YEARLINE_DISP = [

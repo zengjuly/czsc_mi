@@ -201,6 +201,10 @@ def _render_bg_tasks():
         with _bg_lock():
             t = _bg_tasks().get(view_id)
         if t and t["results"]:
+            # 函数内延迟导入：_render_scan_table 定义在 scan.py，而 scan 依赖本
+            # 模块（from .components import *），顶层导入会形成循环导入。此处
+            # 调用发生在页面渲染阶段，各 view 模块均已加载完毕，导入安全。
+            from .scan import _render_scan_table
             _render_scan_table(t["results"], key=f"bg_{view_id}")
 
 def _sig_text(v) -> str:
