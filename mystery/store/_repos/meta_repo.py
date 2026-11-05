@@ -10,7 +10,6 @@ from ._base import BaseRepoMixin
 from ._helpers import *
 
 class MetaRepoMixin(BaseRepoMixin):
-    """证券元信息读取、数据指纹（data_fingerprint）与换手覆盖率 QA 统计（stock_industry_info / stock_sector_rel）。"""
     def get_stock_list(self, stock_only: bool = True) -> List[Dict]:
             """证券列表 [{code, name}]，code 形如 sh.600519。"""
             with self._lock:
@@ -59,6 +58,34 @@ class MetaRepoMixin(BaseRepoMixin):
                     return row
                 finally:
                     conn.close()
+    def get_primary_industries(self, stock_codes: List[str]) -> Dict[str, tuple]:
+            """批量主行业 → {stock_code: (sector_code, sector_name)}（无主行业不含 key）。
+
+            与 get_primary_industry 同归一、同 JOIN 与 is_primary 过滤；一次
+            IN 查询替代逐票查询，供扫描上下文批量预取（W63）。
+            """
+            out: Dict[str, tuple] = {}
+            if not stock_codes:
+                return out
+            seen: set = set()
+            with self._lock:
+                conn = self._connect()
+                try:
+                    ph = ",".join("?" * len(stock_codes))
+                    sql = ("SELECT r.stock_code, r.sector_code, m.sector_name "
+                           "FROM stock_sector_rel r LEFT JOIN sector_meta m "
+                           "ON r.sector_code=m.sector_code "
+                           "WHERE r.stock_code IN (%s) AND r.is_primary=1" % ph)
+                    rows = conn.execute(sql, tuple(stock_codes)).fetchall()
+                    for stock_code, sector_code, sector_name in rows:
+                        if stock_code in seen:
+                            continue
+                        seen.add(stock_code)
+                        out[stock_code] = (sector_code, sector_name)
+                finally:
+                    conn.close()
+            return out
+
     def data_fingerprint(self) -> Dict:
             """W31b（012.md）：QA/报表第一行标明「打的是哪套库」。
 

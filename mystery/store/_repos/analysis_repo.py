@@ -10,7 +10,6 @@ from ._base import BaseRepoMixin
 from ._helpers import *
 
 class AnalysisRepoMixin(BaseRepoMixin):
-    """财务快照（stock_financial_data）列级 upsert/get 与缠论结构缓存（chan_cache）读写。"""
     def set_financial(self, code: str, report_date: str,
                           roe=None, roe_avg=None, np_margin=None, gp_margin=None,
                           pe=None, pb=None, eps_ttm=None, divid_cash=None) -> None:
@@ -69,9 +68,47 @@ class AnalysisRepoMixin(BaseRepoMixin):
             except Exception as e:
                 logger.debug(f"财务数据读取失败: {e}")
                 return {}
+    def get_financials(self, codes: List[str]) -> Dict[str, Dict[str, Any]]:
+            """批量最新财报快照 → {db_code: {pe,pb,roe,...}}（无财务不含 key）。
+
+            与 get_financial 同字段、同归一（db_code_of）；每个 code 取
+            report_date 最新一条（窗口聚合），一次 IN 查询替代逐票查询，
+            供扫描上下文批量预取（W63）。
+            """
+            out: Dict[str, Dict[str, Any]] = {}
+            if not codes:
+                return out
+            from mystery.adapters.codes import db_code_of
+            db_codes = [db_code_of(c) if not c.startswith(('sh.', 'sz.', 'bj.'))
+                        else c for c in codes]
+            with self._lock:
+                conn = self._connect()
+                try:
+                    ph = ",".join("?" * len(db_codes))
+                    sql = ("SELECT f.code, f.report_date, f.roe, f.roe_avg, "
+                           "f.np_margin, f.gp_margin, f.net_profit, f.eps_ttm, "
+                           "f.PB, f.PE, f.divid_cash "
+                           "FROM stock_financial_data f "
+                           "JOIN (SELECT code, MAX(report_date) AS mr "
+                           "FROM stock_financial_data WHERE code IN (%s) "
+                           "GROUP BY code) latest "
+                           "ON f.code=latest.code AND f.report_date=latest.mr "
+                           "WHERE f.code IN (%s)" % (ph, ph))
+                    rows = conn.execute(sql, tuple(db_codes + db_codes)).fetchall()
+                    for row in rows:
+                        db_code = row[0]
+                        fin = {'report_date': row[1]}
+                        for k, v in zip(['roe', 'roe_avg', 'np_margin', 'gp_margin',
+                                         'net_profit', 'eps_ttm', 'PB', 'PE',
+                                         'divid_cash'], row[2:]):
+                            fin[k] = float(v) if v is not None else None
+                        out[db_code] = fin
+                finally:
+                    conn.close()
+            return out
+
     def get_chan_cache(self, symbol: str, freq: str, trade_date: str,
                            czsc_ver: str) -> Optional[str]:
-            """按 symbol/freq/trade_date/czsc_ver 精确读取缠论结构缓存 payload，未命中返回 None。"""
             with self._lock:
                 conn = self._connect()
                 try:
@@ -84,7 +121,6 @@ class AnalysisRepoMixin(BaseRepoMixin):
                     conn.close()
     def set_chan_cache(self, symbol: str, freq: str, trade_date: str,
                            czsc_ver: str, payload_json: str) -> None:
-            """写入/覆盖缠论结构缓存（symbol/freq/trade_date/czsc_ver/payload_json）。"""
             with self._lock:
                 conn = self._connect()
                 try:

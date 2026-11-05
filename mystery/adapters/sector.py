@@ -14,6 +14,10 @@ from ..store.db import MysteryDB
 
 logger = logging.getLogger(__name__)
 
+# 哨兵：区分 get_industry 的 primary 参数「未传（走原逻辑查库）」与
+# 「显式传入（含 None，表示已知无主行业）」。W63 扫描批量预取用。
+_MISSING = object()
+
 
 class SectorClient:
     """板块客户端。"""
@@ -40,13 +44,19 @@ class SectorClient:
         cache[code] = df
         return df
 
-    def get_industry(self, symbol: str) -> Dict:
-        """主行业：{code, name, score, up}。score 为 0~25 精确分（>12.5 向上）。"""
+    def get_industry(self, symbol: str, primary=_MISSING) -> Dict:
+        """主行业：{code, name, score, up}。score 为 0~25 精确分（>12.5 向上）。
+
+        W63：新增 primary 参数（预计算的主行业 (sector_code, sector_name)，
+        可能为 None 表示已知无主行业），传入可跳过逐票库查询；不传时走
+        原逻辑查库。用于扫描上下文批量预取。
+        """
         from ..adapters.codes import db_code_of
         db_code = db_code_of(symbol) if not symbol.startswith(('sh.', 'sz.', 'bj.')) else symbol
         out = {'code': None, 'name': '未知', 'score': None, 'up': None}
         try:
-            primary = self.db.get_primary_industry(db_code)
+            if primary is _MISSING:
+                primary = self.db.get_primary_industry(db_code)
             if primary:
                 s_code, s_name = primary[0], primary[1]
                 out['code'] = s_code

@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 
 from ..adapters import market as _market
 from ..adapters import sector as _sector
+from ..adapters.codes import db_code_of
 from ..config import load_config
 from ..core.models import (AnalysisResult, BarSeries, ChanStructure,
                            MarketContext, MysteryBreakdown,
@@ -35,6 +36,22 @@ def _warn_once(key: str, msg: str) -> None:
         logger.warning(msg)
 
 _INDEX_CODE = 'sh.000001'   # 上证指数
+
+
+class MarketContextCache:
+    """扫描批量预取的行业/财务缓存（W63）。
+
+    在 _scan_worker 为整批 codes 一次性批量查询后构造，传入
+    build_market_context 避免逐票查库。键为 db_code（与
+    SectorClient.get_industry / AnalysisRepoMixin.get_financial 内部归一一致）。
+    industries: {db_code: (sector_code, sector_name) 或 None(已知无主行业)}
+    financials: {db_code: 财务 dict（可能为空 {}）}
+    """
+    __slots__ = ("industries", "financials")
+
+    def __init__(self, industries=None, financials=None):
+        self.industries = industries or {}
+        self.financials = financials or {}
 
 
 def _env_flag(name: str) -> Optional[bool]:
@@ -215,7 +232,9 @@ class AnalysisService:
 
     # ---------------- 市场上下文 ----------------
     def build_market_context(self, symbol: str,
-                             fill_financial: bool = True) -> MarketContext:
+                             fill_financial: bool = True,
+                             ctx_cache: Optional['MarketContextCache'] = None
+                             ) -> MarketContext:
         """指数 + 行业（名称/强度分/趋势）+ 财务。
 
         W36 P1-1：fill_financial=False 时只用库内财务，缺则保持 None →
@@ -230,17 +249,25 @@ class AnalysisService:
                 ctx.index_bars = index_series
         except Exception as e:
             _warn_once("index", f"[ctx] 大盘指数获取失败: {str(e)[:60]}"                     "（共振判定按无指数降级）")
-        try:
+        # W63：批量预取路径（扫描链）直接取预计算，跳过逐票库查询；
+        # 指数已有会话级缓存、行业 K 线已实例级缓存，均不重复查。
+        db_code = (db_code_of(symbol) if not symbol.startswith(('sh.', 'sz.', 'bj.'))
+                   else symbol)
+        if ctx_cache is not None:
+            ind = self.sector.get_industry(
+                symbol, primary=ctx_cache.industries.get(db_code))
+        else:
             ind = self.sector.get_industry(symbol)
-            ctx.industry_name = ind.get('name') or '未知'
-            ctx.industry_score = ind.get('score')
-            ctx.industry_up = ind.get('up')
-        except Exception as e:
-            _warn_once("industry", f"[ctx] 行业获取失败: {str(e)[:60]}")
-        try:
-            ctx.financial = self.market.db.get_financial(symbol)
-        except Exception as e:
-            logger.debug(f"财务获取失败: {str(e)[:60]}")
+        ctx.industry_name = ind.get('name') or '未知'
+        ctx.industry_score = ind.get('score')
+        ctx.industry_up = ind.get('up')
+        if ctx_cache is not None:
+            ctx.financial = ctx_cache.financials.get(db_code) or {}
+        else:
+            try:
+                ctx.financial = self.market.db.get_financial(symbol)
+            except Exception as e:
+                logger.debug(f"财务获取失败: {str(e)[:60]}")
         # W9: 本地库缺财务（或只有 PE/PB 缺 ROE）→ ths 在线补齐并回填库。
         # valuations-snapshot(PE/PB/PS) + financials-indicators(扣非ROE/毛利率/净利率)
         # W36 P1-1：仅 fill_financial=True（个股交互路径）才允许外呼补齐。
@@ -357,7 +384,9 @@ class AnalysisService:
     def analyze_one_stock(self, symbol: str,
                           include_detail: bool = True,
                           use_cache: bool = True,
-                          fill_financial: bool = True) -> AnalysisResult:
+                          fill_financial: bool = True,
+                          ctx_cache: Optional['MarketContextCache'] = None
+                          ) -> AnalysisResult:
         """单票完整分析（CLAUDE.md §7.4 伪代码）。
 
         W23：use_cache=True 时头尾走 analysis_cache（键含开关/版本/K线指纹，
@@ -407,7 +436,8 @@ class AnalysisService:
 
         internal = daily.symbol
         ctx = self.build_market_context(internal,
-                                        fill_financial=fill_financial)
+                                        fill_financial=fill_financial,
+                                        ctx_cache=ctx_cache)
 
         # 缠论（P2：只展示不进评分；MYSTERY_CHAN_ENABLED=0 时 Service 不调用 Adapter）
         # 010.md 6C：mix（结构开+分开关）时标签进 scorer；

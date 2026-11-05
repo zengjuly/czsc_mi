@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from ..core.scan_signals import classify
 from ..store.db import MysteryDB
-from .analyze import AnalysisService
+from .analyze import AnalysisService, MarketContextCache
 from .task_lock import TaskBusyError, clear_progress, report_progress
 
 logger = logging.getLogger(__name__)
@@ -156,6 +156,16 @@ def _scan_worker(codes_batch: List[str], cfg: Optional[Dict],
     # W23：scan 链缓存开关（env MYSTERY_SCAN_CACHE，默认开）。
     from ..store.cache import scan_cache_enabled
     use_cache = scan_cache_enabled()
+    # W63：本批 codes 一次性批量预取行业 + 财务，传入 analyze_one_stock，
+    # 把 16 只 ×(行业 + 财务) 逐票查询降为 2 次 IN 查询（指数已有会话级
+    # 缓存、行业 K 线已在 sector client 实例级缓存，不重复查）。
+    from ..adapters.codes import db_code_of
+    _norm = lambda c: db_code_of(c) if not c.startswith(('sh.', 'sz.', 'bj.')) else c
+    _db_codes = [_norm(c) for c in codes_batch]
+    _ctx_cache = MarketContextCache(
+        industries=svc.market.db.get_primary_industries(_db_codes),
+        financials=svc.market.db.get_financials(_db_codes),
+    )
     out: List[Dict[str, Any]] = []
     failed = 0
     filtered = 0
@@ -178,13 +188,14 @@ def _scan_worker(codes_batch: List[str], cfg: Optional[Dict],
 
 
 def _scan_thread_worker(code: str, svc: AnalysisService,
-                        include_detail: bool, min_score: Optional[float]):
+                        include_detail: bool, min_score: Optional[float],
+                        ctx_cache=None):
     """线程池 worker（共享 svc）：返回 (dict or None, is_failed)。"""
     try:
         from ..store.cache import scan_cache_enabled
         r = svc.analyze_one_stock(code, include_detail=include_detail,
                                   use_cache=scan_cache_enabled(),
-                                  fill_financial=False)
+                                  fill_financial=False, ctx_cache=ctx_cache)
         d = r.to_dict()
         d.update(classify(d))
         if min_score is not None and (d.get('score') is None
@@ -545,9 +556,17 @@ def _scan_market_impl(limit: Optional[int] = None,
 
     # 线程池回退 / workers==1 / 小列表：共享 svc 单实例（W13 线程安全）
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    from ..adapters.codes import db_code_of
+    _norm = lambda c: db_code_of(c) if not c.startswith(('sh.', 'sz.', 'bj.')) else c
+    _db_codes = [_norm(c) for c in codes]
+    _ctx_cache = MarketContextCache(
+        industries=svc.market.db.get_primary_industries(_db_codes),
+        financials=svc.market.db.get_financials(_db_codes),
+    )
     with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
         futs = {ex.submit(_scan_thread_worker, code, svc,
-                          include_detail, min_score): code for code in codes}
+                          include_detail, min_score, _ctx_cache): code
+                for code in codes}
         for fut in as_completed(futs):
             done += 1
             d, is_fail = fut.result()
