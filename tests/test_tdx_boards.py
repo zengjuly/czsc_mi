@@ -26,7 +26,12 @@ def _make_blocknew(tmp_path, files: dict) -> str:
 
 @pytest.fixture
 def patch_tdx(monkeypatch, tmp_path):
-    """把 blocknew 目录重定向到 tmp，并把板块快照文件也重定向。"""
+    """把 blocknew 目录重定向到 tmp，并把自选股/板块快照文件也重定向。
+
+    W65：必须同时隔离 `_DEFAULT_WATCHLIST`。此前只隔离了 `_DEFAULT_BOARDS_PATH`，
+    `wl.save_watchlist([])` 会清空生产 `data/watchlist.json`，随后 sync 写入
+    mock 的 3 只（600519/000001/600036），导致日报扫描范围被测试污染。
+    """
     blk_dir = _make_blocknew(tmp_path, {
         "zxg.blk": ["1600519", "0000001"],          # → 自选股
         "龙头股.blk": ["1600519", "600036"],          # GBK 文件名
@@ -35,6 +40,9 @@ def patch_tdx(monkeypatch, tmp_path):
                         lambda: [blk_dir])
     boards_path = str(tmp_path / "tdx_boards.json")
     monkeypatch.setattr(wl, "_DEFAULT_BOARDS_PATH", boards_path)
+    # W65：自选股文件同样重定向，杜绝测试写生产 data/watchlist.json
+    monkeypatch.setattr(wl, "_DEFAULT_WATCHLIST",
+                        str(tmp_path / "watchlist.json"))
     wl.save_watchlist([])  # 空自选起步
     return blk_dir
 
