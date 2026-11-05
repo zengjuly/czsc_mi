@@ -290,21 +290,22 @@ def _ensure_scan_data(codes: List[str], svc: AnalysisService,
     try:
         conn = svc.market.db._connect()
         try:
+            # W62：三连查询（MAX(date) + 两遍 COUNT(DISTINCT)）合并为单条，
+            # 1 次 round-trip + 1 次全表扫描，语义零回归。空表时 db_latest=None、
+            # cov_n/cov_all=0，与原分支行为一致。
             row = conn.execute(
-                "SELECT MAX(date) FROM stock_kline_data WHERE period='daily'"
+                "SELECT "
+                "(SELECT MAX(date) FROM stock_kline_data WHERE period='daily') "
+                "AS db_latest, "
+                "COUNT(DISTINCT CASE WHEN date = "
+                "(SELECT MAX(date) FROM stock_kline_data WHERE period='daily') "
+                "THEN code END) AS cov_n, "
+                "COUNT(DISTINCT code) AS cov_all "
+                "FROM stock_kline_data WHERE period='daily'"
             ).fetchone()
             db_latest = str(row[0]) if row and row[0] else ""
-            # 覆盖率：最新日有数据的股票数 / 库内股票总数。只看 MAX(date)
-            # 太宽松——库里只有几只票有当天数据时会被误判「已最新」，
-            # 扫描仍拿旧行情（实测 09-28 仅 2 只有数据却判已最新）。
-            cov_n, cov_all = 0, 0
-            if db_latest:
-                cov_n = conn.execute(
-                    "SELECT COUNT(DISTINCT code) FROM stock_kline_data "
-                    "WHERE period='daily' AND date=?", (db_latest,)).fetchone()[0] or 0
-                cov_all = conn.execute(
-                    "SELECT COUNT(DISTINCT code) FROM stock_kline_data "
-                    "WHERE period='daily'").fetchone()[0] or 0
+            cov_n = int(row[1] or 0)
+            cov_all = int(row[2] or 0)
         finally:
             conn.close()
     except Exception as e:
