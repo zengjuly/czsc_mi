@@ -12,6 +12,12 @@
   LinkColumn 新标签 = 全新 session）用 URL 内嵌 HMAC token ``?at=`` 自动放行，
   密钥派生自凭据 hash，负载绑 用户名+nonce，24 小时时效；token 验过即从
   query 摘除。失败限速跨会话（文件级）。
+- **同一设备 48 小时免登录（W67）**：刷新页面 = 全新 Streamlit session，
+  ``session_state`` 必然清空。登录成功后用 ``components.html`` 注入 JS 写持久
+  cookie ``mystery_auth``（与 ``?at=`` 同一套 HMAC token，时效 48h，
+  ``max-age`` 同步），刷新时的 WS 初始请求带上该 cookie，由只读
+  ``st.context.cookies`` 读回并验签放行。改口令/换凭据（hash 变）即全量失效；
+  env ``MYSTERY_WEB_AUTH_REMEMBER_HOURS`` 可调时长，设为 0 关闭（退回每次登录）。
 
 管理口令：``python scripts/web_auth_init.py``（getpass 交互，支持 --user /
 --password-env 供非交互初始化）。
@@ -31,6 +37,10 @@ FAILS_FILE = Path.home() / ".config" / "czsc_mi" / "web_auth_fails.json"
 _ITERATIONS = 200_000
 _MAX_FAILS = 8
 _LOCK_SECONDS = 60
+
+# W67：同一设备持久登录（浏览器 cookie，默认 48 小时）
+_COOKIE_NAME = "mystery_auth"
+_DEFAULT_REMEMBER_HOURS = 48
 
 
 def _load_fail_state(now: float) -> tuple[int, float]:
@@ -141,6 +151,66 @@ def verify_auth_token(token: str, cred: dict | None = None) -> bool:
     return hmac.compare_digest(sig, want)
 
 
+# ---------------- 同一设备 48 小时免登录（W67） ----------------
+# 刷新 = 新 session，session_state["_auth_ok"] 必然丢失。Streamlit 至今没有
+# 写 cookie 的 Python API，只有只读 st.context.cookies（来自 WS 初始请求）。
+# 因此写端用 components.html 注入 JS 设 cookie，读端用 st.context.cookies 取回，
+# 复用上面的 HMAC 验签。cookie 与 token 双重 48h 时效；token 密钥派生自凭据
+# hash → 改口令/换凭据即全量失效。?at= 跨标签 token 仍是 24h，互不影响。
+
+
+def _remember_ttl() -> int:
+    """同一设备免登录时长（秒）。默认 48h；env MYSTERY_WEB_AUTH_REMEMBER_HOURS
+    可覆盖，设为 0 表示关闭持久登录（退回"每次刷新需登录"）。"""
+    try:
+        hours = float(os.environ.get("MYSTERY_WEB_AUTH_REMEMBER_HOURS",
+                                     str(_DEFAULT_REMEMBER_HOURS)))
+    except (TypeError, ValueError):
+        hours = _DEFAULT_REMEMBER_HOURS
+    if hours <= 0:
+        return 0
+    return int(hours * 3600)
+
+
+def _remember_cookie_js(token: str, ttl: int) -> str:
+    """生成写 cookie 的 JS（纯函数，便于离线测试）。
+
+    token 本身只含 [0-9a-f.] 与数字，仍用 json.dumps 生成 JS 字符串字面量，
+    保证任何输入都不构成注入面。
+    """
+    return (
+        "<script>"
+        f"document.cookie = '{_COOKIE_NAME}=' + {json.dumps(token)} + "
+        f"'; max-age={int(ttl)}; path=/; SameSite=Lax';"
+        "</script>"
+    )
+
+
+def _set_remember_cookie(cred: dict) -> None:
+    """登录成功后写持久 cookie。任何异常都不得阻断已经通过的登录。"""
+    ttl = _remember_ttl()
+    if ttl <= 0:
+        return
+    try:
+        import streamlit.components.v1 as components
+        token = make_auth_token(cred, ttl=ttl)
+        if token:
+            components.html(_remember_cookie_js(token, ttl), height=0)
+    except Exception:
+        pass
+
+
+def _cookie_token_valid(cred: dict, cookies) -> bool:
+    """从 WS 初始请求 cookies 取持久 token 验签（纯函数，便于离线测试）。"""
+    try:
+        raw = cookies.get(_COOKIE_NAME, "")
+        if isinstance(raw, (list, tuple)):
+            raw = raw[0] if raw else ""
+        return verify_auth_token(str(raw or ""), cred)
+    except Exception:
+        return False
+
+
 def require_login() -> bool:
     """登录门。True=放行（未启用或本会话已验证）；False=本次渲染已出示登录页，
     调用方必须 st.stop()。仅可在 Streamlit 运行时脚本内调用。"""
@@ -155,6 +225,10 @@ def require_login() -> bool:
         return True
 
     if st.session_state.get("_auth_ok"):
+        # W67：登录成功后的第一次 run 落持久 cookie。放在 st.rerun() 之后做，
+        # 避免 rerun 中断本轮导致 components.html 的 JS 来不及执行。
+        if st.session_state.pop("_auth_need_cookie", False):
+            _set_remember_cookie(cred)
         return True
 
     # 跨标签页 token 放行（扫描表「详情」LinkColumn 新标签 = 新 session）
@@ -171,6 +245,17 @@ def require_login() -> bool:
             return True
     except Exception:
         pass  # 非标准 runtime 拿不到 query_params → 走表单
+
+    # W67：同一设备 48h 免登录 —— 刷新后 session_state 已空，从浏览器 cookie 恢复。
+    # st.context.cookies 是只读的 WS 初始请求 cookies；旧版 Streamlit 无此属性时
+    # 抛异常，静默退回登录表单（不影响原有行为）。
+    if _remember_ttl() > 0:
+        try:
+            if _cookie_token_valid(cred, st.context.cookies):
+                st.session_state["_auth_ok"] = True
+                return True
+        except Exception:
+            pass
 
     now = time.time()
     # W48（review P1#7）：失败锁定改文件级（~/.config/czsc_mi/web_auth_fails.json）
@@ -194,6 +279,7 @@ def require_login() -> bool:
                 and verify_password(pwd, cred)):
             _save_fail_state(0, 0.0)
             st.session_state["_auth_ok"] = True
+            st.session_state["_auth_need_cookie"] = True
             st.rerun()
         fails += 1
         if fails >= _MAX_FAILS:
