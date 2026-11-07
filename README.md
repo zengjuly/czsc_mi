@@ -73,9 +73,12 @@ czsc-mi wave3 --market --limit 200 --json > wave3.json
 # W72：三级共振作为可过滤信号（默认可用，不改变触发语义）
 czsc-mi scan --watchlist --signal three_resonance
 
-# W72：三振共振口径开关（默认零变化，仅回测/评估用；切换会改信号语义）
+# W72：三振共振口径开关（显式 env 可逐项覆盖/完整回退）
 MYSTERY_RESONANCE_MARKET_MODE=yearline MYSTERY_RESONANCE_TRUE_THRESHOLD=80 \
   czsc-mi scan --watchlist --no-persist
+# W73：上述 yearline/80 已作为【生产默认】生效（不再需要 env），
+#       如需回退到 W71 的 ma/85 基线，显式设置以下 env 即可：
+# MYSTERY_RESONANCE_MARKET_MODE=ma MYSTERY_RESONANCE_TRUE_THRESHOLD=85 czsc-mi scan ...
 # 变量全表见 DESIGN_DOCUMENT.md §12.11；三浪详见 §12 与 docs/W68_三浪主升策略扫描.md
 ```
 
@@ -89,9 +92,10 @@ pytest -m integration                   # 原机集成（需 MYSTERY_DB_PATH + T
 ## 阶段
 
 > **从零部署/配置/使用/验收完整指导见 [`docs/014.md`](docs/014.md)**；
-> 当前实现状态权威 = `DESIGN_DOCUMENT.md` §9（W20–W72 全记录，v0.10.31）。
+> 当前实现状态权威 = `DESIGN_DOCUMENT.md` §9（W20–W73 全记录，v0.10.32）。
 > W70 三振实现审计与 W71 修复见 [`docs/W71_三振实现审计与修复.md`](docs/W71_三振实现审计与修复.md)；
-> W72 共振口径开关（默认零变化）见 [`docs/W72_三振共振口径参数化.md`](docs/W72_三振共振口径参数化.md)。
+> W72 共振口径开关（默认零变化）见 [`docs/W72_三振共振口径参数化.md`](docs/W72_三振共振口径参数化.md)；
+> W73 生产默认改为严格大盘腿 yearline + 阈值 80 见 [`docs/W73_三振生产默认_严格大盘腿_降阈值.md`](docs/W73_三振生产默认_严格大盘腿_降阈值.md)。
 > 以下仅保留 P0–W5 早期里程碑摘要。
 
 - P0 骨架（models / 包结构 / 空 Adapter 接口）✅

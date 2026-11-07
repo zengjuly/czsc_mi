@@ -342,7 +342,11 @@ def test_resonance_options_from_env(monkeypatch):
 
 
 def test_run_rules_passes_env_options_to_pipeline(monkeypatch):
-    """service 层读 env 后注入 pipeline.run_mystery（core 零 IO 契约）。"""
+    """W73：service 注入「生产默认 + 显式 env 覆盖」到 pipeline（core 零 IO）。
+
+    W72 原断言注入稀疏 env dict；W73 起 run_rules 改注入
+    resonance_options_effective()，故无 env 时也应带上生产默认两键。
+    """
     import mystery.core.pipeline as pipe
     captured = {}
 
@@ -351,18 +355,35 @@ def test_run_rules_passes_env_options_to_pipeline(monkeypatch):
         return pipe.MysteryBreakdown()
 
     monkeypatch.setattr(pipe, "run_mystery", fake_run_mystery)
-    monkeypatch.setenv("MYSTERY_RESONANCE_MARKET_MODE", "yearline")
+    for k, _ in svc._RESONANCE_ENV_KEYS:
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("MYSTERY_RESONANCE_MARKET_MODE", "ma")  # 显式覆盖大盘腿
     s = svc.AnalysisService.__new__(svc.AnalysisService)
     s.logic, s.patterns = MysteryLogic(), None
     s.run_rules(_series(_daily()), None, None, MarketContext(), False)
-    assert captured.get("resonance_options") == {"market_mode": "yearline"}
+    opts = captured.get("resonance_options")
+    assert opts["market_mode"] == "ma"                 # env 覆盖生效
+    assert opts["true_threshold"] == 80.0             # 生产默认仍在
+    assert svc.resonance_options_effective() == opts  # 单一事实源
 
 
-def test_resonance_cache_tag_default_is_empty(monkeypatch):
-    """默认口径 → 缓存 tag 为空，flags 逐字不变，既有缓存零失效。"""
+def test_resonance_cache_tag_default_is_nonempty_and_isolated(monkeypatch):
+    """W73：默认 tag 恒非空，且与 W71 口径（ma/85）键空间隔离。
+
+    W72 原契约「默认 tag 为空 → 既有缓存零失效」在生产默认改变后会造成
+    旧 ma/85 缓存被 yearline/80 命中，故 W73 改为恒非空 tag。
+    """
     for k, _ in svc._RESONANCE_ENV_KEYS:
         monkeypatch.delenv(k, raising=False)
-    assert svc.resonance_cache_tag() == ''
+    t = svc.resonance_cache_tag()
+    assert t.startswith('|R[') and 'market_mode=yearline' in t
+    assert 'true_threshold=80.0' in t
+    # 显式回退到 W71 口径 → tag 不同，不会互相污染
+    monkeypatch.setenv("MYSTERY_RESONANCE_MARKET_MODE", "ma")
+    monkeypatch.setenv("MYSTERY_RESONANCE_TRUE_THRESHOLD", "85")
+    t_w71 = svc.resonance_cache_tag()
+    assert t_w71 != t and 'market_mode=ma' in t_w71
+    assert 'true_threshold=85.0' in t_w71
 
 
 def test_resonance_cache_tag_stable_and_distinct(monkeypatch):

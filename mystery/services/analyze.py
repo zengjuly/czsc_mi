@@ -97,15 +97,29 @@ def pattern_weight_enabled() -> bool:
 
 
 # W72/建议5+7：共振口径开关（service 层读 env，注入 core，保持 core 零 IO）。
-# 全部未设置时返回 {} → core.resolve_resonance_options 回退到 W71 默认值，
-# 逐字段行为与 0.10.30 完全一致，不改变 RULE_VER / 综合评分 / true_resonance。
+# W73：生产默认口径由 PRODUCTION_RESONANCE_OPTIONS 定义（严格大盘腿 + 降阈值），
+# core.DEFAULT_RESONANCE_OPTIONS 仍保留 W71 库级/离线基线，两者职责分离：
+#   - core 默认值：离线单测、金标回放、库外调用方的稳定基线，绝不随生产策略漂移；
+#   - service 生产默认：Web / CLI / scan / 日报实际生效口径，可经 env 逐项覆盖。
 _RESONANCE_ENV_KEYS = (
     ('MYSTERY_RESONANCE_MARKET_MODE', 'market_mode'),          # ma | yearline
-    ('MYSTERY_RESONANCE_TRUE_THRESHOLD', 'true_threshold'),     # 默认 85
-    ('MYSTERY_RESONANCE_CAPITAL_MIN', 'capital_min_score'),     # 默认 8
-    ('MYSTERY_RESONANCE_CAPITAL_VR', 'capital_min_volume_ratio'),  # 默认 1.5
-    ('MYSTERY_RESONANCE_INDEX_MAX_LAG_DAYS', 'index_max_lag_days'),  # 默认 关闭
+    ('MYSTERY_RESONANCE_TRUE_THRESHOLD', 'true_threshold'),
+    ('MYSTERY_RESONANCE_CAPITAL_MIN', 'capital_min_score'),
+    ('MYSTERY_RESONANCE_CAPITAL_VR', 'capital_min_volume_ratio'),
+    ('MYSTERY_RESONANCE_INDEX_MAX_LAG_DAYS', 'index_max_lag_days'),
 )
+
+# W73 生产默认口径（用户拍板：严格大盘腿 + 降阈值）。取值依据见
+# docs/W73_严格大盘腿与降阈值设为生产默认.md 的生产库金标对拍：
+# yearline = 站年线 MA250 + MA5>MA20>MA60>MA250 多头顺次排列（更保守）；
+# 80 = W72 已对拍过的降档，score 80~84 放行，且 gates 为 all() 不绕过高位硬门闩。
+# 只需列出与 core 基线不同的项，其余由 resolve_resonance_options 补齐。
+PRODUCTION_RESONANCE_OPTIONS: Dict[str, Any] = {
+    "market_mode": "yearline",
+    "true_threshold": 80.0,
+    # 一键回退到 W71 口径：
+    #   MYSTERY_RESONANCE_MARKET_MODE=ma MYSTERY_RESONANCE_TRUE_THRESHOLD=85
+}
 
 
 def resonance_options_from_env() -> Dict[str, Any]:
@@ -113,6 +127,8 @@ def resonance_options_from_env() -> Dict[str, Any]:
 
     解析/合法性校验统一交给 ``core.resonance.resolve_resonance_options``，
     这里只做「env → dict」的搬运，避免在 service 层重复口径定义。
+    W73：本函数仍只返回**显式覆盖项**；实际生效口径见
+    ``resonance_options_effective``，保持 W72 的稀疏覆盖语义不变。
     """
     out: Dict[str, Any] = {}
     for env_key, opt_key in _RESONANCE_ENV_KEYS:
@@ -122,21 +138,33 @@ def resonance_options_from_env() -> Dict[str, Any]:
     return out
 
 
-def resonance_cache_tag() -> str:
-    """W72：口径开关的缓存键后缀（W23「改任何一项必 miss」契约）。
+def resonance_options_effective() -> Dict[str, Any]:
+    """W73：实际生效口径 = 生产默认 + 显式 env 覆盖。
 
-    - 默认（未设置任何 W72 env）返回 ``''``，``flags`` 逐字不变，
-      既有 analysis_cache 100% 命中、零失效；
-    - 显式设置口径时返回规范化后的稳定 tag，使不同口径结果不会
-      互相命中/污染缓存（例如 yearline 的结果不会被 ma 的调用读到）。
-    - 走 ``core.resolve_resonance_options`` 归一化，故 ``80`` 与
-      ``80.0``、非法值回退到默认等都得到同一个 tag，避免无谓 miss。
+    - 未设任何 env → 生产默认（yearline / 80）生效，Web/CLI/scan 全链路统一；
+    - 设 env → 逐项覆盖，含完整回退到 W71 口径（ma / 85）；
+    - 返回的是稀疏 dict，交由 core.resolve_resonance_options 归一化补齐，
+      core 保持零 IO 且不需要知道「生产默认」这个概念。
     """
-    opts = resonance_options_from_env()
-    if not opts:
-        return ''
+    out = dict(PRODUCTION_RESONANCE_OPTIONS)
+    out.update(resonance_options_from_env())
+    return out
+
+
+def resonance_cache_tag() -> str:
+    """W73：口径入缓存键（W23「改任何一项必 miss」契约）。
+
+    W72 时「默认口径 → tag 为空」，用于保证默认零变化、既有缓存零失效。
+    但 **生产默认一旦改变，空 tag 会让旧 ma/85 缓存被 yearline/80 命中**，
+    属口径污染。故 W73 起改为：tag 恒基于「实际生效口径」生成、恒非空：
+
+    - 旧缓存（W72 及以前，无 ``|R[...]`` 后缀）不会被新口径命中 → 自动失效重算；
+    - 不同口径（含显式回退 ma/85）各有独立键空间，不互相污染；
+    - 走 ``core.resolve_resonance_options`` 归一化，``80`` 与 ``80.0``、
+      非法值回退到基线等都得到同一个 tag，避免无谓 miss。
+    """
     from ..core.resonance import resolve_resonance_options
-    norm = resolve_resonance_options(opts)
+    norm = resolve_resonance_options(resonance_options_effective())
     sig = '|'.join(f'{k}={norm[k]}' for k in sorted(norm))
     return f'|R[{sig}]'
 
@@ -353,12 +381,12 @@ class AnalysisService:
                   include_detail: bool) -> MysteryBreakdown:
         from ..core import pipeline as _pipe
 
-        # W72：env 开关只在 service 层读取后注入 core（core 零 IO）。
-        # 未设置任何 W72 env 时为空 dict → core 回退 W71 默认，行为不变。
+        # W73：service 层把「生产默认口径 + 显式 env 覆盖」注入 core（core 零 IO）。
+        # 未设任何 env 时即为 yearline/80 生产默认；显式 env 可逐项覆盖或完整回退。
         return _pipe.run_mystery(daily, weekly, monthly, ctx,
                                  include_detail=include_detail, logic=self.logic,
                                  patterns=self.patterns,
-                                 resonance_options=resonance_options_from_env())
+                                 resonance_options=resonance_options_effective())
 
     def _analyze_chan(self, daily: BarSeries,
                       with_signals: bool = False) -> Dict[str, ChanStructure]:
@@ -463,8 +491,8 @@ class AnalysisService:
                 # 不得被个股详情(F=1,在线补齐)误命中，反之亦然。
                 flags = (f"D{int(include_detail)}|C{int(chan_enabled())}"
                          f"|S{int(chan_score_enabled())}|F{int(fill_financial)}")
-                # W72：口径开关入缓存键。默认返回 '' → flags 逐字不变，
-                # 既有缓存零失效；开启口径后独立键空间，避免互相污染。
+                # W73：口径恒入缓存键（tag 非空）。旧 ma/85 缓存无此后缀，
+                # 不会被 yearline/80 命中，避免切换默认后的口径污染。
                 flags += resonance_cache_tag()
                 ck = make_cache_key(
                     daily.adjust, rule, flags, ver, fp)
