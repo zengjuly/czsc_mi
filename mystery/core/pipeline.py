@@ -170,8 +170,13 @@ def run_mystery(daily: BarSeries,
                 ctx: Optional[MarketContext] = None,
                 include_detail: bool = True,
                 logic: Optional[MysteryLogic] = None,
-                patterns: Optional[PatternRecognition] = None) -> MysteryBreakdown:
-    """规则明细纯计算（与旧 stock_pipeline.analyze_one_stock 同构）。"""
+                patterns: Optional[PatternRecognition] = None,
+                resonance_options: Optional[Dict[str, Any]] = None) -> MysteryBreakdown:
+    """规则明细纯计算（与旧 stock_pipeline.analyze_one_stock 同构）。
+
+    W72：``resonance_options`` 由 service 层从 env 注入（core 零 IO）；
+    None/空 = W71 现状，两份共振计算（signal 复用 + bd.resonance）同源。
+    """
     logic = logic or MysteryLogic()
     patterns = patterns or PatternRecognition()
     daily_df = enrich_indicators(series_to_df(daily))
@@ -191,11 +196,12 @@ def run_mystery(daily: BarSeries,
     # scorer）与 bd.resonance（日报）使用，消除重复计算与口径分裂。
     resonance = logic.three_resonance_analysis(
         daily_df, market_data=market_data, industry_trend=ind_trend,
-        industry_data=None)
+        industry_data=None, options=resonance_options)
     bd.resonance = resonance
     bd.signal = logic.comprehensive_signal_analysis(
         daily_df, weekly_data=weekly_df, market_data=market_data,
-        industry_data=None, industry_trend=ind_trend, resonance=resonance)
+        industry_data=None, industry_trend=ind_trend, resonance=resonance,
+        options=resonance_options)
     bd.main_wave = logic.main_bull_wave_analysis(daily_df)
     bd.checklist8 = logic.main_bull_wave_checklist(daily_df, industry_trend=ind_trend)
     if include_detail:

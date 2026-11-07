@@ -709,8 +709,10 @@ def main(argv: Optional[list] = None) -> int:
                    help="最多扫 N 只（--watchlist 时默认全自选；全市场默认 100）")
     p.add_argument("--min-score", type=float, default=None)
     p.add_argument("--signal", default=None,
-                   choices=["vap_atr", "chip_low", "true_resonance"],
-                   help="只保留该信号的结果")
+                   choices=["vap_atr", "chip_low", "true_resonance",
+                            "three_resonance"],
+                   help="只保留该信号的结果（W72 新增 three_resonance："
+                        "大盘向上+行业向上+个股严格腿成立的三级共振）")
     p.add_argument("--report", action="store_true",
                    help="扫描后生成 Excel/HTML 日报（定时任务用，文件名同 daily）")
     p.add_argument("--no-persist", action="store_true", help="只打印不写库")

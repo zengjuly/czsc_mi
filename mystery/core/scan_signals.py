@@ -160,11 +160,28 @@ def classify(d: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _three_resonance_of(r: Dict[str, Any]) -> bool:
+    """W72/建议7：读取「三级共振」（大盘向上 + 行业向上 + 个股严格腿成立）。
+
+    该值由 W71 在 ``mystery.resonance.三级共振`` 计算（已修复恒 0 的旧问题），
+    此处只做只读暴露，不重算、不改 classify 返回契约。旧 job 缺字段、
+    unknown（None）一律当 False，禁止 unknown 当 True。同时兼容未来可能
+    打平到顶层的 ``three_resonance`` 键。
+    """
+    m = r.get("mystery") or {}
+    res = m.get("resonance") or {}
+    return bool(r.get("three_resonance") or res.get("三级共振"))
+
+
 def filter_by_signal(results: list, signal: str) -> list:
     """按信号名过滤扫描结果（signal ∈ vap_atr / chip_low / true_resonance /
-    bull_engulf / gap / gap_breakout / gap_continuation / gap_exhaustion /
-    low_ground_volume）。
+    three_resonance / bull_engulf / gap / gap_breakout / gap_continuation /
+    gap_exhaustion / low_ground_volume）。
     """
+    # W72/建议7：三级共振是结果明细里的既有判定，非 classify 打平字段，
+    # 单独走只读分支，避免改动 classify 的既有返回契约。
+    if signal == "three_resonance":
+        return [r for r in results if _three_resonance_of(r)]
     key = {"vap_atr": "vap_atr_break", "chip_low": "chip_low",
            "true_resonance": "true_resonance",
            "bull_engulf": "bull_engulf", "gap": "gap_up",

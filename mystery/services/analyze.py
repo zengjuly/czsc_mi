@@ -96,6 +96,51 @@ def pattern_weight_enabled() -> bool:
     return bool((load_config().get('scoring') or {}).get('pattern_weight', False))
 
 
+# W72/建议5+7：共振口径开关（service 层读 env，注入 core，保持 core 零 IO）。
+# 全部未设置时返回 {} → core.resolve_resonance_options 回退到 W71 默认值，
+# 逐字段行为与 0.10.30 完全一致，不改变 RULE_VER / 综合评分 / true_resonance。
+_RESONANCE_ENV_KEYS = (
+    ('MYSTERY_RESONANCE_MARKET_MODE', 'market_mode'),          # ma | yearline
+    ('MYSTERY_RESONANCE_TRUE_THRESHOLD', 'true_threshold'),     # 默认 85
+    ('MYSTERY_RESONANCE_CAPITAL_MIN', 'capital_min_score'),     # 默认 8
+    ('MYSTERY_RESONANCE_CAPITAL_VR', 'capital_min_volume_ratio'),  # 默认 1.5
+    ('MYSTERY_RESONANCE_INDEX_MAX_LAG_DAYS', 'index_max_lag_days'),  # 默认 关闭
+)
+
+
+def resonance_options_from_env() -> Dict[str, Any]:
+    """读取 W72 共振口径 env（未设置的项不出现在返回 dict 中）。
+
+    解析/合法性校验统一交给 ``core.resonance.resolve_resonance_options``，
+    这里只做「env → dict」的搬运，避免在 service 层重复口径定义。
+    """
+    out: Dict[str, Any] = {}
+    for env_key, opt_key in _RESONANCE_ENV_KEYS:
+        v = os.environ.get(env_key)
+        if v is not None and v.strip() != '':
+            out[opt_key] = v.strip()
+    return out
+
+
+def resonance_cache_tag() -> str:
+    """W72：口径开关的缓存键后缀（W23「改任何一项必 miss」契约）。
+
+    - 默认（未设置任何 W72 env）返回 ``''``，``flags`` 逐字不变，
+      既有 analysis_cache 100% 命中、零失效；
+    - 显式设置口径时返回规范化后的稳定 tag，使不同口径结果不会
+      互相命中/污染缓存（例如 yearline 的结果不会被 ma 的调用读到）。
+    - 走 ``core.resolve_resonance_options`` 归一化，故 ``80`` 与
+      ``80.0``、非法值回退到默认等都得到同一个 tag，避免无谓 miss。
+    """
+    opts = resonance_options_from_env()
+    if not opts:
+        return ''
+    from ..core.resonance import resolve_resonance_options
+    norm = resolve_resonance_options(opts)
+    sig = '|'.join(f'{k}={norm[k]}' for k in sorted(norm))
+    return f'|R[{sig}]'
+
+
 def market_env_summary(market) -> Dict[str, Any]:
     """大盘滤网快照（W37，单一实现，四方展示只读调用）。
 
@@ -308,9 +353,12 @@ class AnalysisService:
                   include_detail: bool) -> MysteryBreakdown:
         from ..core import pipeline as _pipe
 
+        # W72：env 开关只在 service 层读取后注入 core（core 零 IO）。
+        # 未设置任何 W72 env 时为空 dict → core 回退 W71 默认，行为不变。
         return _pipe.run_mystery(daily, weekly, monthly, ctx,
                                  include_detail=include_detail, logic=self.logic,
-                                 patterns=self.patterns)
+                                 patterns=self.patterns,
+                                 resonance_options=resonance_options_from_env())
 
     def _analyze_chan(self, daily: BarSeries,
                       with_signals: bool = False) -> Dict[str, ChanStructure]:
@@ -415,6 +463,9 @@ class AnalysisService:
                 # 不得被个股详情(F=1,在线补齐)误命中，反之亦然。
                 flags = (f"D{int(include_detail)}|C{int(chan_enabled())}"
                          f"|S{int(chan_score_enabled())}|F{int(fill_financial)}")
+                # W72：口径开关入缓存键。默认返回 '' → flags 逐字不变，
+                # 既有缓存零失效；开启口径后独立键空间，避免互相污染。
+                flags += resonance_cache_tag()
                 ck = make_cache_key(
                     daily.adjust, rule, flags, ver, fp)
                 hit = AnalysisCache(self.market.db).get(

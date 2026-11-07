@@ -110,13 +110,27 @@ class MysteryLogic:
     # ---------- 三振共振 ----------
     def three_resonance_analysis(self, data: pd.DataFrame, market_data: Dict = None,
                                  industry_trend: bool = None,
-                                 industry_data: Dict = None) -> Dict[str, Any]:
-        """四维共振：个股 + 大盘 + 行业 + 资金。"""
+                                 industry_data: Dict = None,
+                                 options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """四维共振：个股 + 大盘 + 行业 + 资金。
+
+        W72/建议5+7：``options`` 由 service 层从 env 注入（core 零 IO）。
+        未注入或全默认时，逐字段行为与 W71 完全一致；可选大盘腿严格口径、
+        85 阈值/资金门槛参数化、指数滞后诊断/降级均为显式开关。
+        """
         try:
+            opts = _res.resolve_resonance_options(options)
             result = {'个股趋势': False, '行业趋势': False, '大盘趋势': False,
                       '三级共振': False, '共振评分': 0, '共振级别': '无共振',
                       '共振建议': '', '资金活跃': False, '最强板块': [], '大盘位置': '未知',
-                      '真三振': False, '详情': []}
+                      '真三振': False, '详情': [],
+                      # W72 纯增量诊断字段（默认不影响任何既有判定/评分）
+                      '共振口径': {'大盘口径': opts['market_mode'],
+                                   '真三振阈值': opts['true_threshold'],
+                                   '资金门槛分': opts['capital_min_score'],
+                                   '资金量比门槛': opts['capital_min_volume_ratio'],
+                                   '指数滞后上限': opts['index_max_lag_days']},
+                      '指数滞后天数': None, '大盘腿降级': False}
             stock_ok = False
             if '均线排列' in data.columns and pd.notna(data.iloc[-1]['均线排列']):
                 if data.iloc[-1]['均线排列'] == 1:
@@ -164,7 +178,22 @@ class MysteryLogic:
                 if index_name:
                     index_data = market_data[index_name]
             if index_data is not None and (not index_data.empty):
-                market_result = _res.analyze_market_trend(index_data)
+                # W72/建议5：默认 ma 口径走 W71 原函数；显式 yearline 走严格
+                # 年线多头口径（返回结构对齐，不改 position 门闩语义）。
+                if opts['market_mode'] == 'yearline':
+                    market_result = _res.analyze_market_trend_yearline(index_data)
+                else:
+                    market_result = _res.analyze_market_trend(index_data)
+                # W72/建议5：指数滞后诊断。生产实测指数常滞后个股 1-3 天属正常，
+                # 故默认只记录、不降级；仅显式设置 index_max_lag_days 且超限时
+                # 才把大盘腿收紧为「未知」（绝不放行），避免跨期错配误判顺势。
+                lag = _res.index_lag_days(data, index_data)
+                result['指数滞后天数'] = lag
+                max_lag = opts['index_max_lag_days']
+                if max_lag is not None and lag is not None and lag > max_lag:
+                    market_result = dict(market_result)
+                    market_result['趋势方向'] = '未知'
+                    result['大盘腿降级'] = True
                 mk_trend = market_result.get('趋势方向', '未知')
                 result['大盘趋势'] = mk_trend == '向上'
                 result['大盘位置'] = market_result.get('position', '未知')
@@ -173,14 +202,17 @@ class MysteryLogic:
                 result['大盘趋势'] = False
                 result['详情'].append('大盘趋势数据缺失')
                 market_result = {'趋势方向': '未知', 'position': '未知', '详情': []}
-            capital_result = _res.analyze_capital_flow(data)
+            capital_result = _res.analyze_capital_flow(
+                data, min_score=opts['capital_min_score'],
+                min_volume_ratio=opts['capital_min_volume_ratio'])
             result['资金活跃'] = capital_result.get('active', False)
             if capital_result.get('detail'):
                 result['详情'].append(f"资金: {capital_result.get('detail')}"
                                       f"(得分{capital_result.get('score', 0)})")
             resonance = _res.calculate_resonance_score(
                 individual_result=individual_result, market_result=market_result,
-                industry_result=industry_result, capital_result=capital_result)
+                industry_result=industry_result, capital_result=capital_result,
+                true_threshold=opts['true_threshold'])
             result['共振评分'] = resonance.get('score', 0)
             result['共振级别'] = resonance.get('level', '无共振')
             result['共振建议'] = resonance.get('advice', '')
@@ -316,19 +348,23 @@ class MysteryLogic:
                                       market_data: Dict = None,
                                       industry_data: Dict = None,
                                       industry_trend: bool = None,
-                                      resonance: Optional[Dict] = None) -> Dict[str, Any]:
+                                      resonance: Optional[Dict] = None,
+                                      options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """三大心法综合信号 → 综合评分/操作建议。评分 = 共振分*0.6 + 主升浪40*0.4。
 
         W71/P1-3：``resonance`` 可传入 pipeline 已算好的同一份三振共振结果，
         避免重复计算；未传时自行计算（保持向后兼容）。年线一票否决路径同样
         填真实共振字段，使 signal 与 bd.resonance 同源，消除日报/Web 口径分裂。
+        W72：``options`` 透传给 fallback 的 three_resonance_analysis（默认 None
+        即 W71 现状）。
         """
         try:
             basic = self.basic_filter(data)
             yl_checks = self.basic_filter_checks(data)
             if resonance is None:
                 resonance = self.three_resonance_analysis(
-                    data, market_data, industry_trend, industry_data=industry_data)
+                    data, market_data, industry_trend, industry_data=industry_data,
+                    options=options)
             r_score = float(resonance.get('共振评分', 0) or 0)
             r_level = resonance.get('共振级别', '无共振')
             r_true = bool(resonance.get('真三振', False))

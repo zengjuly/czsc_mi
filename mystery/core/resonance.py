@@ -13,8 +13,132 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# W72/建议5+7：共振口径可配置。默认值逐项对齐 W71 现状，任何未显式开启
+# 的开关都不改变既有 true_resonance / 综合评分 / RULE_VER。core 零 IO：
+# 具体取值由 service 层从 env 读取后以 options 注入，不在 core 内读环境。
+DEFAULT_RESONANCE_OPTIONS: Dict[str, Any] = {
+    "market_mode": "ma",                # "ma"(MA20/MA60，W71 现状) | "yearline"(严格年线多头)
+    "true_threshold": 85.0,            # 真三振共振评分门闩
+    "capital_min_score": 8.0,          # 资金活跃隐含门槛（score ≥）
+    "capital_min_volume_ratio": 1.5,   # 资金活跃隐含门槛（量比 ≥）
+    "index_max_lag_days": None,        # None=仅诊断不降级；整数=滞后超过则大盘腿降级 unknown
+}
+
+
+def resolve_resonance_options(options: Optional[Dict[str, Any]] = None
+                              ) -> Dict[str, Any]:
+    """合并默认口径与自定义选项，并对非法值做保守回退（core 零 IO 纯函数）。
+
+    - ``market_mode`` 仅接受 ma/yearline，其余回退 ma；
+    - 数值项转 float 失败或为负时回退默认；``index_max_lag_days`` 允许
+      None（禁用降级）或 ≥0 的整数，非法值回退默认 None。
+    """
+    out = dict(DEFAULT_RESONANCE_OPTIONS)
+    if options:
+        for k, v in options.items():
+            if k in out:
+                out[k] = v
+    mode = str(out.get("market_mode") or "ma").strip().lower()
+    out["market_mode"] = mode if mode in ("ma", "yearline") else "ma"
+    for key in ("true_threshold", "capital_min_score", "capital_min_volume_ratio"):
+        try:
+            f = float(out[key])
+            out[key] = f if f >= 0 else DEFAULT_RESONANCE_OPTIONS[key]
+        except (TypeError, ValueError):
+            out[key] = DEFAULT_RESONANCE_OPTIONS[key]
+    lag = out.get("index_max_lag_days")
+    if lag is None or str(lag).strip().lower() in ("", "none", "off", "false"):
+        out["index_max_lag_days"] = None
+    else:
+        try:
+            n = int(float(lag))
+            out["index_max_lag_days"] = n if n >= 0 else None
+        except (TypeError, ValueError):
+            out["index_max_lag_days"] = None
+    return out
+
+
+def analyze_market_trend_yearline(index_data: pd.DataFrame) -> Dict[str, Any]:
+    """严格大盘腿（W72/建议5，可选口径，默认不启用）。
+
+    判据与 ``core.market_env.anchor_env`` 一致（单锚版）：站上年线
+    ``close > MA250`` 且均线多头顺次排列 ``MA5 > MA20 > MA60 > MA250``
+    才判「向上」。返回结构与 ``analyze_market_trend`` 对齐，``position``
+    仍用近 120 日价格分位，使 W71「大盘非高位」门闩口径不变。
+    数据不足（<250 根）→ 趋势「未知」，绝不放行大盘腿。
+    """
+    result: Dict[str, Any] = {
+        '趋势方向': '未知', '强度': 0, 'MA20状态': '未知', 'MA60状态': '未知',
+        'position': '未知', '近20日涨幅': None, '详情': [],
+        '大盘口径': '年线MA250+多头顺次排列',
+    }
+    try:
+        if index_data is None or index_data.empty or '收盘价' not in index_data.columns:
+            result['详情'].append('严格口径：缺少收盘价列')
+            return result
+        closes = pd.to_numeric(index_data['收盘价'], errors='coerce').dropna()
+        if len(closes) < 250:
+            result['详情'].append(f'严格口径数据不足（{len(closes)}/250 根），大盘腿 unknown')
+            return result
+        c = float(closes.iloc[-1])
+        ma5 = float(closes.iloc[-5:].mean())
+        ma20 = float(closes.iloc[-20:].mean())
+        ma60 = float(closes.iloc[-60:].mean())
+        ma250 = float(closes.iloc[-250:].mean())
+        above = c > ma250
+        aligned = ma5 > ma20 > ma60 > ma250
+        result['MA20状态'] = '上方' if c > ma20 else '下方'
+        result['MA60状态'] = '上方' if c > ma60 else '下方'
+        if above and aligned:
+            result['趋势方向'] = '向上'
+        elif not above:
+            result['趋势方向'] = '向下'
+        else:
+            result['趋势方向'] = '震荡'
+        if len(closes) >= 20 and float(closes.iloc[-20]) > 0:
+            chg = (c / float(closes.iloc[-20]) - 1) * 100
+            result['近20日涨幅'] = round(chg, 2)
+            result['强度'] = min(abs(chg), 100.0)
+        if len(closes) >= 120:
+            high_120 = float(closes.iloc[-120:].max())
+            low_120 = float(closes.iloc[-120:].min())
+            if high_120 > low_120:
+                pos_pct = (c - low_120) / (high_120 - low_120)
+                result['position'] = ('高位' if pos_pct >= 0.85
+                                      else '低位' if pos_pct <= 0.15 else '中位')
+                result['详情'].append(f'近120日位置 {pos_pct:.0%}')
+        result['详情'].append(
+            f'严格口径：站上年线={above} 多头顺次排列={aligned} → {result["趋势方向"]}')
+        return result
+    except Exception as e:
+        logger.error(f'❌ 严格大盘趋势分析异常: {e}')
+        result['详情'].append(f'分析异常: {e}')
+        return result
+
+
+def index_lag_days(stock_data: Optional[pd.DataFrame],
+                   index_data: Optional[pd.DataFrame]) -> Optional[int]:
+    """个股最新交易日 − 指数最新交易日（自然日差，W72/建议5 诊断用）。
+
+    ``fetch_index`` 允许 DB 指数滞后 1-3 天，个股日 K 到最新交易日，
+    二者跨期可能错配。缺「日期」列或异常时返回 None（诚实 unknown），
+    绝不猜测。纯函数，不做任何 IO。
+    """
+    try:
+        if (stock_data is None or index_data is None
+                or stock_data.empty or index_data.empty):
+            return None
+        if '日期' not in stock_data.columns or '日期' not in index_data.columns:
+            return None
+        s = pd.to_datetime(str(stock_data['日期'].iloc[-1])[:10])
+        i = pd.to_datetime(str(index_data['日期'].iloc[-1])[:10])
+        return int((s - i).days)
+    except Exception:
+        return None
+
+
 def analyze_market_trend(index_data: pd.DataFrame) -> Dict[str, Any]:
-    """大盘趋势：收盘价 vs MA20/MA60 + 近120日位置。"""
+    """大盘趋势：收盘价 vs MA20/MA60 + 近120日位置（W71 现状，默认口径）。"""
     result = {'趋势方向': '未知', '强度': 0, 'MA20状态': '未知', 'MA60状态': '未知',
               'position': '未知', '近20日涨幅': None, '详情': []}
     try:
@@ -184,8 +308,15 @@ def calculate_industry_score_from_sector(sector_kline: pd.DataFrame) -> float:
         logger.error(f'❌ 行业指数趋势分异常: {e}')
         return 12.5
 
-def analyze_capital_flow(stock_data: Optional[pd.DataFrame]) -> Dict[str, Any]:
-    """资金活跃度：量比/成交额/换手率。"""
+def analyze_capital_flow(stock_data: Optional[pd.DataFrame],
+                         min_score: float = 8.0,
+                         min_volume_ratio: float = 1.5) -> Dict[str, Any]:
+    """资金活跃度：量比/成交额/换手率。
+
+    W72/建议7：``min_score`` / ``min_volume_ratio`` 把「资金 ≥8 或 量比 ≥1.5」
+    隐含门槛参数化，默认值与 W71 完全一致。由 service 层从 env 注入（core
+    保持零 IO），仅供历史金标对拍评估，不擅自放宽生产默认口径。
+    """
     empty = {'active': False, 'score': 0, 'volume_ratio': 0.0, 'detail': '资金平淡'}
     try:
         if stock_data is None or stock_data.empty or len(stock_data) < 6:
@@ -220,7 +351,7 @@ def analyze_capital_flow(stock_data: Optional[pd.DataFrame]) -> Dict[str, Any]:
                 score += 3
                 reasons.append(f'换手{turnover:.1f}%')
         score = min(score, 20)
-        active = score >= 8 or volume_ratio >= 1.5
+        active = score >= min_score or volume_ratio >= min_volume_ratio
         return {'active': active, 'score': score, 'volume_ratio': round(volume_ratio, 2),
                 'detail': ' | '.join(reasons) if reasons else '资金平淡'}
     except Exception as e:
@@ -229,9 +360,17 @@ def analyze_capital_flow(stock_data: Optional[pd.DataFrame]) -> Dict[str, Any]:
 
 def calculate_resonance_score(individual_result: Dict, market_result: Dict,
                               industry_result: Dict,
-                              capital_result: Optional[Dict] = None) -> Dict[str, Any]:
-    """四维共振评分 → score/level/advice/is_true_three_strike。"""
+                              capital_result: Optional[Dict] = None,
+                              true_threshold: float = 85.0) -> Dict[str, Any]:
+    """四维共振评分 → score/level/advice/is_true_three_strike。
+
+    W72/建议7：``true_threshold`` 把硬编码 85 门闩参数化，默认 85.0
+    与 W71 逐字段一致（门闩标签仍渲染为「共振评分≥85」）。仅供金标对拍
+    评估，生产默认值不变。
+    """
     try:
+        thr = float(true_threshold)
+        thr_label = f'共振评分≥{thr:g}'
         score = 0.0
         details = []
         stock_ok = bool(individual_result.get('基础过滤', False)) and bool(individual_result.get('均线多头', False))
@@ -269,7 +408,7 @@ def calculate_resonance_score(individual_result: Dict, market_result: Dict,
         # 显式记录每道门闩结果，供上层动态归因，避免「资金/位置条件不足」
         # 这类写死但与真实缺口不符的文案。
         gates = {
-            '共振评分≥85': score >= 85,
+            thr_label: score >= thr,
             '资金活跃': capital_active,
             '大盘向上': market_trend == '向上',
             '行业向上': industry_trend == '向上',
@@ -298,10 +437,12 @@ def calculate_resonance_score(individual_result: Dict, market_result: Dict,
                 'details': details, 'capital_active': capital_active,
                 'industry_top': industry_result.get('top_industries', []),
                 'market_position': market_position, '详情': details,
-                'gates': gates, 'reject_reasons': reject_reasons}
+                'gates': gates, 'reject_reasons': reject_reasons,
+                'true_threshold': thr}
     except Exception as e:
         logger.error(f'❌ 计算共振评分异常: {e}')
         return {'总共振评分': 0, '共振级别': '异常', 'score': 0, 'level': '异常',
                 'is_true_three_strike': False, '详情': [f'分析异常: {e}'],
-                'gates': {}, 'reject_reasons': ['评分异常']}
+                'gates': {}, 'reject_reasons': ['评分异常'],
+                'true_threshold': true_threshold}
 

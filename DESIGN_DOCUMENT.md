@@ -161,7 +161,7 @@ analyze_one_stock(symbol):
 
 ## 8. 测试与验收
 
-- `pytest -q -m "not integration"`：475 passed, 15 deselected（models/core 合成 OHLC/czsc adapter
+- `pytest -q -m "not integration"`：501 passed, 15 deselected（models/core 合成 OHLC/czsc adapter
   mock K 线/金标 ≤ 1/scan_signals 三类信号/缠论图 plot_figure/technical 快照/
   Excel 单汇总页回归 + CLI 默认 THS 环境注入回归 + 换手覆盖率 QA + 除权事件股本重拉；
   W68 新增 `tests/test_wave3.py` 39 项（三浪结构/九铁律/十步流程/仓位/组合风险/只读守卫）；
@@ -170,6 +170,9 @@ analyze_one_stock(symbol):
   W71 新增 `tests/test_w71_resonance.py` 27 项（三振正例/85 边界/高位否决/缺数据降级/
   三级共振严格腿与动态归因/行业腿对齐/signal↔resonance 同源/重复计算消除/
   综合评分不变/集成链路真触发）；
+  W72 新增 `tests/test_w72_resonance_options.py` 26 项（默认零变化/选项非法回退/
+  85 阈值与资金门槛参数化/严格年线大盘腿/指数滞后诊断与降级/env→core 注入链路/
+  缓存键隔离/三级共振可过滤/classify 契约不变/W71 门闩回归）；
   web 页面冒烟自 v0.10.14 起归入 integration 池：`pytest -m integration` 本机跑）。
 - 金标 fixtures：`tests/fixtures/gold_{sh600519,sz000001,sh600150}.json`
   （由旧系统 `unified_stock_analysis` 生成，2026-08-27）。
@@ -271,6 +274,7 @@ analyze_one_stock(symbol):
 | W69 | **三浪主升结论合并进扫描结果**：用户要求「合并到扫描结果中」，把 W68 的独立只读 CLI 结论接入既有扫描链路。① `mystery/services/wave3_scan.py` 新增 `attach_wave3_to_results(results, db, client)`：在 `scan_market` 收齐结果、**写库前**原地附加 `wave3`（精简单票结论：verdict/phase/多周期位置与共振/趋势允许/九铁律硬项通过数与失败项/十步流程/买点/止损/建议仓位/组合缩放，约 300B/票，避免完整 assessment 约 4KB 撑大 payload）与 `wave3_portfolio`（组合总风险/占权益/scale_down/高相关对数/免责声明，每行一份保证按信号过滤后仍可读）；复用 `evaluate_portfolio` 一次算完逐票评估 + 组合风险，注入本次扫描用的 `MarketDataClient`/`MysteryDB` 保证同源同库，日 K 纯本地只读、周/月由同一份日 K `resample_bars` 派生。② 接入点：`scan.py::_persist_or_return` 落库/返回前调用（覆盖进程池/线程池/串行/`no_persist` 全部路径）；`--resume` 三处收尾改走 `_resume_results`，附加后 `UPDATE scan_results SET payload_json` 回写保持库表一致。整体 try/except 硬隔离，任何异常只记 warning、绝不改动既有结果或中断落库。③ 展示层同口径复用 `wave3_summary_line`：CLI `scan` 逐票打印 `三浪=` + 末尾固定输出组合摘要与免责声明；Web 扫描表新增 10 列（旧 job 缺字段显示 `-`）并在表头下加组合摘要行；日报 Excel `SUMMARY_COLS` 加 10 列且 QA 行追加摘要，HTML 卡片加 8 项指标与「三浪候选」标签 + 头部摘要行。④ 开关 `MYSTERY_SCAN_WAVE3`（默认 1，置 0 回到旧行为）、`MYSTERY_SCAN_WAVE3_MAX`（0 不限，>0 只评估按分降序前 N 只，其余标「未评估」）、`MYSTERY_SCAN_WAVE3_STRICT`；资金/风险比例复用 W68 env。**不改综合评分、不改三类信号、不改 `AnalysisResult`、不改 `RULE_VER`、不改 `scan_results` 表结构**（零迁移），不写生产自选股。实测 `czsc-mi scan --watchlist --limit 3 --no-persist`：逐票「三浪=回避」+ 组合摘要与免责声明正常；Excel/HTML 列、摘要、免责与 Web 模块导入端到端全绿；全量 **448 passed, 15 deselected, 0 failed**。附带修复 W61 `test_thread_isolation` 偶发 flaky：原以 `threading.get_ident()` 作 dict key，线程结束后 ident 可被新线程复用，曾把 3 个结果覆盖成 1 个导致 `assert 1 == 3`；改用 list + Lock 收集，语义不变。 | ✅ 0.10.29 |
 | W70 | **三振（true_resonance）实现合理性与准确性审计（纯只读，不改代码）**：用户要求「分析三振实现是否合理准确」。全链路核对 `build_market_context → three_resonance_analysis → calculate_resonance_score → scorer.combine → AnalysisResult.true_resonance → 日报/Web`，结论「框架合理但核心信号有效性从未被验证」。确认合理：core 零 IO 纯函数、无未来函数、unknown/异常一律保守降级、年线一票否决不被复活、行业腿数据源可靠（生产库板块 K 线 62 万行、覆盖率 90.5%）、DB 列与 payload 167/167 一致。发现问题：P1-1 生产历史 `true_resonance=1` **0 行**且正例测试零覆盖（结构性主因：大盘腿要求「向上」，当前 167/167 大盘低位/向下 → 理论最高 75<85）；P1-2 `is_true` 未检查「大盘非高位」却详情写死该承诺（高位+资金满分→85→True）；P1-3 `pipeline` 把 `three_resonance_analysis` **算两次**且 `basic_filter` 早退使 `signal` 共振字段硬编码 0，与 `bd.resonance` 分裂（实测 75/167 不一致）；P2-1 三级共振用宽松 OR 个股腿 + 归因写死；P2-2 大盘两套口径（`market_env` 更严但不进 scorer）；P3 行业腿两列各自 `dropna()` 会错位。**关键前置**：先核实生产库是 `/home/ai/ai_runner/stock/data/db/mystery_cache.db`（2.3GB，`.stockrc`/`daily_pipeline.sh` 显式 export），仓库内 170MB 默认库板块表全空，误用会得出「行业腿恒失效」的错误结论。审计脚本 `/tmp/w70_audit*.py` 纯只读。报告见 `/workspace/三振实现审计报告.md`。 | ✅ 审计（无提交） |
 | W71 | **三振实现审计问题修复 + 正向验证补强（按 W70 建议 1/2/3/4/6 落地）**：用户要求「执行」。只收紧/纠偏、不放宽触发条件，**不改综合评分公式、不改三类信号、不改 `AnalysisResult`、不改 `RULE_VER`**。① P1-2：`calculate_resonance_score` 的 `is_true` 增「大盘非高位」硬门闩（此前仅 -15 软惩罚，资金满分时高位仍判 True 与文案矛盾），新增 `gates`/`reject_reasons` 显式记录每道门闩；② P1-3：`pipeline.run_mystery` 只算**一次** `three_resonance_analysis`，同一份结果同时供 `bd.signal`（经新增可选 `resonance` 参数复用）与 `bd.resonance`；`comprehensive_signal_analysis` 年线早退路径改填真实共振字段（不再硬编码 0/无共振），但 `综合评分` 仍恒 0、`真三振` 恒 False（一票否决不被复活，双保险），消除日报(`resonance`)与 Web/CLI(`signal`)同票两个数字；③ P2-1：三级共振个股腿改用与真三振一致的严格腿（评分 `个股共振==30`），并按 `reject_reasons` 动态归因，删除写死「资金/位置条件不足」；④ P3：`calculate_industry_score_from_sector` 收盘价/成交额按同一行对齐后再 dropna（无 NaN 时行为不变）；⑤ P1-1 补 `tests/test_w71_resonance.py` 27 项（正例 100 分/85 边界/高位否决/资金 8-0/缺数据降级/集成链路真触发且有区分度），并做**生产库真实指数历史回放**（`sh.000001` 756 根 2023-09→2026-11）：128 个滚动窗口中 19 个「大盘向上+非高位」全部触发真三振、其余 0 触发，证明信号非死路径；42 个「大盘向上+高位」窗口旧口径会误报 True、新口径全部拦下，量化 P1-2 价值；最新窗口大盘向下+低位(pos 1%)解释了近期 0 触发是市场环境而非 bug。生产库 5 只真实票实证 `signal`/`resonance` 共振评分 100% 一致（含 4 只年线否决票）、综合评分不变。全量 **475 passed, 15 deselected, 0 failed**；integration **9 passed, 6 skipped**；只读 CLI 扫描端到端正常。**未执行**（按 W70 标注「改信号语义需先定口径 + 金标对拍」）：建议 5 接入 `market_env` 严格大盘腿 / 处理指数 1-3 天滞后、建议 7 重评 85 阈值 / 暴露三级共振为可过滤信号——保留待用户拍板。 | ✅ 0.10.30 |
+| W72 | **三振共振口径参数化（按 W70 建议 5/7 落地，默认零变化 + 显式开关）**：用户「确认修改」，承接 W71 保留待拍板项。坚持「不改默认语义、不升 `RULE_VER`、不动综合评分/三类信号/AnalysisResult」：① `core/resonance.py` 新增 `DEFAULT_RESONANCE_OPTIONS` + `resolve_resonance_options`（非法值保守回退）、`analyze_market_trend_yearline`（站年线 MA250 + MA5>MA20>MA60>MA250 多头顺次排列，`position` 仍用近 120 日分位使 W71「大盘非高位」门闩口径不变、<250 根判 unknown 绝不放行）、`index_lag_days`（个股最新日−指数最新日，缺日期诚实 unknown）；② `calculate_resonance_score` 把硬编码 85 门闩参数化（默认 85.0，门闩标签仍渲染「共振评分≥85」保持 W71 测试兼容）、`analyze_capital_flow` 把「资金≥8 / 量比≥1.5」参数化（默认不变）；③ `three_resonance_analysis`/`comprehensive_signal_analysis`/`run_mystery` 增加 `options` 透传，结果附纯增量诊断字段 `共振口径/指数滞后天数/大盘腿降级`；④ **core 零 IO**：`analyze.py::resonance_options_from_env()` 从 5 个 `MYSTERY_RESONANCE_*` env 搬运到 core；⑤ **缓存键修复**：`resonance_cache_tag()` 把口径纳入 `analysis_cache` 键（W23「改任何一项必 miss」契约），默认返回 `''` 使既有缓存 100% 命中零失效，开启口径后独立键空间避免不同口径结果互相污染；⑥ 建议 7 三级共振只读暴露为 `--signal three_resonance` 可过滤信号（从 `mystery.resonance.三级共振` 读，缺字段/unknown 当 False），**不改 `classify` 返回契约**（保护 `test_no_signals_default` 精确断言）。**历史金标对拍**（生产库 `sh.000001` 756 根 100 个滚动窗口）：ma 口径判向上 52 窗口/真三振触发 17，yearline 严格口径向上 43/触发 9（更保守，切换会改语义故不设默认）；阈值 80/85/90 在 score 80~100 网格上触发 21/16/11，且降阈值不绕过高位等硬门闩（gates 为 all）；生产实测指数最新日 2026-11-03、主流个股 2026-11-06、lag=3 属常态 → 默认 `index_max_lag_days=None` 只诊断不降级（零误伤），设 3 时仅 lag>3 收紧。真实数据 env 注入实证：默认 tag='' / ma/85/8、开启后 tag 非空 / yearline/80/9，`use_cache=False` 与缓存键隔离均 PASS。全量 **501 passed, 15 deselected, 0 failed**（连跑两轮稳定）；integration **9 passed, 6 skipped**；CLI 新信号入口与默认只读扫描均正常。**严格大盘腿/降阈值仍不设默认**（切换口径需先做完整历史回测与模拟交易验证），见 §12.11。 | ✅ 0.10.31 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。
@@ -491,4 +495,45 @@ W68 的 `czsc-mi wave3` 是独立只读 CLI；**W69 起同一套规则已合并�
 `MYSTERY_SCAN_WAVE3_MAX` 设上限。策略严格，多数交易日候选为 0、
 组合总风险为 0 属正常结果，不代表扫描失败；结论仍是交易过滤规则，
 必须经历史回测和模拟交易验证（免责声明随每次扫描输出）。
+
+### 12.11 W72 三振共振口径开关（建议 5/7，默认零变化）
+
+W70 审计建议 5（大盘腿严格口径 + 指数滞后）与建议 7（85 阈值/资金门槛
+重评 + 三级共振可过滤）以「**默认逐字段等价 W71 + 显式开关 + 金标对拍**」
+落地。**生产默认值一律不变**，不升 `RULE_VER`、不动综合评分与三类信号；
+切换口径属于改变信号语义，需先做完整历史回测与模拟交易验证。
+
+**开关**（service 层读 env → 注入 core，core 零 IO）：
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `MYSTERY_RESONANCE_MARKET_MODE` | `ma` | `ma`=W71 现状（收盘 > MA20/MA60）；`yearline`=严格口径（站年线 MA250 且 MA5>MA20>MA60>MA250 多头顺次排列，<250 根判 unknown 不放行） |
+| `MYSTERY_RESONANCE_TRUE_THRESHOLD` | `85` | 真三振共振评分门闩；只放宽/收紧「共振评分」这一道，不绕过 W71 高位等硬门闩（gates 为 all） |
+| `MYSTERY_RESONANCE_CAPITAL_MIN` | `8` | 资金活跃隐含门槛（score ≥） |
+| `MYSTERY_RESONANCE_CAPITAL_VR` | `1.5` | 资金活跃隐含门槛（量比 ≥） |
+| `MYSTERY_RESONANCE_INDEX_MAX_LAG_DAYS` | 关闭 | 不设=只诊断不降级；设为整数 N 时，指数滞后个股 > N 天则大盘腿收紧为 unknown（绝不放行） |
+
+```bash
+# 严格大盘腿 + 阈值 80（会改变触发语义，仅用于回测/评估）
+MYSTERY_RESONANCE_MARKET_MODE=yearline \
+MYSTERY_RESONANCE_TRUE_THRESHOLD=80 \
+czsc-mi scan --watchlist --no-persist
+
+# 建议 7：三级共振作为可过滤信号（默认可用，无语义变更）
+czsc-mi scan --watchlist --signal three_resonance
+```
+
+**关键前置事实**：生产库指数最新日常滞后个股 1-3 天（实测 2026-11-03
+vs 2026-11-06，4000 只样本 `lag>3` 为 0），故滞后处理默认**只诊断**
+（`共振口径` / `指数滞后天数` / `大盘腿降级` 三个纯增量字段），
+设阈值后仅超限时收紧，不会误伤全部主流票。
+
+**缓存键**：口径纳入 `analysis_cache` 键（W23「改任何一项必 miss」）。
+默认（未设任何 env）tag 为空，既有缓存 100% 命中零失效；开启口径后
+独立键空间，避免 ma 与 yearline 结果互相污染。
+
+**对拍结论**（生产库 `sh.000001` 756 根 / 100 个滚动窗口）：
+ma 判向上 52 窗口、真三振触发 17；yearline 判向上 43、触发 9（更保守）。
+阈值 80/85/90 在 score 80~100 网格上触发 21/16/11。脚本
+`/tmp/w72_replay.py` 纯只读。默认口径仍为 ma/85，未切换。
 

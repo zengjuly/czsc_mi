@@ -69,7 +69,14 @@ czsc-mi audit --period daily --json --verbose   # CI/流水线 JSON 输出
 czsc-mi wave3 --watchlist
 czsc-mi wave3 --symbols sh600519 sz000001 --equity 1000000 --risk-pct 0.01 --verbose
 czsc-mi wave3 --market --limit 200 --json > wave3.json
-# 详见 DESIGN_DOCUMENT.md §12 与 docs/W68_三浪主升策略扫描.md
+
+# W72：三级共振作为可过滤信号（默认可用，不改变触发语义）
+czsc-mi scan --watchlist --signal three_resonance
+
+# W72：三振共振口径开关（默认零变化，仅回测/评估用；切换会改信号语义）
+MYSTERY_RESONANCE_MARKET_MODE=yearline MYSTERY_RESONANCE_TRUE_THRESHOLD=80 \
+  czsc-mi scan --watchlist --no-persist
+# 变量全表见 DESIGN_DOCUMENT.md §12.11；三浪详见 §12 与 docs/W68_三浪主升策略扫描.md
 ```
 
 ## 测试
@@ -82,8 +89,9 @@ pytest -m integration                   # 原机集成（需 MYSTERY_DB_PATH + T
 ## 阶段
 
 > **从零部署/配置/使用/验收完整指导见 [`docs/014.md`](docs/014.md)**；
-> 当前实现状态权威 = `DESIGN_DOCUMENT.md` §9（W20–W71 全记录，v0.10.30）。
-> W70 三振实现审计与 W71 修复见 [`docs/W71_三振实现审计与修复.md`](docs/W71_三振实现审计与修复.md)。
+> 当前实现状态权威 = `DESIGN_DOCUMENT.md` §9（W20–W72 全记录，v0.10.31）。
+> W70 三振实现审计与 W71 修复见 [`docs/W71_三振实现审计与修复.md`](docs/W71_三振实现审计与修复.md)；
+> W72 共振口径开关（默认零变化）见 [`docs/W72_三振共振口径参数化.md`](docs/W72_三振共振口径参数化.md)。
 > 以下仅保留 P0–W5 早期里程碑摘要。
 
 - P0 骨架（models / 包结构 / 空 Adapter 接口）✅
