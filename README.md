@@ -82,7 +82,8 @@ pytest -m integration                   # 原机集成（需 MYSTERY_DB_PATH + T
 ## 阶段
 
 > **从零部署/配置/使用/验收完整指导见 [`docs/014.md`](docs/014.md)**；
-> 当前实现状态权威 = `DESIGN_DOCUMENT.md` §9（W20–W69 全记录，v0.10.29）。
+> 当前实现状态权威 = `DESIGN_DOCUMENT.md` §9（W20–W71 全记录，v0.10.30）。
+> W70 三振实现审计与 W71 修复见 [`docs/W71_三振实现审计与修复.md`](docs/W71_三振实现审计与修复.md)。
 > 以下仅保留 P0–W5 早期里程碑摘要。
 
 - P0 骨架（models / 包结构 / 空 Adapter 接口）✅

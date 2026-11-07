@@ -187,12 +187,15 @@ def run_mystery(daily: BarSeries,
         ind_trend = ctx.industry_up
 
     bd = MysteryBreakdown()
-    bd.signal = logic.comprehensive_signal_analysis(
-        daily_df, weekly_data=weekly_df, market_data=market_data,
-        industry_data=None, industry_trend=ind_trend)
-    bd.resonance = logic.three_resonance_analysis(
+    # W71/P1-3：三振共振只计算一次，同一份结果同时供 signal（Web/CLI/
+    # scorer）与 bd.resonance（日报）使用，消除重复计算与口径分裂。
+    resonance = logic.three_resonance_analysis(
         daily_df, market_data=market_data, industry_trend=ind_trend,
         industry_data=None)
+    bd.resonance = resonance
+    bd.signal = logic.comprehensive_signal_analysis(
+        daily_df, weekly_data=weekly_df, market_data=market_data,
+        industry_data=None, industry_trend=ind_trend, resonance=resonance)
     bd.main_wave = logic.main_bull_wave_analysis(daily_df)
     bd.checklist8 = logic.main_bull_wave_checklist(daily_df, industry_trend=ind_trend)
     if include_detail:

@@ -185,14 +185,24 @@ class MysteryLogic:
             result['共振级别'] = resonance.get('level', '无共振')
             result['共振建议'] = resonance.get('advice', '')
             result['真三振'] = resonance.get('is_true_three_strike', False)
-            result['三级共振'] = bool(result['个股趋势'] and result['行业趋势']
+            # W71/P2-1：三级共振改用与真三振一致的「严格个股腿」
+            # （基础过滤 AND 均线多头，即评分里的 个股共振==30），不再用
+            # 宽松 OR 的 result['个股趋势']。避免「基础过滤未过却报三级
+            # 共振成立」的口径分裂。仅展示用的 个股趋势 保持原宽松口径。
+            strict_stock = bool(resonance.get('个股共振', 0) == 30)
+            result['个股严格腿'] = strict_stock
+            result['三级共振'] = bool(strict_stock and result['行业趋势']
                                       and result['大盘趋势'])
             for d in resonance.get('details', []):
                 result['详情'].append(d)
             if result['真三振']:
                 result['详情'].append('✅ 真三振（三级）成立：四维共振+资金活跃+大盘非高位')
             elif result['三级共振']:
-                result['详情'].append('✅ 三级共振成立（未达真三振：资金/位置条件不足）')
+                # W71/P2-1：按评分模块返回的真实未过门闩动态归因，
+                # 不再写死「资金/位置条件不足」（真实原因可能并非这两项）。
+                reasons = resonance.get('reject_reasons') or ['四维共振未满分']
+                result['详情'].append(
+                    '✅ 三级共振成立（未达真三振：' + '、'.join(reasons) + '）')
             else:
                 result['详情'].append('❌ 三振共振不成立')
             return result
@@ -305,39 +315,57 @@ class MysteryLogic:
                                       weekly_data: Optional[pd.DataFrame] = None,
                                       market_data: Dict = None,
                                       industry_data: Dict = None,
-                                      industry_trend: bool = None) -> Dict[str, Any]:
-        """三大心法综合信号 → 综合评分/操作建议。评分 = 共振分*0.6 + 主升浪40*0.4。"""
+                                      industry_trend: bool = None,
+                                      resonance: Optional[Dict] = None) -> Dict[str, Any]:
+        """三大心法综合信号 → 综合评分/操作建议。评分 = 共振分*0.6 + 主升浪40*0.4。
+
+        W71/P1-3：``resonance`` 可传入 pipeline 已算好的同一份三振共振结果，
+        避免重复计算；未传时自行计算（保持向后兼容）。年线一票否决路径同样
+        填真实共振字段，使 signal 与 bd.resonance 同源，消除日报/Web 口径分裂。
+        """
         try:
             basic = self.basic_filter(data)
             yl_checks = self.basic_filter_checks(data)
+            if resonance is None:
+                resonance = self.three_resonance_analysis(
+                    data, market_data, industry_trend, industry_data=industry_data)
+            r_score = float(resonance.get('共振评分', 0) or 0)
+            r_level = resonance.get('共振级别', '无共振')
+            r_true = bool(resonance.get('真三振', False))
+            r_advice = resonance.get('共振建议', '观望为主')
+            r_capital = bool(resonance.get('资金活跃', False))
+            r_top = resonance.get('最强板块', [])
+            r_detail = list(resonance.get('详情', []))
             if not basic[0]:
+                # 综合评分仍恒 0、真三振仍恒 False（年线一票否决不被
+                # 复活，与旧行为一致，且不依赖外部传入的 resonance 值）；
+                # 仅共振诊断字段改为与 bd.resonance 同源，不再硬编码
+                # 0/无共振，消除日报(resonance)与 Web/CLI(signal)分裂。
                 return {'综合评分': 0.0, '操作建议': '观望（未通过年线滤网）',
                         '主升浪信号': False, '真三振': False, '年线滤网': False,
-                        '周线锚定': False, '破五反五': False, '共振评分': 0.0,
-                        '共振级别': '无共振', '年线条件': yl_checks,
-                        '详情': [f'年线滤网未通过: {basic[1][:3]}']}
+                        '周线锚定': False, '破五反五': False, '共振评分': r_score,
+                        '共振级别': r_level, '共振建议': r_advice,
+                        '资金活跃': r_capital, '最强板块': r_top,
+                        '年线条件': yl_checks,
+                        '详情': [f'年线滤网未通过: {basic[1][:3]}'] + r_detail}
             main_wave = self.main_bull_wave_signal(data, weekly_data)
-            resonance = self.three_resonance_analysis(data, market_data, industry_trend,
-                                                      industry_data=industry_data)
-            r_score = float(resonance.get('共振评分', 0) or 0)
             score = r_score * 0.6 + (40 if main_wave['主升浪信号'] else 0) * 0.4
-            if resonance.get('真三振') and main_wave['主升浪信号']:
+            if r_true and main_wave['主升浪信号']:
                 advice = '强烈关注（真三振 + 主升浪）'
-            elif resonance.get('真三振'):
+            elif r_true:
                 advice = '重点关注（真三振）'
             elif main_wave['主升浪信号']:
                 advice = '可关注（主升浪持股期）'
             else:
-                advice = resonance.get('共振建议', '观望为主')
+                advice = r_advice
             return {'综合评分': round(score, 1), '操作建议': advice,
                     '主升浪信号': main_wave['主升浪信号'], '年线滤网': main_wave['年线滤网'],
                     '周线锚定': main_wave['周线锚定'], '破五反五': main_wave['破五反五'],
-                    '真三振': resonance.get('真三振', False),
-                    '共振评分': r_score, '共振级别': resonance.get('共振级别', '无共振'),
-                    '资金活跃': resonance.get('资金活跃', False),
-                    '最强板块': resonance.get('最强板块', []),
+                    '真三振': r_true,
+                    '共振评分': r_score, '共振级别': r_level,
+                    '资金活跃': r_capital, '最强板块': r_top,
                     '年线条件': yl_checks,
-                    '详情': main_wave['详情'] + resonance.get('详情', [])}
+                    '详情': main_wave['详情'] + r_detail}
         except Exception as e:
             self.logger.error(f'❌ 综合信号分析异常: {e}')
             return {'综合评分': 0.0, '操作建议': '分析异常', '主升浪信号': False,

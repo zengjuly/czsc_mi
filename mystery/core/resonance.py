@@ -152,9 +152,19 @@ def calculate_industry_score_from_sector(sector_kline: pd.DataFrame) -> float:
         if sector_kline is None or sector_kline.empty:
             return 12.5
         df = sector_kline.copy()
-        closes = pd.to_numeric(df['收盘价'], errors='coerce').dropna().astype(float).tolist()[-60:]
-        amounts = (pd.to_numeric(df['成交额'], errors='coerce').dropna().astype(float).tolist()[-60:]
-                   if '成交额' in df.columns else [0.0] * len(closes))
+        # W71/P3：收盘价与成交额必须按「同一行」对齐后再 dropna。
+        # 旧写法两列各自 dropna() 后独立取 [-60:]，某列含 NaN 时两序列
+        # 会错位，bias/量能取到不同交易日的数据（实证行业分漂移 +0.50）。
+        # 无 NaN 时行为与旧实现完全一致（dropna 不丢行）。
+        close_s = pd.to_numeric(df['收盘价'], errors='coerce')
+        if '成交额' in df.columns:
+            amount_s = pd.to_numeric(df['成交额'], errors='coerce')
+            aligned = pd.DataFrame({'close': close_s, 'amount': amount_s}).dropna()
+            closes = aligned['close'].astype(float).tolist()[-60:]
+            amounts = aligned['amount'].astype(float).tolist()[-60:]
+        else:
+            closes = close_s.dropna().astype(float).tolist()[-60:]
+            amounts = [0.0] * len(closes)
         if len(closes) < 20:
             return 12.5
         closes = np.array(closes, dtype=float)
@@ -253,8 +263,21 @@ def calculate_resonance_score(individual_result: Dict, market_result: Dict,
         if market_position == '高位':
             score = max(0.0, score - 15)
             details.append('大盘高位惩罚(-15)')
-        is_true = score >= 85 and capital_active and (market_trend == '向上') \
-            and (industry_trend == '向上') and stock_ok
+        # W71/P1-2：详情文案与原文风控均要求「大盘非高位」，此前仅靠 -15
+        # 软惩罚，资金满分时高位仍可判真三振（score=85 → True），与对外
+        # 承诺相反。此处升为硬条件（收紧，不放宽任何触发条件）。
+        # 显式记录每道门闩结果，供上层动态归因，避免「资金/位置条件不足」
+        # 这类写死但与真实缺口不符的文案。
+        gates = {
+            '共振评分≥85': score >= 85,
+            '资金活跃': capital_active,
+            '大盘向上': market_trend == '向上',
+            '行业向上': industry_trend == '向上',
+            '个股严格腿': stock_ok,
+            '大盘非高位': market_position != '高位',
+        }
+        is_true = all(gates.values())
+        reject_reasons = [k for k, ok in gates.items() if not ok]
         if is_true:
             level = '真三振（三级）'
             advice = '强烈建议关注！可能是大级别行情启动窗口，大资金跨层级共振'
@@ -274,9 +297,11 @@ def calculate_resonance_score(individual_result: Dict, market_result: Dict,
                 'level': level, 'advice': advice, 'is_true_three_strike': is_true,
                 'details': details, 'capital_active': capital_active,
                 'industry_top': industry_result.get('top_industries', []),
-                'market_position': market_position, '详情': details}
+                'market_position': market_position, '详情': details,
+                'gates': gates, 'reject_reasons': reject_reasons}
     except Exception as e:
         logger.error(f'❌ 计算共振评分异常: {e}')
         return {'总共振评分': 0, '共振级别': '异常', 'score': 0, 'level': '异常',
-                'is_true_three_strike': False, '详情': [f'分析异常: {e}']}
+                'is_true_three_strike': False, '详情': [f'分析异常: {e}'],
+                'gates': {}, 'reject_reasons': ['评分异常']}
 
