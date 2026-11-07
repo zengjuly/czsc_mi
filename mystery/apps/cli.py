@@ -7,6 +7,7 @@
   czsc-mi scan --limit 100 --signal true_resonance
   czsc-mi sync --period daily --period weekly --days 365
   czsc-mi sector-sync --sector ths_886015
+  czsc-mi wave3 --watchlist --equity 1000000 --risk-pct 0.01
 """
 from __future__ import annotations
 
@@ -273,6 +274,105 @@ def _cmd_scan(args: argparse.Namespace) -> int:
           f"筹码低位 {n_chip}（换手未知 {n_unknown} / 高位缩量 {n_quiet}）")
     if (rc := _suffix_orphans_hard_fail()):
         return rc
+    return 0
+
+
+def _cmd_wave3(args: argparse.Namespace) -> int:
+    """处理 `czsc-mi wave3`：三浪主升策略扫描（只读、不评分、不写 scan_jobs）。
+
+    逐票评估日/周/月位置 → 三浪结构 → 九条铁律 → 十步流程 → 仓位，
+    再按相关系数合成组合总风险并给出仓位缩放；末尾固定打印策略免责声明。
+    """
+    from ..services.wave3_scan import scan_wave3
+
+    _print_db_fingerprint()
+    result = scan_wave3(
+        symbols=args.symbols, watchlist=args.watchlist, market=args.market,
+        limit=args.limit, equity=args.equity, risk_pct=args.risk_pct,
+        cfg=args.cfg, strict=args.strict, offline=not args.online,
+        lot_size=args.lot_size, max_position_pct=args.max_position_pct,
+        max_total_risk_pct=args.max_total_risk_pct,
+        high_corr=args.high_corr, min_bars=args.min_bars)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    acc = result["account"]
+    meta = result["meta"]
+    port = result["portfolio"]
+    print(f"\n三浪主升策略扫描 | {meta['universe']} | 数据源 {meta['source']} | "
+          f"请求 {meta['requested']} 只 / 有效 {meta['loaded']} 只 / "
+          f"失败 {len(meta['failed'])} 只")
+    print(f"账户总资金 {acc['equity']:,.2f} | 单笔风险比例 {acc['risk_pct'] * 100:.2f}% | "
+          f"整手 {acc['lot_size']} 股 | 铁律严格模式 {'开' if acc['strict'] else '关'}")
+    print("-" * 118)
+    print(f"{'代码':<12} {'名称':<8} {'月/周/日位置':<16} {'阶段':<12} "
+          f"{'铁律':<8} {'买入':>9} {'止损':>9} {'仓位(手)':>10} {'风险额':>11}  结论")
+    print("-" * 118)
+    shown = 0
+    for r in result["results"]:
+        wf = r["workflow"]
+        if wf["stage"] < args.min_stage:
+            continue
+        shown += 1
+        pos = r["positions"]
+        zone = (f"{pos['月线']['位置']}/{pos['周线']['位置']}/"
+                f"{pos['日线']['位置']}")
+        rules = r["rules"]
+        s = r["sizing"]
+        entry = r["wave"].get("entry_price")
+        stop = r["wave"].get("stop_price")
+        hard_s = f"{rules['hard_pass']}/{rules['hard_total']}"
+        entry_s = f"{entry:.2f}" if entry is not None else "-"
+        stop_s = f"{stop:.2f}" if stop is not None else "-"
+        print(f"{r['symbol']:<12} {(r['name'] or '未知'):　<6} {zone:<16} "
+              f"{r['wave']['phase']:<12} {hard_s:<8} "
+              f"{entry_s:>9} {stop_s:>9} "
+              f"{s['suggested_lots']:>10} "
+              f"{s['suggested_risk_amount']:>11,.2f}  {r['verdict']}")
+    print("-" * 118)
+    print(f"显示 {shown} 只 | 候选 {result['candidates']} 只 | 进展最快 "
+          f"第 {max((x['workflow']['stage'] for x in result['results']), default=0)} 步")
+
+    print("\n组合总风险（相关性加权，非各笔简单相加）")
+    div_s = ("-" if port["diversification_ratio"] is None
+             else str(port["diversification_ratio"]))
+    pct_s = ("-" if port["total_risk_pct"] is None
+             else f"{port['total_risk_pct']}%")
+    print(f"  各笔风险简单相加 {port['sum_risk']:,.2f} | 组合总风险 "
+          f"{port['portfolio_risk']:,.2f} | 分散比 {div_s}")
+    print(f"  占权益 {pct_s} | 风险预算上限 "
+          f"{port['max_total_risk_pct'] * 100:.1f}% | 仓位缩放 x{port['scale_down']} | "
+          f"缩放后风险合计 {port['adjusted_sum_risk']:,.2f}")
+    if port["high_corr_pairs"]:
+        pairs = "、".join(f"{x['a']}~{x['b']}({x['rho']})"
+                         for x in port["high_corr_pairs"][:5])
+        print(f"  高度相关标的 {len(port['high_corr_pairs'])} 对：{pairs}")
+    if port["assumed_pairs"]:
+        print(f"  相关性样本不足按 0 处理的对 {len(port['assumed_pairs'])} 对"
+              "（未知不等于不相关，详见 --json）")
+    if port.get("matrix_psd") is False:
+        print("  警告：相关系数矩阵非半正定，合成风险已截断，请复核数据")
+
+    if args.verbose:
+        focus = [r for r in result["results"] if r["verdict"] == "候选"]
+        if not focus:
+            focus = result["results"][:1]
+        for r in focus:
+            print(f"\n[{r['symbol']} {r['name']}] {r['verdict']} — {r['verdict_reason']}")
+            print("  九条铁律：")
+            for item in r["rules"]["rules"]:
+                mark = "通过" if item["passed"] else (
+                    "未过(否决)" if item["severity"] == "hard" else "偏好未达")
+                print(f"    {item['no']}. [{item['severity']}] {mark} "
+                      f"{item['text']} — {item['reason']}")
+            print("  十步流程：")
+            for st in r["workflow"]["steps"]:
+                print(f"    {st['no']:2d}. [{st['status']}] {st['name']}")
+            print(f"  下一步：{r['workflow']['next_action']}")
+
+    print(f"\n{result['motto']}")
+    print(f"{result['disclaimer']}")
     return 0
 
 
@@ -575,7 +675,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[list] = None) -> int:
     # 未设 THS 路径时自动补 sibling Financial-API 默认（须在 load_config 前）
-    """czsc-mi 命令入口：注入默认 THS 环境后构建 argparse 子命令（analyze/daily/scan/sync/sync-shares/sync-turnover/sector-sync/sector-sync-kline/watchlist/audit），分发到各 _cmd_*；统一映射 NotImplementedError(2)/TaskBusyError(3)/通用异常(1)。"""
+    """czsc-mi 命令入口：注入默认 THS 环境后构建 argparse 子命令（analyze/daily/scan/wave3/sync/sync-shares/sync-turnover/sector-sync/sector-sync-kline/watchlist/audit），分发到各 _cmd_*；统一映射 NotImplementedError(2)/TaskBusyError(3)/通用异常(1)。"""
     _ensure_default_ths_env()
     parser = argparse.ArgumentParser(prog="czsc-mi", description="Mistery 趋势交易分析")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -692,6 +792,40 @@ def main(argv: Optional[list] = None) -> int:
     wp = wsub.add_parser("refresh-board-names",
                          help="仅刷新板块展示名（重读 blocknew.cfg），不动自选股成员")
     wp.set_defaults(func=_cmd_refresh_board_names)
+
+    p = sub.add_parser(
+        "wave3",
+        help="三浪主升策略扫描（日/周/月位置 + 九条铁律 + 十步流程 + 组合风险 + 仓位）")
+    p.add_argument("--symbols", nargs="*", default=None,
+                   help="指定代码（覆盖 --watchlist / --market）")
+    p.add_argument("--watchlist", action="store_true",
+                   help="只扫自选股（默认；与 --market 互斥，后者优先）")
+    p.add_argument("--market", action="store_true",
+                   help="扫全市场（建议配合 --limit；覆盖 --watchlist）")
+    p.add_argument("--limit", type=int, default=None, help="最多扫 N 只")
+    p.add_argument("--equity", type=float, default=None,
+                   help="账户总资金（默认 env MYSTERY_WAVE3_EQUITY 或 1000000）")
+    p.add_argument("--risk-pct", type=float, default=None,
+                   help="单笔风险比例（默认 env MYSTERY_WAVE3_RISK_PCT 或 0.01）")
+    p.add_argument("--strict", action="store_true",
+                   help="九条铁律第 4/6 条（缩量/放量，原文为「最好」）升级为硬否决")
+    p.add_argument("--online", action="store_true",
+                   help="走统一多源取数（默认只读本地K线，零网络零写库）")
+    p.add_argument("--json", action="store_true", help="输出完整 JSON（便于管道/存档）")
+    p.add_argument("--min-stage", type=int, default=1,
+                   help="只显示十步流程推进到第 N 步及以上的标的")
+    p.add_argument("--verbose", action="store_true",
+                   help="对候选逐条打印九条铁律与十步流程")
+    p.add_argument("--lot-size", type=int, default=100, help="整手股数（默认 100）")
+    p.add_argument("--max-position-pct", type=float, default=None,
+                   help="单票市值占权益上限，如 0.2")
+    p.add_argument("--max-total-risk-pct", type=float, default=0.06,
+                   help="组合总风险占权益上限（默认 6%%）")
+    p.add_argument("--high-corr", type=float, default=0.70,
+                   help="判定高度相关的 |rho| 阈值（默认 0.70）")
+    p.add_argument("--min-bars", type=int, default=60,
+                   help="单票最少日K根数（默认 60）")
+    p.set_defaults(func=_cmd_wave3)
 
     p = sub.add_parser("audit", help="只读数据质量审计（重复主键/空收盘价/OHLC异常/跳空）")
     p.add_argument("--period", default="daily",

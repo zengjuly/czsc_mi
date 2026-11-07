@@ -37,6 +37,8 @@ export MYSTERY_CHAN_SCORE=0                        # 混合分另开关，默认
 # 打开 MYSTERY_CHAN_SCORE=1 后输出 rule_ver=mystery-0.10.0-chan（010 §9 标定表），
 # 勿与 mystery-1.22.30-compat 金标比绝对值。
 export HITHINK_FINANCE_API_KEY=...                  # 扶摇在线源（可选，本地 MarketDB 不需要）
+export MYSTERY_WAVE3_EQUITY=1000000                 # W68 三浪扫描：账户总资金
+export MYSTERY_WAVE3_RISK_PCT=0.01                  # W68 三浪扫描：单笔风险比例（1%）
 ```
 
 无 DB / 无 TDX / 无网络时：core 离线单测可跑（`pytest -m "not integration"`），
@@ -57,6 +59,13 @@ scripts/weekly_shares.sh
 # 只读数据质量巡检（W58）：重复主键/异常 OHLC/量额缺失/交易日跳空
 czsc-mi audit --period daily
 czsc-mi audit --period daily --json --verbose   # CI/流水线 JSON 输出
+
+# 三浪主升策略扫描（W68，只读、不评分）：日/周/月位置 + 九条铁律 +
+# 十步流程 + 仓位公式 + 高度相关标的的组合总风险
+czsc-mi wave3 --watchlist
+czsc-mi wave3 --symbols sh600519 sz000001 --equity 1000000 --risk-pct 0.01 --verbose
+czsc-mi wave3 --market --limit 200 --json > wave3.json
+# 详见 DESIGN_DOCUMENT.md §12 与 docs/W68_三浪主升策略扫描.md
 ```
 
 ## 测试
@@ -69,7 +78,7 @@ pytest -m integration                   # 原机集成（需 MYSTERY_DB_PATH + T
 ## 阶段
 
 > **从零部署/配置/使用/验收完整指导见 [`docs/014.md`](docs/014.md)**；
-> 当前实现状态权威 = `DESIGN_DOCUMENT.md` §9（W20–W58 全记录，v0.10.27）。
+> 当前实现状态权威 = `DESIGN_DOCUMENT.md` §9（W20–W68 全记录，v0.10.28）。
 > 以下仅保留 P0–W5 早期里程碑摘要。
 
 - P0 骨架（models / 包结构 / 空 Adapter 接口）✅
