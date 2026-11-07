@@ -224,7 +224,7 @@ def _print_db_fingerprint() -> None:
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
-    """处理 `czsc-mi scan`：全市场/自选/板块扫描并落 scan_jobs/scan_results；可选 --report 生成日报、--signal 过滤；末尾做 suffix_orphans 硬失败检查。"""
+    """处理 `czsc-mi scan`：全市场/自选/板块扫描并落 scan_jobs/scan_results；W69 起结果合并三浪主升结论并输出组合总风险；可选 --report 生成日报、--signal 过滤；末尾做 suffix_orphans 硬失败检查。"""
     from ..core.scan_signals import filter_by_signal
     from ..services import watchlist as _wl
     from ..services.scan import scan_market
@@ -247,6 +247,9 @@ def _cmd_scan(args: argparse.Namespace) -> int:
                           resume=getattr(args, 'resume', False))
     if args.report and results:
         _write_scan_report(results, args)
+    # W69：组合摘要基于过滤前的完整结果（与日报 / Web 同口径）
+    from ..services.wave3_scan import wave3_summary_line
+    _w3_line = wave3_summary_line(results)
     if args.signal:
         results = filter_by_signal(results, args.signal)
     for r in results:
@@ -262,9 +265,11 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         trn_s = f"{float(trn):.2f}%" if trn is not None else "-"
         pos = r.get("price_pos")
         pos_s = f"{float(pos) * 100:.1f}%" if pos is not None else "-"
+        w3v = (r.get('wave3') or {}).get('verdict', '-')
         print(f"{r.get('symbol')} {(r.get('name') or '未知'):　<6} "
               f"score={r.get('score')} chip_low={chip_s} "
-              f"20日换手={trn_s} 回撤={pos_s} {r.get('advice', '')}")
+              f"20日换手={trn_s} 回撤={pos_s} 三浪={w3v} "
+              f"{r.get('advice', '')}")
     n_tr = sum(1 for r in results if r.get('true_resonance'))
     n_vap = sum(1 for r in results if r.get('vap_atr_break'))
     n_chip = sum(1 for r in results if r.get('chip_low'))
@@ -272,6 +277,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     n_quiet = sum(1 for r in results if r.get('chip_quiet'))
     print(f"\n共 {len(results)} 只 | 真三振 {n_tr} | VAP-ATR突破 {n_vap} | "
           f"筹码低位 {n_chip}（换手未知 {n_unknown} / 高位缩量 {n_quiet}）")
+    if _w3_line:
+        print(f"\n[三浪主升] {_w3_line}")
     if (rc := _suffix_orphans_hard_fail()):
         return rc
     return 0

@@ -25,19 +25,24 @@ def test_same_thread_reuses_connection(tmp_path):
 
 def test_thread_isolation(tmp_path):
     db = dbmod.MysteryDB(db_path=str(tmp_path / "b.db"))
-    ids = {}
+    ids = []
+    lock = threading.Lock()
 
     def worker():
         c = db._connect()
-        ids[threading.get_ident()] = id(c._real)
+        with lock:
+            ids.append(id(c._real))
 
     ts = [threading.Thread(target=worker) for _ in range(3)]
     for t in ts:
         t.start()
     for t in ts:
         t.join()
-    # 3 个线程 → 3 个不同真实连接对象（彼此隔离）
-    assert len(set(ids.values())) == 3
+    # 3 个线程 → 3 个不同真实连接对象（彼此隔离）。
+    # W69：改用 list 收集，不再以 threading.get_ident() 作 dict key ——
+    # 线程结束后 ident 可被新线程复用，曾偶发把 3 个结果覆盖成 1 个。
+    assert len(ids) == 3
+    assert len(set(ids)) == 3
 
 
 def test_rollback_clears_uncommitted(tmp_path):

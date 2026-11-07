@@ -3,6 +3,8 @@
 与个股页 / daily 同源同分（同一 Service）。单票失败不中断（大规模扫描容错）。
 W1-B：每条结果带三类信号（core.scan_signals.classify），末尾写
 scan_jobs / scan_results 落库；``no_persist=True`` 只打印不写库。
+W69：落库前把三浪主升结论（core.wave3）合并进每条结果，随 payload_json
+落库；只读评估、异常隔离，不改变综合评分与信号分类。
 """
 from __future__ import annotations
 
@@ -509,7 +511,7 @@ def _scan_market_impl(limit: Optional[int] = None,
             if total == 0:
                 _finalize_resume_job(svc.market.db, resume_job_id)
                 logger.info(f"[scan] resume：无剩余个股，复用 job {resume_job_id}")
-                return scan_results_of(resume_job_id, cfg=cfg)
+                return _resume_results(svc, resume_job_id, cfg)
         logger.info(f"[scan] resume：working job {resume_job_id}，"
                     f"剩余 {total} 只（已完成 {len(_done)}）")
 
@@ -548,7 +550,7 @@ def _scan_market_impl(limit: Optional[int] = None,
                                         float(x.get('score') or -1)), reverse=True)
             if resume_job_id is not None:
                 _finalize_resume_job(svc.market.db, resume_job_id)
-                return scan_results_of(resume_job_id, cfg=cfg)
+                return _resume_results(svc, resume_job_id, cfg)
             return _persist_or_return(results, failed, no_persist, svc,
                                       job_holder, scan_type)
         except Exception as e:
@@ -588,16 +590,70 @@ def _scan_market_impl(limit: Optional[int] = None,
                                 float(x.get('score') or -1)), reverse=True)
     if resume_job_id is not None:
         _finalize_resume_job(svc.market.db, resume_job_id)
-        return scan_results_of(resume_job_id, cfg=cfg)
+        return _resume_results(svc, resume_job_id, cfg)
     return _persist_or_return(results, failed, no_persist, svc, job_holder,
                               scan_type)
+
+
+def _attach_wave3(results: List[Dict[str, Any]], *,
+                  db=None, client=None) -> None:
+    """W69：写库/返回前把三浪主升结论合并进结果（只读评估，异常硬隔离）。
+
+    注入扫描用的 ``MarketDataClient`` 与 ``MysteryDB``，保证与本次扫描同源
+    同库；任何异常都只记 warning，绝不改动既有结果或中断落库。
+    """
+    if not results:
+        return
+    try:
+        from .wave3_scan import attach_wave3_to_results
+        summary = attach_wave3_to_results(results, db=db, client=client)
+        if summary.get("enabled"):
+            logger.info(
+                f"[scan] 三浪主升已合并：候选 {summary.get('candidates')}/"
+                f"{summary.get('scanned')}，组合总风险 "
+                f"{summary.get('portfolio_risk')} 元，缩放 "
+                f"×{summary.get('scale_down')}")
+    except Exception as e:  # noqa: BLE001 附加策略不得影响既有扫描
+        logger.warning(f"[scan] 三浪合并跳过（不影响既有扫描）: {str(e)[:100]}")
+
+
+def _resume_results(svc: AnalysisService, job_id: int,
+                    cfg: Optional[Dict]) -> List[Dict[str, Any]]:
+    """W69：断点续跑收尾后统一附加三浪字段，并回写 payload_json 保持库表一致。"""
+    rows = scan_results_of(job_id, cfg=cfg)
+    if not rows:
+        return rows
+    symbols = [str(r.get("symbol", "")) for r in rows]
+    _attach_wave3(rows, db=svc.market.db, client=svc.market)
+    if not rows or not rows[0].get("wave3_portfolio"):
+        return rows
+    try:
+        conn = svc.market.db._connect()
+        try:
+            conn.executemany(
+                "UPDATE scan_results SET payload_json=? "
+                "WHERE job_id=? AND symbol=?",
+                [(json.dumps(r, ensure_ascii=False), job_id, sym)
+                 for sym, r in zip(symbols, rows)])
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001 回写失败不影响内存结果
+        logger.warning(f"[scan] resume 三浪回写跳过（不影响既有扫描）: "
+                       f"{str(e)[:100]}")
+    return rows
 
 
 def _persist_or_return(results: List[Dict[str, Any]], failed: int,
                        no_persist: bool, svc: AnalysisService,
                        job_holder: Optional[list],
                        scan_type: str = "market") -> List[Dict[str, Any]]:
-    """扫描结果落库（scan_jobs/scan_results）或仅返回。与历史行为一致。"""
+    """扫描结果落库（scan_jobs/scan_results）或仅返回。与历史行为一致。
+
+    W69：落库/返回前把三浪主升结论合并进结果（只读评估，失败不影响既有扫描），
+    字段随 payload_json 一起写入，日报 / Web / scan_results_of 直接可读。
+    """
+    _attach_wave3(results, db=svc.market.db, client=svc.market)
 
     if not no_persist and results:
         try:

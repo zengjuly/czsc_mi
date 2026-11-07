@@ -141,6 +141,9 @@ def _stock_card(d: Dict[str, Any]) -> str:
     _pat = m.get("patterns", {}) or {}
     _pat_tags, _pat_reasons = _pattern_blocks(_pat)
     labels.extend(_pat_tags)
+    # W69：三浪主升候选用标签直接标出（只读 payload 附加字段）
+    if (d.get("wave3") or {}).get("verdict") == "候选":
+        labels.append('<span class="signal-tag">三浪候选</span>')
     tags = "".join(labels)
 
     metrics = [
@@ -159,6 +162,19 @@ def _stock_card(d: Dict[str, Any]) -> str:
         ("PB", _fmt(fin.get("PB"))),
         ("ROE", _fmt(fin.get("roe"))),
     ]
+    # W69：三浪主升逐票结论（旧任务无字段不追加，保持原卡片不变）
+    w3 = d.get("wave3") or {}
+    if w3:
+        metrics.extend([
+            ("三浪结论", _esc(str(w3.get("verdict") or "-"))),
+            ("三浪阶段", _esc(str(w3.get("phase") or "-"))),
+            ("多周期位置", _esc(str(w3.get("position") or "-"))),
+            ("三浪铁律", _esc(str(w3.get("hard") or "-"))),
+            ("三浪流程", _esc(f"第{w3['stage']}步" if w3.get("stage") else "-")),
+            ("三浪买点", _fmt(w3.get("entry"))),
+            ("三浪止损", _fmt(w3.get("stop"))),
+            ("三浪建议(手)", _fmt(w3.get("lots"))),
+        ])
     metric_html = "".join(
         f'<div class="metric"><div class="label">{k}</div>'
         f'<div class="value">{v}</div></div>' for k, v in metrics
@@ -232,13 +248,17 @@ def write_html(results: List[Dict[str, Any]], path: str,
     n_true = sum(1 for d in ordered if d.get("true_resonance"))
     qa_html = (f'<p class="qa">{qa_line.replace(chr(10), "<br>")}</p>'
                if qa_line else "")
+    # W69：组合总风险摘要（与 CLI / Web 同口径；旧任务无字段则不显示）
+    from mystery.services.wave3_scan import wave3_summary_line
+    w3_line = wave3_summary_line(ordered)
+    w3_html = f'<p class="qa">{_esc(w3_line)}</p>' if w3_line else ""
     doc = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><title>每日股票分析报告</title>{_CSS}</head>
 <body><div class="container">
 <div class="header"><h1>📈 每日股票分析报告</h1>
 <p>{len(ordered)} 只 · 真三振 {n_true} 只 · 生成于 {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
-{qa_html}</div>
+{qa_html}{w3_html}</div>
 {cards}
 <footer>Mistery 趋势交易分析 · czsc_mi · 分数来自 mystery.services.analyze.analyze_one_stock</footer>
 </div></body></html>"""

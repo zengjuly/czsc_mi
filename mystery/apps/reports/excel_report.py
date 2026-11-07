@@ -41,6 +41,17 @@ SUMMARY_COLS = [
     ("pe", "PE"),
     ("pb", "PB"),
     ("trade_date", "分析日期"),
+    # W69：三浪主升策略结论（合并到扫描结果；旧任务无字段显示 '-'）
+    ("w3_verdict", "三浪结论"),
+    ("w3_phase", "三浪阶段"),
+    ("w3_position", "多周期位置"),
+    ("w3_resonance", "周期共振"),
+    ("w3_hard", "三浪铁律(硬)"),
+    ("w3_stage", "三浪流程步"),
+    ("w3_entry", "三浪买点"),
+    ("w3_stop", "三浪止损"),
+    ("w3_lots", "三浪建议(手)"),
+    ("w3_scale", "组合缩放"),
 ]
 
 # 年线过滤系统各条件（与 basic_filter._basic_filter_checks 键一一对应，
@@ -109,6 +120,21 @@ def _flat(d: Dict[str, Any]) -> Dict[str, Any]:
     yl = sig.get("年线条件") or {}
     for key in YEARLINE_COND_KEYS:
         row[f"yl:{key}"] = _flag(yl.get(key))
+    # W69：三浪主升（只读 payload 内附加字段，不重算；旧任务缺字段显示 '-'）
+    w3 = d.get("wave3") or {}
+    row.update({
+        "w3_verdict": w3.get("verdict") or "-",
+        "w3_phase": w3.get("phase") or "-",
+        "w3_position": w3.get("position") or "-",
+        "w3_resonance": w3.get("resonance") or "-",
+        "w3_hard": w3.get("hard") or "-",
+        "w3_stage": w3.get("stage") if w3.get("stage") is not None else "-",
+        "w3_entry": w3.get("entry") if w3.get("entry") is not None else "-",
+        "w3_stop": w3.get("stop") if w3.get("stop") is not None else "-",
+        "w3_lots": w3.get("lots") if w3.get("lots") is not None else "-",
+        "w3_scale": (w3.get("scale_down")
+                     if w3.get("scale_down") is not None else "-"),
+    })
     # 个股详情补充列（W14：原个股详情 sheet 内容并入汇总页）
     row.update(_detail_flat(d))
     return row
@@ -332,6 +358,11 @@ def write_excel(results: List[Dict[str, Any]], path: str,
     buf = _build_buffer(results)
     with open(path, "wb") as f:
         f.write(buf.getvalue())
+    # W69：组合总风险摘要追加到 QA 行（与 CLI / HTML / Web 同口径）
+    from mystery.services.wave3_scan import wave3_summary_line
+    w3_line = wave3_summary_line(results)
+    if w3_line:
+        qa_line = ((qa_line + "\n") if qa_line else "") + w3_line
     if qa_line:
         _append_qa_row(path, qa_line)
     logger.info("✅ Excel 报告生成完成: %s（%d 只，单汇总页）", path, len(results))

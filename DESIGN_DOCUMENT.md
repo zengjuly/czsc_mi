@@ -116,7 +116,9 @@ analyze_one_stock(symbol):
   `{OUTPUT_DIR}/每日股票分析报告_{YYYYMMDD}.xlsx/.html`，Excel 评分=analyze score）/
   `scan --limit 100 [--min-score] [--signal vap_atr|chip_low|true_resonance] [--no-persist]`
   （逐票 `analyze_one_stock(include_detail=True)` + `core.scan_signals.classify` 三类信号，
-  写 `scan_jobs`/`scan_results`，同日重复扫描默认新 job）/
+  写 `scan_jobs`/`scan_results`，同日重复扫描默认新 job；**W69 起**落库前把
+  三浪主升结论合并进每条结果，随 `payload_json` 落库，逐票打印 `三浪=`，
+  末尾输出组合总风险摘要，日报 Excel/HTML 与 Web 扫描表直接展示，见 §12.10）/
   `sync --period daily [--period weekly] --days 365 [--symbols ...] [--limit] [--force]`
   （断点 `data/sync_checkpoint.json`，参数变化丢弃旧断点，中断再跑跳过已完成；
   周/月由日K重采样写入；证券列表为空报错退出）
@@ -129,7 +131,9 @@ analyze_one_stock(symbol):
   十步流程 → 仓位，再按相关系数合成组合总风险并等比缩放仓位。
   默认纯本地日 K、周/月由本轮同一份日 K 重采样派生；不写
   `scan_jobs`/`scan_results`、不改 `AnalysisResult`、不产出综合评分。
-  `--online` 才走统一多源出口。详见 §12 与 `docs/W68_三浪主升策略扫描.md`）。
+  `--online` 才走统一多源出口。独立 CLI 保持纯只读；**W69 起**同一套规则已
+  合并进 `czsc-mi scan` 的扫描结果（见 §12.10）。详见 §12 与
+  `docs/W68_三浪主升策略扫描.md`）。
 - Web：`streamlit run mystery/apps/web/app.py`（七视图：个股/自选/扫描/板块钻取/
   真三振池/系统状态/板块强度表，只调 Service；session 只存结果 dict；
   渲染与计算分离，不用 st.stop()；个股页 chan 开启时 plotly 自绘缠论图，
@@ -157,10 +161,12 @@ analyze_one_stock(symbol):
 
 ## 8. 测试与验收
 
-- `pytest -q -m "not integration"`：430 passed, 15 deselected（models/core 合成 OHLC/czsc adapter
+- `pytest -q -m "not integration"`：448 passed, 15 deselected（models/core 合成 OHLC/czsc adapter
   mock K 线/金标 ≤ 1/scan_signals 三类信号/缠论图 plot_figure/technical 快照/
   Excel 单汇总页回归 + CLI 默认 THS 环境注入回归 + 换手覆盖率 QA + 除权事件股本重拉；
   W68 新增 `tests/test_wave3.py` 39 项（三浪结构/九铁律/十步流程/仓位/组合风险/只读守卫）；
+  W69 新增 `tests/test_w69_scan_wave3.py` 18 项（附加字段/落库 payload_json/组合摘要/
+  开关与降级/日报列/内存 SQLite 端到端）；
   web 页面冒烟自 v0.10.14 起归入 integration 池：`pytest -m integration` 本机跑）。
 - 金标 fixtures：`tests/fixtures/gold_{sh600519,sz000001,sh600150}.json`
   （由旧系统 `unified_stock_analysis` 生成，2026-08-27）。
@@ -259,6 +265,7 @@ analyze_one_stock(symbol):
 | W66 | **Web 视图悬空全局名清零（W53 拆分残留，第二轮根治）**：用户重启报 `NameError: name '_render_scan_table' is not defined`（`components.py::_render_bg_tasks` 调用定义在 `scan.py` 的函数）。根因有二：W64 的 AST 排查只覆盖 stock/scan/sector/system 四个模块、漏了公共层 `components.py`；且只检查函数调用，漏了变量/模块级名引用。改用**字节码级**检查（反汇编全部 code object 的 `LOAD_GLOBAL`/`LOAD_NAME`，比对模块 `__dict__` + builtins）一次查出 3 处悬空：`components._render_bg_tasks → _render_scan_table`、`scan._enrich_scan_rows → logger`、`scan._render_excel_download → datetime`。修复：`components` 改函数内延迟导入（底层模块顶层 import `scan` 会循环）；`scan.py` 补 `logger = logging.getLogger(__name__)` 与 `from datetime import datetime`。新增 `tests/test_web_no_dangling_names.py` 8 项（6 模块字节码零悬空 + components 无顶层 views.scan 导入 + scan 模块级依赖存在），并用 AppTest 注入已完成后台任务真实渲染该分支验证（2 张表、无异常）。全量 381 passed, 15 deselected；integration 冒烟 9/9。 | ✅ 0.10.27 |
 | W67 | **同一设备 48 小时免登录（Web 鉴权持久化）**：用户反馈刷新页面就要重新登录。根因：登录态只存 `st.session_state["_auth_ok"]`，刷新 = 全新 Streamlit session，必然清空。方案（零新依赖、纯标准库）：复用 W42 的 HMAC token（`exp.nonce.sig`，密钥派生自凭据 hash），登录成功后由 `components.html` 注入 JS 写持久 cookie `mystery_auth`（`max-age=172800`、`SameSite=Lax`、`path=/`）；刷新时 WS 初始请求带上 cookie，由只读 `st.context.cookies`（Streamlit 1.61 原生）读回验签放行。写 cookie 放在 `st.rerun()` 之后的首次 run（`_auth_need_cookie` 标志），避免 rerun 打断 JS 组件渲染。cookie 与 token 双重 48h 时效，改口令/换凭据即全量失效；`?at=` 跨标签 token 仍 24h 不变；env `MYSTERY_WEB_AUTH_REMEMBER_HOURS` 可调时长（0=关闭，退回每次登录）。新增 `tests/test_w67_remember_cookie.py` 10 项（TTL、JS 转义、cookie 验签、require_login 放行与回退、写端组件调用）。验证：Playwright 端到端写端实测 cookie 有效期 48.0h；读端真实生产页四步对照（无 cookie→登录页、带 cookie→业务页、再刷新→仍业务页、清 cookie→登录页）全部 PASS；全量 391 passed, 15 deselected, 0 failed。生产服务已重启加载新代码。 | ✅ 0.10.27 |
 | W68 | **三浪主升策略扫描（多周期位置 / 九条铁律 / 十步流程 / 组合风险 / 仓位）**：用户要求「增加策略扫描，评估日线周线月线位置」「同时持有多个高度相关的标的时计算组合总风险」。新增 `mystery/core/wave3.py`（纯规则零 IO，不 import czsc / 不联网 / 不读写 DB）：① `assess_positions` 日/周/月**位置**评估（MA 排列趋势方向 + 近 60 根区间价格分位 + MA20/MA60 位置 + MA20 斜率 + 三周期共振），缺周期诚实标「数据不足」不凑数；② `detect_wave_structure` 可回测的分段极值识别（严格 i0 一浪起点 < i1 一浪高点 < i2 二浪低点 < i3 突破，含涨幅/回撤区间/收阳占比/缩量/放量/企稳/追高/止损/衰竭全套门闩）；③ `iron_rules` 九条铁律逐条判定（原文第 4/6 条带「最好」→ 默认 soft 偏好只影响 `rule_quality`，`--strict` 升级硬否决；第 9 条为元规则）；④ `workflow` 十步流程状态机（衰竭只在其已突破后触发第 10 步，回调期跌破 MA20 不跳止盈）；⑤ `position_size` 仓位 = 账户总资金×单笔风险比例÷(买入价−止损价)，含整手、无止损/除零/非正资金/单票市值上限保护；⑥ `correlation_matrix`/`portfolio_risk` 组合总风险 `R=sqrt(ΣᵢΣⱼ rᵢrⱼρᵢⱼ)`（ρ 越界 clamp、非半正定截断、缺样本按 0 并记 `assumed_pairs`、超风险预算给 `scale_down` 等比缩放）。新增 `mystery/services/wave3_scan.py` **只读**编排：默认纯本地日 K、周/月由本轮同一份日 K `resample_bars` 派生（qfq 锁定）、名称取证券表、不写 `scan_jobs`/`scan_results`/`analysis_cache`、不碰生产自选股；CLI `czsc-mi wave3`（`--symbols/--watchlist/--market/--limit/--equity/--risk-pct/--strict/--online/--json/--min-stage/--verbose/--max-position-pct/--max-total-risk-pct/--high-corr/--min-bars`），末尾固定输出免责声明。**不改 `AnalysisResult`、不产出综合评分、不复用 Mystery 计分规则**，与唯一计分入口并行，不构成 AGENTS §3.1 所禁的第二套计分，`RULE_VER` 不变。新增 `tests/test_wave3.py` 39 项（合成三浪序列 + 各铁律否决 + 仓位边界 + 相关性/组合风险 + 状态机 + 服务层只读 AST 守卫），写 API 名用字符串拼接规避 W65 静态扫描误判。实测 `czsc-mi wave3 --symbols sh600519 sz000001 sh600150 --equity 1000000 --risk-pct 0.01`：三只分别「回避/观察/回避」（策略严格，非每日必有信号），全量 `pytest` 升至 **430 passed, 15 deselected, 0 failed**。策略原文与免责声明见 `docs/W68_三浪主升策略扫描.md`。 | ✅ 0.10.28 |
+| W69 | **三浪主升结论合并进扫描结果**：用户要求「合并到扫描结果中」，把 W68 的独立只读 CLI 结论接入既有扫描链路。① `mystery/services/wave3_scan.py` 新增 `attach_wave3_to_results(results, db, client)`：在 `scan_market` 收齐结果、**写库前**原地附加 `wave3`（精简单票结论：verdict/phase/多周期位置与共振/趋势允许/九铁律硬项通过数与失败项/十步流程/买点/止损/建议仓位/组合缩放，约 300B/票，避免完整 assessment 约 4KB 撑大 payload）与 `wave3_portfolio`（组合总风险/占权益/scale_down/高相关对数/免责声明，每行一份保证按信号过滤后仍可读）；复用 `evaluate_portfolio` 一次算完逐票评估 + 组合风险，注入本次扫描用的 `MarketDataClient`/`MysteryDB` 保证同源同库，日 K 纯本地只读、周/月由同一份日 K `resample_bars` 派生。② 接入点：`scan.py::_persist_or_return` 落库/返回前调用（覆盖进程池/线程池/串行/`no_persist` 全部路径）；`--resume` 三处收尾改走 `_resume_results`，附加后 `UPDATE scan_results SET payload_json` 回写保持库表一致。整体 try/except 硬隔离，任何异常只记 warning、绝不改动既有结果或中断落库。③ 展示层同口径复用 `wave3_summary_line`：CLI `scan` 逐票打印 `三浪=` + 末尾固定输出组合摘要与免责声明；Web 扫描表新增 10 列（旧 job 缺字段显示 `-`）并在表头下加组合摘要行；日报 Excel `SUMMARY_COLS` 加 10 列且 QA 行追加摘要，HTML 卡片加 8 项指标与「三浪候选」标签 + 头部摘要行。④ 开关 `MYSTERY_SCAN_WAVE3`（默认 1，置 0 回到旧行为）、`MYSTERY_SCAN_WAVE3_MAX`（0 不限，>0 只评估按分降序前 N 只，其余标「未评估」）、`MYSTERY_SCAN_WAVE3_STRICT`；资金/风险比例复用 W68 env。**不改综合评分、不改三类信号、不改 `AnalysisResult`、不改 `RULE_VER`、不改 `scan_results` 表结构**（零迁移），不写生产自选股。实测 `czsc-mi scan --watchlist --limit 3 --no-persist`：逐票「三浪=回避」+ 组合摘要与免责声明正常；Excel/HTML 列、摘要、免责与 Web 模块导入端到端全绿；全量 **448 passed, 15 deselected, 0 failed**。附带修复 W61 `test_thread_isolation` 偶发 flaky：原以 `threading.get_ident()` 作 dict key，线程结束后 ident 可被新线程复用，曾把 3 个结果覆盖成 1 个导致 `assert 1 == 3`；改用 list + Lock 收集，语义不变。 | ✅ 0.10.29 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。
@@ -431,4 +438,52 @@ czsc-mi wave3 --market --limit 200 --strict --verbose
 czsc-mi wave3 --watchlist --json > wave3.json  # 完整结果（含免责声明）
 export MYSTERY_WAVE3_EQUITY=1000000 MYSTERY_WAVE3_RISK_PCT=0.01
 ```
+
+### 12.10 合并到扫描结果（W69）
+
+W68 的 `czsc-mi wave3` 是独立只读 CLI；**W69 起同一套规则已合并进
+`czsc-mi scan` 的扫描结果**，一次扫描即可在日报 / Web / CLI 同时看到
+三浪结论与组合总风险，不必再单独跑一次策略扫描。
+
+**数据层**：`scan.py::_persist_or_return` 在写库前调用
+`wave3_scan.attach_wave3_to_results`，给每条结果原地附加两个字段：
+
+| 字段 | 内容 |
+|------|------|
+| `wave3` | 单票精简结论：`verdict`（候选/观察/回避）、`phase`、`position`（日/周/月位置摘要）、`resonance`、`trend_ok`、`zone`（三周期位置）、`stage`/`stage_name`、`hard`（硬项通过/总数）、`quality`、`failed_hard`、`entry`/`stop`、`lots`/`shares`/`risk_amount`、`scale_down`、`reason` |
+| `wave3_portfolio` | 组合摘要：`scanned`/`candidates`、`equity`/`risk_pct`、`sum_risk`/`portfolio_risk`/`total_risk_pct`、`scale_down`、`high_corr_pairs`/`assumed_pairs`、`matrix_psd`、`note`、`disclaimer` |
+
+字段随 `payload_json` 一起落 `scan_results`，`scan_results_of` / 日报 / Web
+无需改动即可读到，**表结构零变更**（无迁移）。组合摘要挂在每一行，
+`--signal` 过滤后任取一行仍可读到。`--resume` 断点续跑收尾时同样附加并
+回写 `payload_json`，保证库表与内存结果一致。
+
+**边界**：只读评估（不改综合评分 / 三类信号 / `AnalysisResult` /
+`RULE_VER`、不写生产自选股），整体异常硬隔离（失败仅记 warning，既有扫描
+结果原样保留）。注入本次扫描的 `MarketDataClient` / `MysteryDB`，与计分
+同源同库同复权口径；日 K 纯本地只读、周/月由同一份日 K 重采样派生。
+
+**展示**（组合摘要统一由 `wave3_summary_line` 生成，四处口径一致）：
+
+- CLI：逐票 `三浪=<结论>`，末尾固定输出
+  `[三浪主升] 候选 a/b · 组合总风险 … · 占权益 … · 仓位缩放 ×… · <免责声明>`。
+- Web 扫描结果表：新增「三浪结论 / 三浪阶段 / 多周期位置 / 周期共振 /
+  三浪铁律 / 三浪流程 / 三浪买点 / 三浪止损 / 三浪建议(手) / 组合缩放」
+  10 列，表格上方一行组合摘要；旧 job 缺字段显示 `-`。
+- 日报 Excel：汇总页加同 10 列，表格下方 QA 行追加组合摘要与免责声明。
+- 日报 HTML：卡片加 8 项三浪指标 +「三浪候选」标签，头部一行组合摘要。
+
+**开关**（env，不改默认即可用）：
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `MYSTERY_SCAN_WAVE3` | `1` | 置 `0` 关闭合并，回到 W68 之前的扫描结果 |
+| `MYSTERY_SCAN_WAVE3_MAX` | `0` | 0=不限；>0 只评估按分降序前 N 只，其余标「未评估」 |
+| `MYSTERY_SCAN_WAVE3_STRICT` | `0` | 置 `1` 把第 4/6 条铁律升为硬否决 |
+| `MYSTERY_WAVE3_EQUITY` / `MYSTERY_WAVE3_RISK_PCT` | 1,000,000 / 0.01 | 复用 W68 口径 |
+
+超大股票池时三浪评估约 22ms/票（实测 168 只 3.8s），可用
+`MYSTERY_SCAN_WAVE3_MAX` 设上限。策略严格，多数交易日候选为 0、
+组合总风险为 0 属正常结果，不代表扫描失败；结论仍是交易过滤规则，
+必须经历史回测和模拟交易验证（免责声明随每次扫描输出）。
 

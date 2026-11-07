@@ -6,8 +6,17 @@ import streamlit as st
 from .components import *
 # W64：拆分后跨 view 复用函数需显式导入（原单文件 app.py 同命名空间可直接调）。
 from .stock import _add_watchlist_widget
+# W69：三浪主升组合摘要（与 CLI / 日报同一口径）；绝对导入避免悬空全局名。
+from mystery.services.wave3_scan import wave3_summary_line
 
 logger = logging.getLogger(__name__)
+
+
+def _wave3_cell(row: dict, key: str):
+    """W69：取扫描行内三浪字段；旧 job 缺字段统一显示 '-'。"""
+    w = row.get('wave3') or {}
+    v = w.get(key)
+    return '-' if v is None or v == '' else v
 
 # 年线系统 7 项具体条件（src 键 → 展示列名）[P2-3：原 app.py 顶层常量，随 _scan_table_data 迁入]
 _YEARLINE_DISP = [
@@ -147,6 +156,17 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
             # chan.1d.divergence，不重算。旧 job 无值显示 -，重扫后填充）
             '日线背驰': ((row.get('chan') or {}).get('1d') or {}).get(
                 'divergence') or '-',
+            # W69：三浪主升策略结论（随 payload_json 落库；旧 job 显示 '-'）
+            '三浪结论': _wave3_cell(row, 'verdict'),
+            '三浪阶段': _wave3_cell(row, 'phase'),
+            '多周期位置': _wave3_cell(row, 'position'),
+            '周期共振': _wave3_cell(row, 'resonance'),
+            '三浪铁律': _wave3_cell(row, 'hard'),
+            '三浪流程': _wave3_cell(row, 'stage'),
+            '三浪买点': _wave3_cell(row, 'entry'),
+            '三浪止损': _wave3_cell(row, 'stop'),
+            '三浪建议(手)': _wave3_cell(row, 'lots'),
+            '组合缩放': _wave3_cell(row, 'scale_down'),
             '详情': f"?stock={row['symbol']}&nav_key={nav_key}&nav_idx={idx}{at_qs}",
         }
         # W16：年线系统 7 项具体条件 + 主升浪 8 项具体指标（只展示不改判）
@@ -166,6 +186,8 @@ def _render_scan_table(rows: list, key: str = "scan"):
     nav_key 为该缓存的随机 key，进入详情页按 nav_key 恢复导航。
     """
     st.caption(f"共 {len(rows)} 只（按分降序）")
+    _w3_line = wave3_summary_line(rows)
+    st.caption(_w3_line or "三浪主升：本任务未含该策略（重新扫描后自动合并）")
     st.caption(_market_env_line_cached())
     
     # 存当前列表到进程级缓存（跨标签页/会话），供详情页恢复导航
@@ -329,6 +351,7 @@ __all__ = [
     '_enrich_scan_rows',
     '_render_excel_download',
     '_turn_tags',
+    '_wave3_cell',
     '_sig_flag',
     '_yl_flag',
     '_mainwave_flag',

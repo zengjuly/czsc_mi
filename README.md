@@ -39,6 +39,9 @@ export MYSTERY_CHAN_SCORE=0                        # 混合分另开关，默认
 export HITHINK_FINANCE_API_KEY=...                  # 扶摇在线源（可选，本地 MarketDB 不需要）
 export MYSTERY_WAVE3_EQUITY=1000000                 # W68 三浪扫描：账户总资金
 export MYSTERY_WAVE3_RISK_PCT=0.01                  # W68 三浪扫描：单笔风险比例（1%）
+export MYSTERY_SCAN_WAVE3=1                         # W69：扫描结果合并三浪（0=关闭）
+export MYSTERY_SCAN_WAVE3_MAX=0                     # W69：0=不限；>0 只评估按分前 N 只
+export MYSTERY_SCAN_WAVE3_STRICT=0                  # W69：1=第 4/6 条铁律升硬项
 ```
 
 无 DB / 无 TDX / 无网络时：core 离线单测可跑（`pytest -m "not integration"`），
@@ -49,7 +52,7 @@ export MYSTERY_WAVE3_RISK_PCT=0.01                  # W68 三浪扫描：单笔�
 ```bash
 czsc-mi analyze --stock sh600519
 czsc-mi daily --watchlist
-czsc-mi scan --limit 100
+czsc-mi scan --limit 100                        # W69 起结果自动含三浪结论 + 组合总风险
 czsc-mi sync --period daily --days 365
 czsc-mi sync-shares --watchlist
 czsc-mi sync-turnover --watchlist --date YYYY-MM-DD
@@ -60,8 +63,9 @@ scripts/weekly_shares.sh
 czsc-mi audit --period daily
 czsc-mi audit --period daily --json --verbose   # CI/流水线 JSON 输出
 
-# 三浪主升策略扫描（W68，只读、不评分）：日/周/月位置 + 九条铁律 +
+# 独立三浪策略扫描（W68，只读、不评分）：日/周/月位置 + 九条铁律 +
 # 十步流程 + 仓位公式 + 高度相关标的的组合总风险
+# W69 起 czsc-mi scan 已自动把结论合并进扫描结果，无需单独跑此命令
 czsc-mi wave3 --watchlist
 czsc-mi wave3 --symbols sh600519 sz000001 --equity 1000000 --risk-pct 0.01 --verbose
 czsc-mi wave3 --market --limit 200 --json > wave3.json
@@ -78,7 +82,7 @@ pytest -m integration                   # 原机集成（需 MYSTERY_DB_PATH + T
 ## 阶段
 
 > **从零部署/配置/使用/验收完整指导见 [`docs/014.md`](docs/014.md)**；
-> 当前实现状态权威 = `DESIGN_DOCUMENT.md` §9（W20–W68 全记录，v0.10.28）。
+> 当前实现状态权威 = `DESIGN_DOCUMENT.md` §9（W20–W69 全记录，v0.10.29）。
 > 以下仅保留 P0–W5 早期里程碑摘要。
 
 - P0 骨架（models / 包结构 / 空 Adapter 接口）✅
