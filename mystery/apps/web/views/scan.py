@@ -85,10 +85,15 @@ def view_scan():
 
     st.divider()
     st.subheader("最近扫描任务与结果")
-    jobs = _recent_jobs(limit=20)
+    # W77：任务完成后 fragment 会自动触发全页刷新；此按钮供手动兜底。
+    if st.button("🔄 刷新记录", key="scan_job_refresh"):
+        st.rerun()
+    jobs = _recent_jobs(limit=50)
     if not jobs:
         st.caption("暂无扫描记录（前台或后台扫描后出现）")
         return
+    st.caption(f"共 {len(jobs)} 条历史扫描 job（每种类型保留最近若干份）；"
+               f"后台任务的启动/失败/中断记录见上方「后台任务台账」。")
     opts = {f"job#{j[0]} [{j[5] or 'market'}] {j[1] or ''} 成功{j[3]} 失败{j[4]} {j[2] or ''}": j[0]
             for j in jobs}
     pick = st.selectbox("选择扫描任务查看结果", list(opts.keys()), key="scan_job_pick")

@@ -210,8 +210,11 @@ def test_ths_sector_code_normalize():
 
 
 # ---------------- W18：scan_jobs 同类型只保留最新一份 ----------------
-def test_scan_job_same_type_overwrite():
-    """同 scan_type 连续写库 → 只保留最新一份（旧 job 及其 results 被删）。"""
+def test_scan_job_same_type_overwrite(monkeypatch):
+    """W77：同 scan_type 连续写库 → 保留最近 KEEP 份（默认 5）；超出部分连
+    scan_results 一起裁掉。``MYSTERY_SCAN_JOB_KEEP=1`` 回退 W18「只留
+    最新一份」语义。（W18 原断言「同类型只留 1 条」已随保留策略调整。）
+    """
     from mystery.services.scan import _write_scan_batch
 
     db = _fresh_db()
@@ -222,12 +225,28 @@ def test_scan_job_same_type_overwrite():
     conn = db._connect()
     try:
         jobs = conn.execute(
+            "SELECT id, scan_type, n_ok, n_fail FROM scan_jobs ORDER BY id").fetchall()
+        assert len(jobs) == 2, f"W77 应保留最近 2 份: {jobs}"
+        assert jobs[-1][1] == "watchlist" and jobs[-1][2] == 1 and jobs[-1][3] == 1
+        syms = sorted(r[0] for r in conn.execute(
+            "SELECT symbol FROM scan_results"))
+        assert syms == ["000001.SZ", "600519.SH"], f"历史 results 被误删: {syms}"
+    finally:
+        conn.close()
+
+    # KEEP=1：回退 W18 旧语义，只留最新一份且旧 results 清空
+    monkeypatch.setenv("MYSTERY_SCAN_JOB_KEEP", "1")
+    _write_scan_batch(db, [{"symbol": "000002.SZ", "trade_date": "2026-09-03",
+                            "score": 3.0}], 2, "2026-09-03", "watchlist")
+    conn = db._connect()
+    try:
+        jobs = conn.execute(
             "SELECT id, scan_type, n_ok, n_fail FROM scan_jobs").fetchall()
-        assert len(jobs) == 1, f"同类型应只留 1 条: {jobs}"
-        assert jobs[0][1] == "watchlist" and jobs[0][2] == 1 and jobs[0][3] == 1
+        assert len(jobs) == 1, f"KEEP=1 应只留 1 条: {jobs}"
+        assert jobs[0][2] == 1 and jobs[0][3] == 2
         syms = [r[0] for r in conn.execute(
             "SELECT symbol FROM scan_results").fetchall()]
-        assert syms == ["000001.SZ"], f"旧 results 未清: {syms}"
+        assert syms == ["000002.SZ"], f"旧 results 未清: {syms}"
     finally:
         conn.close()
 

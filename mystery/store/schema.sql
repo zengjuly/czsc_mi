@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS chan_cache (
   PRIMARY KEY(symbol, freq, trade_date, czsc_ver)
 );
 
--- 10. 扫描任务（W18：同类型扫描只保留最新一份——全市场/自选/板块各一份）
+-- 10. 扫描任务（W18 起按 scan_type 分类；W77 改为每类保留最近若干份）
 CREATE TABLE IF NOT EXISTS scan_jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   trade_date TEXT, started_at TEXT, finished_at TEXT, n_ok INTEGER, n_fail INTEGER,
@@ -114,3 +114,22 @@ CREATE TABLE IF NOT EXISTS scan_results (
   payload_json TEXT,
   PRIMARY KEY (job_id, symbol)
 );
+
+-- 12. 后台扫描任务台账（W77）：启动/进度/终态全留痕，服务重启后仍可查。
+--     与 scan_jobs 通过 job_id 关联；详见 mystery/services/bg_task_log.py。
+CREATE TABLE IF NOT EXISTS bg_task_log (
+  id           TEXT PRIMARY KEY,
+  label        TEXT NOT NULL,
+  status       TEXT NOT NULL,
+  done         INTEGER DEFAULT 0,
+  total        INTEGER DEFAULT 0,
+  stage        TEXT DEFAULT '',
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  job_id       INTEGER,
+  n_results    INTEGER DEFAULT 0,
+  error        TEXT DEFAULT '',
+  scan_type    TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_bg_task_log_created
+  ON bg_task_log (created_at DESC);

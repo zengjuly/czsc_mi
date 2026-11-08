@@ -27,29 +27,45 @@ logger = logging.getLogger(__name__)
 _MIN_COVERAGE = float(os.environ.get('MYSTERY_AUTO_SYNC_MIN_COVERAGE', '0.8'))
 
 
+# W77：每种 scan_type 保留最近 N 份 job（默认 5，可用 MYSTERY_SCAN_JOB_KEEP 调）。
+# 旧行为（W18）是每次写库先删光同类型历史 job，导致「最近扫描任务与结果」
+# 永远只有全市场/自选/板块各一条，后台扫描的历史记录无从查起。
+# 保留有限份而非无限累积：全市场一次 ~5578 行 payload_json，5 份约几十 MB，
+# 生产库 2.4G 量级下可接受；设 1 即回到 W18 旧语义。
+_SCAN_JOB_KEEP_ENV = "MYSTERY_SCAN_JOB_KEEP"
+_SCAN_JOB_KEEP_DEFAULT = 5
+_SCAN_JOB_KEEP_MAX = 50
+
+
+def _scan_job_keep() -> int:
+    try:
+        n = int(os.environ.get(_SCAN_JOB_KEEP_ENV, _SCAN_JOB_KEEP_DEFAULT))
+    except (TypeError, ValueError):
+        n = _SCAN_JOB_KEEP_DEFAULT
+    return max(1, min(_SCAN_JOB_KEEP_MAX, n))
+
+
 def _write_scan_batch(db, results: List[Dict[str, Any]], failed: int,
                       trade_date: Optional[str] = None,
                       scan_type: str = "market") -> Optional[int]:
     """写一笔 scan_jobs + 全量 scan_results，返回 job_id。
 
-    W18：同类型扫描只保留最新一份——先删该 scan_type 的旧 job 及其
-    scan_results，再插新（全市场/自选/板块各一份，历史不无限累积）。
+    W77：同类型扫描保留最近 N 份（默认 5）——先插新 job，再清理排名超过 N
+    的老 job 及其 scan_results。W18 的「只保留最新一份」会让「最近任务」
+    看不到多次后台扫描，故改为有限历史；``MYSTERY_SCAN_JOB_KEEP=1`` 可回退
+    旧语义。新插入的 job 始终保留，不受清理影响。
     """
     import sqlite3
     conn = db._connect()
     try:
         started = datetime.now().isoformat(timespec="seconds")
-        conn.execute(
-            "DELETE FROM scan_results WHERE job_id IN "
-            "(SELECT id FROM scan_jobs WHERE scan_type=?)", (scan_type,))
-        conn.execute("DELETE FROM scan_jobs WHERE scan_type=?", (scan_type,))
         cur = conn.execute(
             "INSERT INTO scan_jobs (trade_date, started_at, finished_at, "
             "n_ok, n_fail, scan_type) VALUES (?,?,?,?,?,?)",
             (trade_date or "", started, started, len(results), failed, scan_type))
         job_id = cur.lastrowid
         # W60（P2-4 同思路）：逐行 INSERT → executemany 批量，5000+ 票从
-        # 数千次往返降为单次批量（语义零回归，仍是先 DELETE 旧 job 再整批 INSERT）。
+        # 数千次往返降为单次批量。
         _rows = [
             (job_id,
              str(r.get("symbol", "")),
@@ -66,6 +82,18 @@ def _write_scan_batch(db, results: List[Dict[str, Any]], failed: int,
                 "INSERT INTO scan_results (job_id, symbol, trade_date, score, "
                 "true_resonance, vap_atr_break, chip_low, payload_json) "
                 "VALUES (?,?,?,?,?,?,?,?)", _rows)
+        # 清理：同类型除本次 job 外，只留最新 keep-1 份，更老的连结果一起删。
+        keep_older = _scan_job_keep() - 1
+        conn.execute(
+            "DELETE FROM scan_results WHERE job_id IN ("
+            " SELECT id FROM scan_jobs WHERE scan_type=? AND id<>? "
+            " ORDER BY id DESC LIMIT -1 OFFSET ?)",
+            (scan_type, job_id, keep_older))
+        conn.execute(
+            "DELETE FROM scan_jobs WHERE id IN ("
+            " SELECT id FROM scan_jobs WHERE scan_type=? AND id<>? "
+            " ORDER BY id DESC LIMIT -1 OFFSET ?)",
+            (scan_type, job_id, keep_older))
         conn.commit()
         return job_id
     finally:

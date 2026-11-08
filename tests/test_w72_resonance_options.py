@@ -28,6 +28,21 @@ from mystery.core.scorer import combine
 from mystery.services import analyze as svc
 
 
+@pytest.fixture(autouse=True)
+def _isolate_runtime_overrides(tmp_path, monkeypatch):
+    """隔离生产网页覆盖层，保证「生产默认」断言稳定。
+
+    W74 起运维可在网页把 true_threshold 等改成自定义值并写入
+    ``data/resonance_override.json``；本文件断言的是代码层生产默认
+    （yearline/80），不应受生产配置影响。把覆盖层指向空临时路径并清空
+    显式 env（网页配置另有 test_w74_resonance_override.py 专项覆盖）。
+    """
+    monkeypatch.setattr(svc, "RESONANCE_OVERRIDE_PATH",
+                        tmp_path / "resonance_override.json")
+    for env_key, _ in svc._RESONANCE_ENV_KEYS:
+        monkeypatch.delenv(env_key, raising=False)
+
+
 # ---------------------------------------------------------------- 构造工具
 
 def _daily(n: int = 300, up: bool = True, seed: int = 7,

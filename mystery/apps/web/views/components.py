@@ -93,15 +93,27 @@ _BG_STALE_SECONDS = 600.0
 
 
 def _bg_launch(label: str, fn) -> str:
-    """启动后台扫描任务。fn(cb, job_holder) -> rows（cb(done,total,stage) 报进度）。"""
+    """启动后台扫描任务。fn(cb, job_holder) -> rows（cb(done,total,stage) 报进度）。
+
+    W77：任务启动 / 进度 / 终态同步写入生产库 ``bg_task_log`` 台账。此前记录
+    只在内存字典里，服务重启、跨会话、W75 清除卡住任务后全部消失；失败
+    （并发锁拒绝、线程被重启打断）更是不留任何痕迹，用户「最近任务」看不到。
+    台账写入全部经 bg_task_log 异常硬隔离，绝不影响扫描本身。
+    """
+    from mystery.services import bg_task_log as _btl
     tid = uuid.uuid4().hex[:8]
     lock, tasks = _bg_lock(), _bg_tasks()
     now = time.time()
+    db_path = _service().market.db.db_path
     with lock:
         tasks[tid] = {"id": tid, "label": label, "status": "running",
                       "done": 0, "total": 0, "stage": "", "job_id": None,
                       "results": [], "error": "", "created": now,
-                      "updated": now}
+                      "updated": now, "_refreshed": False}
+    _btl.log_start(db_path, tid, label, created=now)
+    # 进度写库节流：逐票回调可达数千次，每 5 秒或每 50 只才 UPDATE 一次，
+    # 避免短事务拖慢全市场扫描；终态由 log_finish 兜底，不会丢最后一次。
+    _last_log = {"ts": 0.0, "done": -1}
 
     def _run():
         holder: list = []
@@ -114,23 +126,34 @@ def _bg_launch(label: str, fn) -> str:
                     t["done"], t["total"] = done, total
                     t["stage"] = stage or ""
                     t["updated"] = time.time()
+            t_now = time.time()
+            if (t_now - _last_log["ts"] >= 5.0
+                    or done - _last_log["done"] >= 50):
+                _last_log["ts"], _last_log["done"] = t_now, done
+                _btl.log_progress(db_path, tid, done, total, stage)
 
+        job_id = None
         try:
             rows = fn(cb, holder)
+            job_id = holder[0] if holder else None
             with lock:
                 t = tasks.get(tid)
                 if t:
                     t["status"] = "done"
                     t["results"] = rows
-                    t["job_id"] = holder[0] if holder else None
+                    t["job_id"] = job_id
                     t["updated"] = time.time()
+            _btl.log_finish(db_path, tid, "done", job_id=job_id,
+                            n_results=len(rows or []))
         except Exception as e:  # noqa: BLE001
+            err = str(e)[:200]
             with lock:
                 t = tasks.get(tid)
                 if t:
                     t["status"] = "error"
-                    t["error"] = str(e)[:200]
+                    t["error"] = err
                     t["updated"] = time.time()
+            _btl.log_finish(db_path, tid, "error", error=err)
 
     threading.Thread(target=_run, daemon=True).start()
     return tid
@@ -141,7 +164,11 @@ def _bg_running_fragment():
 
     W75：区分「逐票扫描」「收尾阶段」「疑似失联」三种态；失联态提供清除按钮，
     避免 W69 三浪收尾卡顿 / 进程重启残留导致进度条永远停在 100%。
+    W77：检测到内存任务刚进入终态时触发一次全页刷新，让同页「最近扫描
+    任务与结果」下拉立即出现新 job（此前 fragment 只刷进度条，完成态与
+    下拉列表都不更新，用户以为记录没生成）。
     """
+    from mystery.services import bg_task_log as _btl
     now = time.time()
     with _bg_lock():
         rt = sorted([t for t in _bg_tasks().values() if t["status"] == "running"],
@@ -158,6 +185,8 @@ def _bg_running_fragment():
                     tk = _bg_tasks().pop(t["id"], None)
                     if tk is not None:
                         tk["status"] = "cleared"
+                _btl.log_finish(_service().market.db.db_path, t["id"],
+                                "cleared", error="页面手动清除（疑似失联）")
                 st.rerun()
             continue
         if stage:
@@ -168,8 +197,21 @@ def _bg_running_fragment():
             st.progress(min(1.0, pct),
                         text=f"⏳ {t['label']} 运行中 {t['done']}/{t['total']}（自动刷新）")
 
-def _recent_jobs(limit: int = 20) -> list:
-    """最近扫描任务 [(id, trade_date, started_at, n_ok, n_fail, scan_type), ...] 降序。"""
+    # W77：终态出现时只刷新一次全页（打标记防 fragment 2s 循环 rerun）。
+    with _bg_lock():
+        fresh = [t["id"] for t in _bg_tasks().values()
+                 if t["status"] in ("done", "error", "cleared")
+                 and not t.get("_refreshed")]
+        for tid in fresh:
+            _bg_tasks()[tid]["_refreshed"] = True
+    if fresh:
+        st.rerun()
+
+def _recent_jobs(limit: int = 50) -> list:
+    """最近扫描任务 [(id, trade_date, started_at, n_ok, n_fail, scan_type), ...] 降序。
+
+    W77：默认从 20 提到 50（配合 scan_jobs 历史保留策略，展示多次扫描记录）。
+    """
     svc = _service()
     conn = svc.market.db._connect()
     try:
@@ -214,23 +256,32 @@ def _render_running_tasks(db_path: str):
                              f"（{t.get('done')}/{t.get('total')}）")
 
 def _render_bg_tasks():
-    """后台任务列表：运行中自动刷新 + 完成/失败态 + 查看结果。"""
+    """后台任务：实时进度 + 完成/失败态 + 持久化台账（W77）+ 查看结果。
+
+    W77：除内存实时态外，额外渲染生产库 ``bg_task_log`` 台账——服务重启、
+    跨会话、任务被清除后历史任务仍可见；启动即留痕，失败也留痕。
+    """
+    from mystery.services import bg_task_log as _btl
+    db_path = _service().market.db.db_path
+    # 进程重启残留的 running 记录标记为「中断」，不再假装还在跑。
+    _btl.mark_stale(db_path, _BG_STALE_SECONDS)
+    logs = _btl.recent(db_path, limit=20)
     with _bg_lock():
         tasks = sorted(_bg_tasks().values(), key=lambda t: t["created"],
                        reverse=True)
-    if not tasks:
-        st.caption("暂无后台任务")
-        return
-    _bg_running_fragment()
-    for t in tasks:
-        if t["status"] == "done":
-            st.success(f"✅ {t['label']} 完成：{len(t['results'])} 只"
-                       f"（job #{t['job_id']}）")
-            if st.button(f"查看结果（{t['label']}）", key=f"bg_view_{t['id']}"):
-                st.session_state['bg_view_id'] = t['id']
-                st.rerun()
-        elif t["status"] == "error":
-            st.error(f"❌ {t['label']} 失败：{t['error'][:120]}")
+    # 内存态：运行中进度（fragment 自动刷新）+ 完成/失败提示 + 查看结果。
+    # 台账历史为空且内存也为空时才显示「暂无后台任务」。
+    if tasks:
+        _bg_running_fragment()
+        for t in tasks:
+            if t["status"] == "done":
+                st.success(f"✅ {t['label']} 完成：{len(t['results'])} 只"
+                           f"（job #{t['job_id']}）")
+                if st.button(f"查看结果（{t['label']}）", key=f"bg_view_{t['id']}"):
+                    st.session_state['bg_view_id'] = t['id']
+                    st.rerun()
+            elif t["status"] == "error":
+                st.error(f"❌ {t['label']} 失败：{t['error'][:120]}")
     view_id = st.session_state.get('bg_view_id')
     if view_id:
         with _bg_lock():
@@ -241,6 +292,27 @@ def _render_bg_tasks():
             # 调用发生在页面渲染阶段，各 view 模块均已加载完毕，导入安全。
             from .scan import _render_scan_table
             _render_scan_table(t["results"], key=f"bg_{view_id}")
+
+    # W77：持久化台账（本次问题核心——「最近任务」看不到后台扫描记录）。
+    st.caption("📋 后台任务台账：每次启动即留痕，失败/中断也记录；持久化于生产库，"
+               "服务重启后仍可查。带 job # 的任务可在下方「最近扫描任务与结果」查看结果。")
+    if not logs:
+        st.caption("暂无历史任务记录（点击上方「🚀 后台扫描」后出现）")
+        return
+    st.dataframe(
+        [{
+            '任务': r.get('label') or '-',
+            '状态': _btl.status_label(r.get('status')),
+            '进度': (f"{r.get('done') or 0}/{r.get('total') or 0}"
+                     if r.get('status') == 'running' else
+                     (f"{r.get('n_results') or 0} 只" if r.get('status') == 'done' else '-')),
+            '扫描 job': (f"#{r['job_id']}" if r.get('job_id') else '-'),
+            '开始': (r.get('created_at') or '')[5:19],
+            '更新': (r.get('updated_at') or '')[5:19],
+            '备注': ((r.get('error') or r.get('stage') or '')[:60]),
+        } for r in logs],
+        hide_index=True, use_container_width=True)
+    st.caption(f"共显示最近 {len(logs)} 条（台账最多保留 200 条，超出自动裁剪）")
 
 def _sig_text(v) -> str:
     """±1/0 信号 → 文本（1=金叉/突破，-1=死叉/破位，0=无）。"""

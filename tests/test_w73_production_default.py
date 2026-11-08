@@ -28,6 +28,19 @@ from mystery.core.scorer import combine
 from mystery.services import analyze as svc
 
 
+@pytest.fixture(autouse=True)
+def _isolate_runtime_overrides(tmp_path, monkeypatch):
+    """隔离生产网页覆盖层：本文件验证代码层生产默认（yearline/80）。
+
+    生产上网页把 true_threshold 调成 70 属合法运行时配置，不应让单元测试
+    误判为回归；覆盖层指向空临时路径 + 清空显式 env 后恢复默认口径。
+    """
+    monkeypatch.setattr(svc, "RESONANCE_OVERRIDE_PATH",
+                        tmp_path / "resonance_override.json")
+    for env_key, _ in svc._RESONANCE_ENV_KEYS:
+        monkeypatch.delenv(env_key, raising=False)
+
+
 # ---------------------------------------------------------------- 构造工具
 
 def _daily(n: int = 300, seed: int = 7) -> pd.DataFrame:
