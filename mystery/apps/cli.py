@@ -313,7 +313,8 @@ def _cmd_wave3(args: argparse.Namespace) -> int:
     print(f"账户总资金 {acc['equity']:,.2f} | 单笔风险比例 {acc['risk_pct'] * 100:.2f}% | "
           f"整手 {acc['lot_size']} 股 | 铁律严格模式 {'开' if acc['strict'] else '关'}")
     print("-" * 118)
-    print(f"{'代码':<12} {'名称':<8} {'月/周/日位置':<16} {'阶段':<12} "
+    # W76：名称在前、代码在后（与 Web / Excel 汇总同口径）。
+    print(f"{'名称':<8} {'代码':<12} {'月/周/日位置':<16} {'阶段':<12} "
           f"{'铁律':<8} {'买入':>9} {'止损':>9} {'仓位(手)':>10} {'风险额':>11}  结论")
     print("-" * 118)
     shown = 0
@@ -332,7 +333,7 @@ def _cmd_wave3(args: argparse.Namespace) -> int:
         hard_s = f"{rules['hard_pass']}/{rules['hard_total']}"
         entry_s = f"{entry:.2f}" if entry is not None else "-"
         stop_s = f"{stop:.2f}" if stop is not None else "-"
-        print(f"{r['symbol']:<12} {(r['name'] or '未知'):　<6} {zone:<16} "
+        print(f"{(r['name'] or '未知'):　<6} {r['symbol']:<12} {zone:<16} "
               f"{r['wave']['phase']:<12} {hard_s:<8} "
               f"{entry_s:>9} {stop_s:>9} "
               f"{s['suggested_lots']:>10} "

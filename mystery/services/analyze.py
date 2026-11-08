@@ -23,6 +23,8 @@ from ..core.models import (AnalysisResult, BarSeries, ChanStructure,
 from ..core.mystery_rules import MysteryLogic
 from ..core.patterns import PatternRecognition
 from ..core import scorer as _scorer
+# W76：覆盖层路径统一走共享模块（修 W74 Path("") 恒真导致路径退化成 "." 的缺陷）。
+from .runtime_settings import RUNTIME_OVERRIDE_DIR, resolve_override_path
 
 logger = logging.getLogger(__name__)
 
@@ -127,11 +129,12 @@ PRODUCTION_RESONANCE_OPTIONS: Dict[str, Any] = {
 # W74：运行时覆盖层（网页「系统状态」面板 / CLI 可改，一键还原默认值）。
 # 持久化到 JSON 文件；优先级：显式 env > 覆盖层文件 > 生产默认。
 # 覆盖层为空/不存在时，effective 等于生产默认（与 W73 行为一致）。
-_DB_PATH = os.environ.get("MYSTERY_DB_PATH") or ""
-_OVERRIDE_DIR = (Path(_DB_PATH).resolve().parent.parent
-                 if _DB_PATH else Path("data"))
-RESONANCE_OVERRIDE_PATH = (Path(os.environ.get("MYSTERY_RESONANCE_OVERRIDE") or "")
-                           or (_OVERRIDE_DIR / "resonance_override.json"))
+# W76：修 W74 缺陷——原写法 Path("") 恒为 Path(".") 且布尔为真，
+# 使生产路径退化成当前目录，exists() 恒 True、读取报 IsADirectoryError、
+# 网页保存/还原失效。统一改用共享模块：包位置绝对目录 + 显式 env 重定向。
+_OVERRIDE_DIR = RUNTIME_OVERRIDE_DIR
+RESONANCE_OVERRIDE_PATH = resolve_override_path(
+    "MYSTERY_RESONANCE_OVERRIDE", "resonance_override.json")
 
 # 表单元数据：Web 面板与 CLI 复用，保证字段口径单一来源。
 RESONANCE_FIELDS: tuple = (

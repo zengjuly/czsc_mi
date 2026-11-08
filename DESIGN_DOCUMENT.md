@@ -278,6 +278,7 @@ analyze_one_stock(symbol):
 | W73 | **三振生产默认改为严格大盘腿 + 降阈值（按 W70 建议 5/7 收口）**：用户「修改 严格大盘腿 / 降阈值」。在 W72 参数化开关之上，把**生产默认**从 `ma/85` 切换为 `yearline/80`（阈值档位取 W72 唯一做过生产库金标对拍的 80）。设计原则不变：**不改综合评分公式、不改三类信号、不改 `AnalysisResult`、不升 `RULE_VER`、core 零 IO**。分层落地：① **core 库级基线保留 `ma/85`**（保护 W71/W72 共 53 项金标测试，其合成指数仅 160 根 < yearline 要求的 ≥250 根，若直接改 core 默认会破坏正向验证）；② **service 层生产默认切到 `yearline/80`**——`mystery/services/analyze.py::PRODUCTION_DEFAULT_RESONANCE_OPTIONS = {"market_mode":"yearline","true_threshold":80.0,...}`，`resonance_options_from_env()` 未命中任何 env 时回退到它而非空 dict，使生产默认生效且 Web/CLI/scan 全链路统一；③ **缓存隔离**：因默认不再是 `ma/85`，`resonance_cache_tag()` 在「无 env 覆盖」时也基于 `PRODUCTION_DEFAULT_RESONANCE_OPTIONS` 归一化出**非空稳定 tag**，旧 `ma/85` 缓存不会被新口径命中（W72 原「默认空 tag」契约随之收紧，属预期内语义收紧）；④ W72 两个旧契约测试（`test_run_rules_passes_env_options_to_pipeline` 断言注入稀疏 dict、`test_resonance_cache_tag_default_is_empty` 断言默认 tag 空）随契约更新为新语义断言，并新增 `tests/test_w73_production_default.py` 覆盖：生产默认生效 / env 优先 / 缓存 tag 非空且稳定 / 一键回退==core 基线 / 门闩 all() 不回退。回放实证（生产库 `sh.000001` 756 根 100 窗口）：旧 ma/85 大盘向上 52→真三振 17；新 yearline/80 大盘向上 43→真三振 9；六门闩回归 PASS；34 个历史高位窗口被新默认否决（降阈值未放行误报）；指数 lag=3 天默认只诊断不降级。全量 **517 passed, 15 deselected, 0 failed**；integration **9 passed, 6 skipped**。 | ✅ 0.10.32 |
 | W74 | **三振共振口径网页配置（运行时覆盖层 + 一键还原默认值）**：用户「这些参数可以在网页中修改，可以一键还原默认值」。在 W73 之上引入运行时覆盖层文件（默认 `data/resonance_override.json`，env `MYSTERY_RESONANCE_OVERRIDE` 可重定向），`services/analyze.py` 新增 `RESONANCE_OVERRIDE_PATH` / `RESONANCE_FIELDS`（表单字段单一来源）/ `load_resonance_override` / `save_resonance_override`（原子写 `.tmp`→replace，只存已知字段）/ `clear_resonance_override`（一键还原=删文件）/ `resonance_override_exists` / `resonance_options_default`；`resonance_options_effective()` 改为合并「生产默认 → 覆盖层文件 → 显式 env（最高优先）」，core 零 IO 不变、非法值仍由 `core.resolve_resonance_options` 兜底。`mystery/apps/web/views/system.py::render_resonance_config` 在「系统状态」页顶部渲染：当前生效 vs 生产默认对比表、表单（大盘腿/阈值/资金门槛/指数滞后降级）、「保存配置（立即热生效）」、`🔄 一键还原默认值`、风险提示。保存即写文件、下次请求热生效无需重启；`resonance_cache_tag()` 基于生效口径生成，改口径即换键使旧缓存自动失效重建（W23 契约）。新增 `tests/test_w74_resonance_override.py` 7 项（覆盖层无/有、save→load 往返、effective 合并、clear 还原、env 优先于覆盖层、缓存键随口径变化、损坏文件安全回退），覆盖层经 fixture 重定向临时目录零生产污染。全量 **524 passed, 15 deselected, 0 failed**；integration **9 passed, 6 skipped**；网页表单与 CLI/scan 共用同一覆盖层文件，口径绝对一致。 | ✅ 0.10.33 |
 | W75 | **修复「后台扫描任务一直卡在最后」（超大池三浪收尾卡顿）**：用户报障。只读诊断证据链：心跳 `scan done=5580/total=5580` 停在 12:40、`scanlock` 曾被持锁的 Web 进程持有、本次全市场扫描未写库（最新 job 仍 11-06）、进程 2.2GB RSS 且服务中途重启（`NRestarts=2`）。根因是 W69 三浪附加 `attach_wave3_to_results` 在逐票 `done=total` **之后**收尾执行且**完全不报进度**：`MYSTERY_SCAN_WAVE3_MAX` 默认 0 不限 → 对 5580 只逐只查库+resample+三浪评估，候选间再算 **O(C²) 纯 Python 相关性矩阵**（实测 600 候选 18s、外推全量约 25 分钟），叠加 Web 后台任务字典 `status=running` 永不翻 done → 页面停在 100% 无限转圈。修复（service 层、core 零改动、不改评分/信号/`RULE_VER`/三浪字段结构）：① **超大池自动限流**：仅当 `MYSTERY_SCAN_WAVE3_MAX` 未显式设置且 `len(results)>MYSTERY_SCAN_WAVE3_AUTO_TRIGGER`(默认500) 时自动只评估按分降序前 `MYSTERY_SCAN_WAVE3_AUTO_MAX`(默认200) 只、其余标未评估；小池(自选股168)零变化；显式 `MAX=0` 强制全量可完整回退 W69；summary 加 `auto_limited/cap_reason/cap/pool_size`，`wave3_summary_line` 追加限流提示使日报/Web/CLI 可观测；② **收尾进度可见**：`attach_wave3_to_results` 加可选 `progress_cb` 逐票报 `(k,n,"收尾·三浪主升评估")`，`scan.py` 的 `_attach_wave3/_persist_or_return/_scan_market_impl` 透传、写库前报「收尾·写入扫描结果」，`_cb` 收尾阶段心跳保持满进度+阶段 label(不回退 0/N)；③ **僵尸任务防护**：`components.py::_bg_launch` cb 支持第3参数 stage + 记录 updated，`_bg_running_fragment` 区分逐票/收尾/疑似失联三态，超 `_BG_STALE_SECONDS`(600s) 无更新显示清除按钮不再无限转圈。生产库只读实测：600 只 results 收尾 **4.45s**（限流评 200、400 未评估）、显式 `MAX=0` 全量 200 只 4.22s 与旧行为一致（对比修复前全市场约 25 分钟+2.2GB）。新增 `tests/test_w75_scan_tail.py` 16 项；全量 **540 passed, 15 deselected, 0 failed**；integration 9 passed/6 skipped；部署清理 `.tasks.json` 陈旧心跳残留。 | ✅ 0.10.34 |
+| W76 | **三浪评估上限网页配置 + 结果列「名称在前」**：用户两点要求。① 新增 `mystery/services/runtime_settings.py` 共享运行时覆盖层基础设施：统一目录 `<repo>/data`（包位置绝对路径，不受 cwd/`MYSTERY_DB_PATH` 影响）、`resolve_override_path`/`load/save/clear_override`（原子写、损坏回退）；**顺带修复 W74 缺陷**——原 `Path(os.environ.get(...) or "") or 默认` 中 `Path("")` 恒为 `Path(".")` 且布尔为真，生产共振覆盖层退化成当前目录，导致 `override_exists()` 恒 True、读取报 `IsADirectoryError`、网页保存/还原失效；现 `analyze.RESONANCE_OVERRIDE_PATH` 正确落到 `czsc_mi/data/resonance_override.json`。② 三浪 5 个参数（`MYSTERY_SCAN_WAVE3` / `MAX` / `AUTO_TRIGGER` / `AUTO_MAX` / `STRICT`）改为统一经 `scan_wave3_options_effective()` 读取：**稀疏合并 覆盖层文件 → 显式 env（最高优先）→ 代码默认**，未设置项不出现，保持 W75「MAX 未显式设置才自动限流」语义；`wave3_scan.attach_wave3_to_results` 的 env 读取全部改走该入口，Web/CLI/日报/扫描收尾同口径、下次扫描热生效。③ Web「系统状态」页新增 `render_scan_wave3_config()`：生效 vs 生产默认对比表、表单（策略开关/触发阈值/**评估上限**/严格模式）、高级「评估上限模式」（自动限流 / 固定上限 / 强制全量，后者带 W75 卡顿警告）、「保存（下次扫描热生效）」与「🔄 一键还原默认值」；强制全量写 `MAX=0`、固定上限写 `MAX=N`、自动限流**不写 MAX 键**。④ 结果列统一「名称在前、代码在后」：Web 扫描表、真三振池、Excel 汇总 `SUMMARY_COLS`、wave3 CLI 表头与数据行；HTML 日报原本即名称在前。同步把 `tests/test_excel_summary.py`、`tests/test_board_column.py` 里硬编码 `row[0]`（首列=代码）改为按表头名定位，并给 W69/W75 测试加覆盖层隔离（避免网页保存过配置污染单测基线）。core 零改动，不改评分/信号/`RULE_VER`/列集合。新增 `tests/test_w76_scan_wave3_override.py` 15 项；全量 **555 passed, 15 deselected, 0 failed**；端到端实证：默认 effective 空/mode=auto，网页保存 `AUTO_MAX=50` 后 600 只池实际限流 cap=50、550 只未评估，一键还原回默认；生产无覆盖层残留。 | ✅ 0.10.35 |
 
 P4 漂移验证（2026-08-28，20 只样本，同一份数据）：Top5 排序不变，
 仅 up 笔股票分上移（sz000001 49→52.7，sz000651 22.8→34.0），否决股保持 0。
@@ -572,4 +573,40 @@ W69 把三浪主升结论合并进 `scan_market` 的 results，收尾在逐票 `
   超 600s 无更新给出清除按钮。
 - 生产库只读实测：600 只 results 收尾 4.45s（限流评 200）；`MAX=0`
   全量 200 只 4.22s 与旧行为一致。详见 `docs/W75_后台扫描收尾卡顿修复.md`。
+
+### 12.13 W76 网页可调三浪评估上限 + 结果列顺序
+
+W75 的限流参数原本只能靠 env 改；W76 把它搬进网页，并统一运行时覆盖层。
+
+**覆盖层**（`mystery/services/runtime_settings.py`，Web / CLI / 日报共用）：
+
+| 文件 | env 重定向 | 说明 |
+|------|-----------|------|
+| `data/resonance_override.json` | `MYSTERY_RESONANCE_OVERRIDE` | W74 共振口径（W76 修复路径缺陷） |
+| `data/scan_wave3_override.json` | `MYSTERY_SCAN_WAVE3_OVERRIDE` | W76 三浪扫描参数 |
+
+- 优先级：**显式 env > 覆盖层文件 > 代码默认**；覆盖层为**稀疏 dict**（只存改过的键），
+  故「一键还原 = 删除文件」，不会把默认值固化。
+- 统一目录由包位置推导为绝对路径 `<repo>/data`；`MYSTERY_RUNTIME_OVERRIDE_DIR`
+  可整体重定向（多实例/测试）。
+- W74 缺陷：``Path("")`` 恒为 ``Path(".")`` 且为真，导致
+  ``Path(env or "") or 默认路径`` 永远取前者；已改 `resolve_override_path()`。
+
+**三浪面板字段**（「系统状态」页，作用于**下次扫描**，历史 job 不变）：
+
+| 参数 | 生产默认 | 说明 |
+|------|---------|------|
+| `MYSTERY_SCAN_WAVE3` | `1` | 三浪策略开关 |
+| `MYSTERY_SCAN_WAVE3_AUTO_TRIGGER` | `500` | 池 > N 只才自动限流 |
+| `MYSTERY_SCAN_WAVE3_AUTO_MAX` | `200` | 自动限流时仅评估评分前 N 只（用户所称「评估上限」） |
+| `MYSTERY_SCAN_WAVE3_STRICT` | `0` | 九铁律严格模式 |
+| `MYSTERY_SCAN_WAVE3_MAX` | **未设置** | 显式上限：写 `0`=强制全量、写 `N`=固定前 N 只；留空才走自动限流 |
+
+> 「强制全量」会跳过自动限流，全市场扫描可能重现 W75 卡顿（约十几分钟 / 数 GB 内存），
+> 面板已带警告。`MAX` 一旦显式写入（含 `0`），自动限流即停用 —— 这是 W75 既有语义。
+
+**结果列顺序**：Web 扫描表、真三振池、Excel 汇总、wave3 CLI 均改为
+「序号 → **名称 → 代码** → …」（HTML 日报卡片原本即名称在前）。
+
+详见 `docs/W76_三浪评估上限网页配置与列顺序.md`。
 

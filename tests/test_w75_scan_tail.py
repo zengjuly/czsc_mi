@@ -25,12 +25,16 @@ class _FakeClient:
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
+def _clean_env(monkeypatch, tmp_path):
     """每个用例都从「未显式设置 MAX」的干净状态出发。"""
     monkeypatch.setenv("MYSTERY_SCAN_WAVE3", "1")
     for k in ("MYSTERY_SCAN_WAVE3_MAX", "MYSTERY_SCAN_WAVE3_STRICT",
               "MYSTERY_SCAN_WAVE3_AUTO_TRIGGER", "MYSTERY_SCAN_WAVE3_AUTO_MAX"):
         monkeypatch.delenv(k, raising=False)
+    # W76：隔离网页覆盖层，避免用户在生产网页保存过配置污染单测基线。
+    from mystery.services import runtime_settings as rts
+    monkeypatch.setattr(rts, "SCAN_WAVE3_OVERRIDE_PATH",
+                        tmp_path / "scan_wave3_override.json")
     # 取数直接返回 None → items 空、矩阵空，仅验证限流/调度逻辑，秒级完成
     monkeypatch.setattr(ws, "_daily_from_db", lambda db, sym: None)
 

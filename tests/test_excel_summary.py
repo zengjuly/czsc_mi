@@ -61,7 +61,10 @@ def test_single_summary_sheet(wb):
 def test_no_code_hyperlink(wb):
     """代码列无超链接（取消个股详情 sheet 后无跳转目标）。"""
     ws = wb["汇总报告"]
-    for row in ws.iter_rows(min_row=2, max_col=1):
+    headers = [c.value for c in ws[1]]
+    # W76：代码列不再是首列，按表头定位（首列现为「名称」）。
+    code_idx = headers.index("代码") + 1
+    for row in ws.iter_rows(min_row=2, min_col=code_idx, max_col=code_idx):
         for c in row:
             assert c.hyperlink is None
 
@@ -104,9 +107,10 @@ def test_detail_values_filled(wb):
     """详情列值真实落到行（取平安银行行验证）。"""
     ws = wb["汇总报告"]
     headers = [c.value for c in ws[1]]
+    sym_idx = headers.index("代码")
     row_by_sym = {}
     for row in ws.iter_rows(min_row=2, values_only=True):
-        row_by_sym[row[0]] = row
+        row_by_sym[row[sym_idx]] = row
     r = row_by_sym["sz000001"]
     vals = dict(zip(headers, r))
     assert vals["三振.个股趋势"] == "✅"
@@ -120,5 +124,7 @@ def test_detail_values_filled(wb):
 def test_sort_by_score_desc(wb):
     """按综合评分降序。"""
     ws = wb["汇总报告"]
-    scores = [row[2] for row in ws.iter_rows(min_row=2, values_only=True)]
+    headers = [c.value for c in ws[1]]
+    s_idx = headers.index("综合评分")
+    scores = [row[s_idx] for row in ws.iter_rows(min_row=2, values_only=True)]
     assert scores == sorted(scores, reverse=True)

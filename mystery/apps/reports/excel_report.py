@@ -23,8 +23,9 @@ from mystery.core.bc_resonance import bc_resonance as _bc_resonance
 logger = logging.getLogger(__name__)
 
 SUMMARY_COLS = [
-    ("symbol", "代码"),
+    # W76：用户要求展示列「名称在前，代码在后」（Web / CLI 同口径）。
     ("name", "名称"),
+    ("symbol", "代码"),
     ("score", "综合评分"),
     ("board", "所属自选板块"),
     ("advice", "操作建议"),

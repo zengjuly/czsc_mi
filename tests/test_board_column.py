@@ -43,9 +43,11 @@ def test_excel_board_column(patch_boards):
     headers = [c.value for c in ws[1]]
     assert "所属自选板块" in headers
     idx = headers.index("所属自选板块")
+    # W76：汇总列改为「名称在前、代码在后」，按表头定位代码列（不再硬编码首列）。
+    sym_idx = headers.index("代码")
     by_sym = {}
     for row in ws.iter_rows(min_row=2, values_only=True):
-        by_sym[row[0]] = row
+        by_sym[row[sym_idx]] = row
     assert by_sym["sh600519"][idx] == "龙头股·自选股"
     assert by_sym["sz000001"][idx] == "龙头股"
     # 不属于任何板块 → 空白单元格（openpyxl 读回为空串/None，产品即「留空」）

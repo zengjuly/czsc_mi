@@ -52,6 +52,14 @@ class _FakeClient:
         return daily
 
 
+@pytest.fixture(autouse=True)
+def _isolate_wave3_override(monkeypatch, tmp_path):
+    """W76：隔离网页覆盖层，保证 W69 回归基线不受用户网页配置影响。"""
+    from mystery.services import runtime_settings as rts
+    monkeypatch.setattr(rts, "SCAN_WAVE3_OVERRIDE_PATH",
+                        tmp_path / "scan_wave3_override.json")
+
+
 @pytest.fixture
 def fake_kline(monkeypatch):
     """把日 K 取数替换为合成序列，避免触碰生产库。"""

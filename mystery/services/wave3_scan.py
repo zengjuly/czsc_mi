@@ -27,6 +27,7 @@ from ..adapters.codes import db_code_of, normalize_symbol
 from ..adapters.market import MarketDataClient
 from ..core import wave3
 from ..core.models import Bar, BarSeries
+from .runtime_settings import scan_wave3_options_effective
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +284,9 @@ def attach_wave3_to_results(results: List[Dict[str, Any]],
     - ``MYSTERY_SCAN_WAVE3_MAX``：默认 ``0`` 不限；>0 时只评估按分降序的
       前 N 只，其余标「未评估」，防止超大股票池拖慢扫描。**显式设置时完全
       尊重用户语义**（含 ``0``=强制全量）。
+      W76：这些参数除 env 外，也可由网页「系统状态」面板写入覆盖层文件，
+      统一经 ``runtime_settings.scan_wave3_options_effective()`` 读取，
+      Web / CLI / 日报同口径、热生效；优先级 env > 覆盖层 > 代码默认。
     - ``MYSTERY_SCAN_WAVE3_AUTO_TRIGGER`` / ``MYSTERY_SCAN_WAVE3_AUTO_MAX``：
       W75 自动限流（仅当 ``MYSTERY_SCAN_WAVE3_MAX`` **未显式设置**时生效）。
       results 数 > trigger（默认 500）时，自动只评估按分降序前 auto_max
@@ -301,18 +305,22 @@ def attach_wave3_to_results(results: List[Dict[str, Any]],
     off: Dict[str, Any] = {"enabled": False, "scanned": 0, "candidates": 0}
     if not results:
         return off
-    if os.environ.get("MYSTERY_SCAN_WAVE3", "1").strip() in \
+    # W76：口径统一入口（网页覆盖层 + 显式 env），稀疏 dict；未设置项留空
+    # 让下面各 ``eff.get(name, 默认)`` 回落到 W69/W75 代码默认，语义零变化。
+    eff = scan_wave3_options_effective()
+    if eff.get("MYSTERY_SCAN_WAVE3", "1").strip() in \
             ("0", "false", "False", "no", "off"):
         return off
 
     def _env_int(name: str, default: int) -> int:
         try:
-            return int(os.environ.get(name, str(default)) or default)
-        except ValueError:
+            return int(eff.get(name, str(default)) or default)
+        except (ValueError, TypeError):
             return default
 
     # W75：自动限流仅作用于「未显式设置 MAX」的超大池；显式设置完全尊重。
-    explicit_raw = os.environ.get("MYSTERY_SCAN_WAVE3_MAX")
+    # W76：MAX 可来自 env 或网页覆盖层，两者都算「显式」。
+    explicit_raw = eff.get("MYSTERY_SCAN_WAVE3_MAX")
     auto_limited = False
     if explicit_raw is not None and explicit_raw.strip() != "":
         max_n = _env_int("MYSTERY_SCAN_WAVE3_MAX", 0)
@@ -327,7 +335,7 @@ def attach_wave3_to_results(results: List[Dict[str, Any]],
         else:
             max_n = 0
             cap_reason = "none"
-    strict = os.environ.get("MYSTERY_SCAN_WAVE3_STRICT", "0").strip() in \
+    strict = eff.get("MYSTERY_SCAN_WAVE3_STRICT", "0").strip() in \
         ("1", "true", "True", "yes")
     eq = _env_float("MYSTERY_WAVE3_EQUITY", DEFAULT_EQUITY)
     rp = _env_float("MYSTERY_WAVE3_RISK_PCT", DEFAULT_RISK_PCT)

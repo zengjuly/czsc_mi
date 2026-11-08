@@ -130,8 +130,9 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
     for idx, row in enumerate(rows):
         item = {
             '序号': idx + 1,
-            '代码': row['symbol'],
+            # W76：用户要求「名称在前，代码在后」（与 Excel 汇总/日报同口径）。
             '名称': row.get('name') or '未知',
+            '代码': row['symbol'],
             '所属板块': ('·'.join(_wl.boards_of_symbol(row['symbol'], _boards_snap))
                         if _boards_snap else ''),
             '评分': row.get('score'),
