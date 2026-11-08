@@ -7,8 +7,10 @@ MYSTERY_CHAN_ENABLED 缺省 1（结构默认展示）；MYSTERY_CHAN_SCORE 缺�
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..adapters import market as _market
@@ -122,6 +124,65 @@ PRODUCTION_RESONANCE_OPTIONS: Dict[str, Any] = {
 }
 
 
+# W74：运行时覆盖层（网页「系统状态」面板 / CLI 可改，一键还原默认值）。
+# 持久化到 JSON 文件；优先级：显式 env > 覆盖层文件 > 生产默认。
+# 覆盖层为空/不存在时，effective 等于生产默认（与 W73 行为一致）。
+_DB_PATH = os.environ.get("MYSTERY_DB_PATH") or ""
+_OVERRIDE_DIR = (Path(_DB_PATH).resolve().parent.parent
+                 if _DB_PATH else Path("data"))
+RESONANCE_OVERRIDE_PATH = (Path(os.environ.get("MYSTERY_RESONANCE_OVERRIDE") or "")
+                           or (_OVERRIDE_DIR / "resonance_override.json"))
+
+# 表单元数据：Web 面板与 CLI 复用，保证字段口径单一来源。
+RESONANCE_FIELDS: tuple = (
+    ("market_mode", "大盘腿口径", "select", ("ma", "yearline")),
+    ("true_threshold", "真三振评分门闩", "number", (70.0, 100.0, 1.0)),
+    ("capital_min_score", "资金活跃门槛(评分≥)", "number", (0.0, 20.0, 1.0)),
+    ("capital_min_volume_ratio", "资金活跃门槛(量比≥)", "number", (0.0, 5.0, 0.1)),
+    ("index_max_lag_days", "指数滞后降级天数(0=关闭)", "number", (0, 30, 1)),
+)
+RESONANCE_FIELDS_DICT: Dict[str, tuple] = {f[0]: f for f in RESONANCE_FIELDS}
+
+
+def load_resonance_override() -> Dict[str, Any]:
+    """W74：读取运行时覆盖层（不存在/损坏 → 空 dict，绝不抛错）。"""
+    try:
+        if not RESONANCE_OVERRIDE_PATH.exists():
+            return {}
+        data = json.loads(RESONANCE_OVERRIDE_PATH.read_text(encoding="utf-8"))
+        return {k: v for k, v in (data or {}).items()
+                if k in RESONANCE_FIELDS_DICT}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取共振覆盖层失败，回退空: %s", exc)
+        return {}
+
+
+def save_resonance_override(opts: Dict[str, Any]) -> None:
+    """W74：写入运行时覆盖层（只存已知字段，非法值由 core.resolve 兜底）。
+
+    原子写（先 .tmp 再 replace），避免并发/崩溃留下半截 JSON 使下次读取失败。
+    """
+    clean: Dict[str, Any] = {k: opts[k] for k in RESONANCE_FIELDS_DICT if k in opts}
+    RESONANCE_OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = RESONANCE_OVERRIDE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2, sort_keys=True),
+                   encoding="utf-8")
+    tmp.replace(RESONANCE_OVERRIDE_PATH)
+
+
+def clear_resonance_override() -> None:
+    """W74 一键还原默认值：删除覆盖层文件即可（下一次请求回到生产默认）。"""
+    try:
+        RESONANCE_OVERRIDE_PATH.unlink(missing_ok=True)
+    except OSError as exc:  # noqa: BLE001
+        logger.warning("删除共振覆盖层失败: %s", exc)
+
+
+def resonance_override_exists() -> bool:
+    """W74：覆盖层是否已自定义（供 Web 面板提示「已修改，可还原」）。"""
+    return RESONANCE_OVERRIDE_PATH.exists()
+
+
 def resonance_options_from_env() -> Dict[str, Any]:
     """读取 W72 共振口径 env（未设置的项不出现在返回 dict 中）。
 
@@ -139,16 +200,22 @@ def resonance_options_from_env() -> Dict[str, Any]:
 
 
 def resonance_options_effective() -> Dict[str, Any]:
-    """W73：实际生效口径 = 生产默认 + 显式 env 覆盖。
+    """W73/W74：实际生效口径 = 生产默认 + 覆盖层文件 + 显式 env（优先级递增）。
 
-    - 未设任何 env → 生产默认（yearline / 80）生效，Web/CLI/scan 全链路统一；
-    - 设 env → 逐项覆盖，含完整回退到 W71 口径（ma / 85）；
-    - 返回的是稀疏 dict，交由 core.resolve_resonance_options 归一化补齐，
-      core 保持零 IO 且不需要知道「生产默认」这个概念。
+    - 未设覆盖层/env → 生产默认（yearline / 80）生效，Web/CLI/scan 全链路统一；
+    - 网页「系统状态」面板保存 → 写入覆盖层文件，下次请求热生效、无需重启；
+    - 显式 env（运维应急）最高优先，可覆盖网页设置；
+    - 返回稀疏 dict，交由 core.resolve_resonance_options 归一化补齐，core 零 IO。
     """
     out = dict(PRODUCTION_RESONANCE_OPTIONS)
-    out.update(resonance_options_from_env())
+    out.update(load_resonance_override())          # W74 网页/CLI 自定义
+    out.update(resonance_options_from_env())       # 显式 env 最高优先
     return out
+
+
+def resonance_options_default() -> Dict[str, Any]:
+    """W74：当前生产默认口径（网页面板「还原默认值」的目标态）。"""
+    return dict(PRODUCTION_RESONANCE_OPTIONS)
 
 
 def resonance_cache_tag() -> str:

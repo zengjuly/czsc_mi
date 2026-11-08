@@ -5,9 +5,87 @@ from .components import *
 # W64：拆分后跨 view 复用函数需显式导入（原单文件 app.py 同命名空间可直接调）。
 from .scan import _render_excel_download, _render_scan_table
 from .stock import _add_watchlist_widget
+from mystery.services.analyze import (
+    resonance_options_effective, resonance_options_default,
+    resonance_override_exists, save_resonance_override, clear_resonance_override,
+    RESONANCE_FIELDS,
+)
+from mystery.core.resonance import resolve_resonance_options
+
+def render_resonance_config():
+    """W74：三振共振口径网页配置（修改即时热生效，一键还原默认值）。
+
+    写入 ``mystery.services.analyze.RESONANCE_OVERRIDE_PATH`` 覆盖层文件，
+    Web 与 CLI/scan 全链路经 ``resonance_options_effective()`` 读取，无需重启。
+    """
+    st.subheader("⚙️ 三振共振口径配置（生产默认可调）")
+    eff_raw = resonance_options_effective()
+    eff = resolve_resonance_options(eff_raw)
+    default = resonance_options_default()
+    customized = resonance_override_exists()
+
+    st.caption(
+        "下列参数决定「真三振」信号的判定口径（改变信号语义）。网页保存后"
+        "**立即热生效**（下次分析与扫描即用新口径，历史缓存按口径自动失效重建）；"
+        "点击「一键还原默认值」可恢复生产默认。"
+    )
+
+    rows = []
+    for key, label, _, _ in RESONANCE_FIELDS:
+        rows.append({
+            "参数": label,
+            "当前生效": eff.get(key),
+            "生产默认": default.get(key),
+            "状态": "✅ 已自定义" if customized else "默认",
+        })
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    with st.form("resonance_config_form"):
+        m = st.selectbox(
+            "大盘腿口径", ["ma", "yearline"],
+            index=["ma", "yearline"].index(eff.get("market_mode", "yearline")),
+            help="ma=收盘>MA20/MA60；yearline=站年线且 MA5>MA20>MA60>MA250 多头（更严格）",
+            key="w74_market_mode")
+        thr = st.number_input(
+            "真三振评分门闩 (70~100)", min_value=70.0, max_value=100.0,
+            value=float(eff.get("true_threshold", 80.0)), step=1.0,
+            help="共振评分 ≥ 此值才判真三振；只放宽/收紧该门闩，不绕过高位等硬门闩",
+            key="w74_thr")
+        cms = st.number_input(
+            "资金活跃门槛(评分≥)", min_value=0.0, max_value=20.0,
+            value=float(eff.get("capital_min_score", 8.0)), step=1.0, key="w74_cms")
+        cvr = st.number_input(
+            "资金活跃门槛(量比≥)", min_value=0.0, max_value=5.0,
+            value=float(eff.get("capital_min_volume_ratio", 1.5)), step=0.1, key="w74_cvr")
+        use_lag = st.checkbox(
+            "启用指数滞后降级", value=eff.get("index_max_lag_days") is not None,
+            help="关闭=只诊断不降级；开启后指数滞后个股超过 N 天则大盘腿降级为 unknown（绝不误放）",
+            key="w74_use_lag")
+        lag = st.number_input(
+            "指数滞后降级天数 N", min_value=0, max_value=30,
+            value=int(eff.get("index_max_lag_days") or 3), step=1,
+            disabled=not use_lag, key="w74_lag")
+        if st.form_submit_button("保存配置（立即热生效）", type="primary"):
+            opts = {
+                "market_mode": m,
+                "true_threshold": thr,
+                "capital_min_score": cms,
+                "capital_min_volume_ratio": cvr,
+                "index_max_lag_days": (lag if use_lag else None),
+            }
+            save_resonance_override(opts)
+            st.success("已保存并热生效。下次分析/扫描即用新口径；历史缓存按口径自动失效重建。")
+            st.rerun()
+
+    if st.button("🔄 一键还原默认值", help="清除网页自定义，恢复生产默认 yearline / 80"):
+        clear_resonance_override()
+        st.success("已还原到生产默认（yearline / 80）。")
+        st.rerun()
+
 
 def view_system():
     st.header("系统状态（只读）")
+    render_resonance_config()
     cfg = load_config()
     svc = _service()
     db = svc.market.db
@@ -90,4 +168,5 @@ def view_true_resonance():
 __all__ = [
     'view_system',
     'view_true_resonance',
+    'render_resonance_config',
 ]
