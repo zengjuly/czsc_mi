@@ -269,7 +269,8 @@ def _wave3_portfolio_summary(result: Dict[str, Any]) -> Dict[str, Any]:
 def attach_wave3_to_results(results: List[Dict[str, Any]],
                             cfg: Optional[Dict] = None,
                             *, db: Any = None,
-                            client: Any = None) -> Dict[str, Any]:
+                            client: Any = None,
+                            progress_cb: Any = None) -> Dict[str, Any]:
     """W69：给 ``scan_market`` 的 results **原地**附加三浪主升字段（只读、失败降级）。
 
     在写库前调用，字段随 ``payload_json`` 一起落库，日报 / Web /
@@ -280,9 +281,20 @@ def attach_wave3_to_results(results: List[Dict[str, Any]],
 
     - ``MYSTERY_SCAN_WAVE3``：默认 ``1`` 开启；置 ``0`` 跳过（回到旧行为）。
     - ``MYSTERY_SCAN_WAVE3_MAX``：默认 ``0`` 不限；>0 时只评估按分降序的
-      前 N 只，其余标「未评估」，防止超大股票池拖慢扫描。
+      前 N 只，其余标「未评估」，防止超大股票池拖慢扫描。**显式设置时完全
+      尊重用户语义**（含 ``0``=强制全量）。
+    - ``MYSTERY_SCAN_WAVE3_AUTO_TRIGGER`` / ``MYSTERY_SCAN_WAVE3_AUTO_MAX``：
+      W75 自动限流（仅当 ``MYSTERY_SCAN_WAVE3_MAX`` **未显式设置**时生效）。
+      results 数 > trigger（默认 500）时，自动只评估按分降序前 auto_max
+      （默认 200）只，其余标「未评估」。自选股等小池行为**完全不变**。
     - ``MYSTERY_SCAN_WAVE3_STRICT``：默认 ``0``；置 ``1`` 把第 4/6 条升硬项。
     - ``MYSTERY_WAVE3_EQUITY`` / ``MYSTERY_WAVE3_RISK_PCT``：复用 W68 口径。
+
+    W75 背景：W69 默认 ``MAX=0`` 不限，全市场 5580 只扫描在逐票
+    ``done=total`` 后会进入收尾——对全部标的逐只查库 + resample + 三浪
+    评估、候选间再算 O(C²) 相关性矩阵，耗时十几分钟且内存数 GB，而收尾
+    阶段不更新进度心跳，页面表现为「一直卡在最后」。自动限流把超大池
+    收尾压到秒级，core 零改动、不触碰评分/信号语义。
 
     :return: 组合摘要 dict（关闭 / 无结果 / 异常时 ``enabled=False``）。
     """
@@ -292,10 +304,29 @@ def attach_wave3_to_results(results: List[Dict[str, Any]],
     if os.environ.get("MYSTERY_SCAN_WAVE3", "1").strip() in \
             ("0", "false", "False", "no", "off"):
         return off
-    try:
-        max_n = int(os.environ.get("MYSTERY_SCAN_WAVE3_MAX", "0") or 0)
-    except ValueError:
-        max_n = 0
+
+    def _env_int(name: str, default: int) -> int:
+        try:
+            return int(os.environ.get(name, str(default)) or default)
+        except ValueError:
+            return default
+
+    # W75：自动限流仅作用于「未显式设置 MAX」的超大池；显式设置完全尊重。
+    explicit_raw = os.environ.get("MYSTERY_SCAN_WAVE3_MAX")
+    auto_limited = False
+    if explicit_raw is not None and explicit_raw.strip() != "":
+        max_n = _env_int("MYSTERY_SCAN_WAVE3_MAX", 0)
+        cap_reason = "explicit"
+    else:
+        trigger = _env_int("MYSTERY_SCAN_WAVE3_AUTO_TRIGGER", 500)
+        auto_max = _env_int("MYSTERY_SCAN_WAVE3_AUTO_MAX", 200)
+        if len(results) > trigger and auto_max > 0:
+            max_n = auto_max
+            auto_limited = True
+            cap_reason = "auto"
+        else:
+            max_n = 0
+            cap_reason = "none"
     strict = os.environ.get("MYSTERY_SCAN_WAVE3_STRICT", "0").strip() in \
         ("1", "true", "True", "yes")
     eq = _env_float("MYSTERY_WAVE3_EQUITY", DEFAULT_EQUITY)
@@ -317,7 +348,15 @@ def attach_wave3_to_results(results: List[Dict[str, Any]],
         returns_by_symbol: Dict[str, Any] = {}
         row_by_sym: Dict[str, Dict[str, Any]] = {}
         status: Dict[str, str] = {}
-        for i in picked:
+        n_picked = len(picked)
+        for k, i in enumerate(picked):
+            # W75：收尾阶段逐票上报，使页面进度条不再停在 100% 空转。
+            # 上报的是「收尾」独立刻度（不与逐票扫描的 total 混用）。
+            if progress_cb is not None:
+                try:
+                    progress_cb(k, n_picked, "收尾·三浪主升评估")
+                except Exception:
+                    pass
             d = results[i]
             raw = str(d.get("symbol") or "")
             try:
@@ -354,7 +393,16 @@ def attach_wave3_to_results(results: List[Dict[str, Any]],
         summary = _wave3_portfolio_summary(res)
         summary.update({"enabled": True, "strict": strict,
                         "requested": len(picked), "loaded": len(items),
-                        "failed": len(status)})
+                        "failed": len(status),
+                        # W75：限流可观测——UI/日报/日志能看出本轮是自动限流
+                        "auto_limited": auto_limited, "cap_reason": cap_reason,
+                        "cap": max_n if max_n > 0 else None,
+                        "pool_size": len(results)})
+        if auto_limited:
+            logger.info(
+                f"[wave3] W75 超大池自动限流生效：{len(results)} 只只评估"
+                f"按分降序前 {max_n} 只（其余标未评估），避免收尾卡顿；"
+                f"设 MYSTERY_SCAN_WAVE3_MAX=0 可强制全量")
 
         # 全部算完再统一赋值：中途异常不会污染部分行
         compact_by_sym = {a["symbol"]: _wave3_compact(a)
@@ -370,11 +418,16 @@ def attach_wave3_to_results(results: List[Dict[str, Any]],
                 assigns.append((d, {"verdict": "回避", "reason": reason,
                                     "data_ok": False}))
         if max_n > 0:
+            if auto_limited:
+                cap_msg = (f"W75 自动限流：{len(results)} 只超大池仅评估前 "
+                           f"{max_n} 只（MYSTERY_SCAN_WAVE3_MAX 未设置时自动）")
+            else:
+                cap_msg = f"超过 MYSTERY_SCAN_WAVE3_MAX={max_n} 上限"
             for i in range(len(results)):
                 if i not in picked_set:
                     assigns.append((results[i], {
                         "verdict": "未评估", "data_ok": False,
-                        "reason": f"超过 MYSTERY_SCAN_WAVE3_MAX={max_n} 上限"}))
+                        "reason": cap_msg}))
         for d, compact in assigns:
             d["wave3"] = compact
             d["wave3_portfolio"] = summary
@@ -411,6 +464,10 @@ def wave3_summary_line(results: List[Dict[str, Any]]) -> str:
         parts.append(f"高相关 {p['high_corr_pairs']} 对")
     if p.get("matrix_psd") is False:
         parts.append("相关矩阵非半正定(风险已截断)")
+    # W75：超大池自动限流可观测——日报/Web/CLI 明确显示本轮只评估了前 N 只，
+    # 避免用户误以为「候选少=没信号」。
+    if p.get("auto_limited"):
+        parts.append(f"超大池自动限流(评估前 {p.get('cap')}/{p.get('pool_size')} 只)")
     cap = p.get("max_total_risk_pct")
     if (p.get("scale_down") or 1.0) < 1.0:
         cap_txt = f"{cap * 100:.1f}%" if isinstance(cap, (int, float)) else "风险预算"

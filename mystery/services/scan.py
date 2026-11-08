@@ -387,11 +387,24 @@ def scan_market(limit: Optional[int] = None,
         # （手动后台扫描走 progress_cb，cron/CLI 直跑也留进度）。
         inner_cb = progress_cb
 
-        def _cb(d: int, t: int, _code: str = '') -> None:
-            report_progress(db_path, 'scan', d, t, label=_code)
+        def _cb(d: int, t: int, stage: str = '') -> None:
+            # W75：第三参数 stage 用于「收尾阶段」独立刻度（三浪评估/写库）。
+            # 心跳文件（系统状态页）收尾时保持满进度、只更新阶段 label，
+            # 避免 5580/5580 突然回退到 0/200 造成误导；逐票阶段保持原样。
+            if stage:
+                # 恒定满进度 + 阶段 label；交给 report_progress 节流，
+                # 避免限流后 200 次逐票回调每次都原子写文件。
+                report_progress(db_path, 'scan', t, t, label=stage)
+            else:
+                report_progress(db_path, 'scan', d, t, label=stage)
             if inner_cb is not None:
                 try:
-                    inner_cb(d, t)
+                    inner_cb(d, t, stage)          # 新版 3 参数 cb（Web 后台）
+                except TypeError:
+                    try:
+                        inner_cb(d, t)             # 兼容旧 2 参数 cb（CLI/日报）
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 
@@ -552,7 +565,8 @@ def _scan_market_impl(limit: Optional[int] = None,
                 _finalize_resume_job(svc.market.db, resume_job_id)
                 return _resume_results(svc, resume_job_id, cfg)
             return _persist_or_return(results, failed, no_persist, svc,
-                                      job_holder, scan_type)
+                                      job_holder, scan_type,
+                                      progress_cb=progress_cb)
         except Exception as e:
             logger.warning(f"[scan] 进程池不可用，回退线程池: {str(e)[:100]}")
 
@@ -592,21 +606,23 @@ def _scan_market_impl(limit: Optional[int] = None,
         _finalize_resume_job(svc.market.db, resume_job_id)
         return _resume_results(svc, resume_job_id, cfg)
     return _persist_or_return(results, failed, no_persist, svc, job_holder,
-                              scan_type)
+                              scan_type, progress_cb=progress_cb)
 
 
 def _attach_wave3(results: List[Dict[str, Any]], *,
-                  db=None, client=None) -> None:
+                  db=None, client=None, progress_cb=None) -> None:
     """W69：写库/返回前把三浪主升结论合并进结果（只读评估，异常硬隔离）。
 
     注入扫描用的 ``MarketDataClient`` 与 ``MysteryDB``，保证与本次扫描同源
     同库；任何异常都只记 warning，绝不改动既有结果或中断落库。
+    W75：透传 ``progress_cb`` 供三浪收尾阶段上报独立刻度进度。
     """
     if not results:
         return
     try:
         from .wave3_scan import attach_wave3_to_results
-        summary = attach_wave3_to_results(results, db=db, client=client)
+        summary = attach_wave3_to_results(results, db=db, client=client,
+                                          progress_cb=progress_cb)
         if summary.get("enabled"):
             logger.info(
                 f"[scan] 三浪主升已合并：候选 {summary.get('candidates')}/"
@@ -647,13 +663,21 @@ def _resume_results(svc: AnalysisService, job_id: int,
 def _persist_or_return(results: List[Dict[str, Any]], failed: int,
                        no_persist: bool, svc: AnalysisService,
                        job_holder: Optional[list],
-                       scan_type: str = "market") -> List[Dict[str, Any]]:
+                       scan_type: str = "market",
+                       progress_cb=None) -> List[Dict[str, Any]]:
     """扫描结果落库（scan_jobs/scan_results）或仅返回。与历史行为一致。
 
     W69：落库/返回前把三浪主升结论合并进结果（只读评估，失败不影响既有扫描），
     字段随 payload_json 一起写入，日报 / Web / scan_results_of 直接可读。
+    W75：收尾阶段（三浪评估 / 写库）上报进度，避免页面停在 100% 空转。
     """
-    _attach_wave3(results, db=svc.market.db, client=svc.market)
+    _attach_wave3(results, db=svc.market.db, client=svc.market,
+                  progress_cb=progress_cb)
+    if progress_cb is not None:
+        try:
+            progress_cb(len(results), len(results), "收尾·写入扫描结果")
+        except Exception:
+            pass
 
     if not no_persist and results:
         try:

@@ -86,23 +86,34 @@ def _bg_lock() -> threading.Lock:
 def _bg_tasks() -> dict:
     return _bg_store()["tasks"]
 
+# W75：后台任务「僵尸防护」——running 状态超过该秒数无任何进度/阶段更新，
+# 视为疑似失联（线程崩溃 / 进程被 OOM 杀但字典残留），页面给出提示与清除入口，
+# 不再无限转圈。逐票全市场扫描实测约 2 分钟、收尾限流后秒级，10 分钟足够宽松。
+_BG_STALE_SECONDS = 600.0
+
+
 def _bg_launch(label: str, fn) -> str:
-    """启动后台扫描任务。fn(cb, job_holder) -> rows（cb(done,total) 报进度）。"""
+    """启动后台扫描任务。fn(cb, job_holder) -> rows（cb(done,total,stage) 报进度）。"""
     tid = uuid.uuid4().hex[:8]
     lock, tasks = _bg_lock(), _bg_tasks()
+    now = time.time()
     with lock:
         tasks[tid] = {"id": tid, "label": label, "status": "running",
-                      "done": 0, "total": 0, "job_id": None,
-                      "results": [], "error": "", "created": time.time()}
+                      "done": 0, "total": 0, "stage": "", "job_id": None,
+                      "results": [], "error": "", "created": now,
+                      "updated": now}
 
     def _run():
         holder: list = []
 
-        def cb(done, total):
+        def cb(done, total, stage=""):
+            # W75：收尾阶段带 stage 文字（三浪评估/写库），逐票阶段 stage 为空。
             with lock:
                 t = tasks.get(tid)
                 if t:
                     t["done"], t["total"] = done, total
+                    t["stage"] = stage or ""
+                    t["updated"] = time.time()
 
         try:
             rows = fn(cb, holder)
@@ -112,26 +123,50 @@ def _bg_launch(label: str, fn) -> str:
                     t["status"] = "done"
                     t["results"] = rows
                     t["job_id"] = holder[0] if holder else None
+                    t["updated"] = time.time()
         except Exception as e:  # noqa: BLE001
             with lock:
                 t = tasks.get(tid)
                 if t:
                     t["status"] = "error"
                     t["error"] = str(e)[:200]
+                    t["updated"] = time.time()
 
     threading.Thread(target=_run, daemon=True).start()
     return tid
 
 @st.fragment(run_every=2.0)
 def _bg_running_fragment():
-    """运行中后台任务进度（每 2 秒自动刷新）。"""
+    """运行中后台任务进度（每 2 秒自动刷新）。
+
+    W75：区分「逐票扫描」「收尾阶段」「疑似失联」三种态；失联态提供清除按钮，
+    避免 W69 三浪收尾卡顿 / 进程重启残留导致进度条永远停在 100%。
+    """
+    now = time.time()
     with _bg_lock():
         rt = sorted([t for t in _bg_tasks().values() if t["status"] == "running"],
                     key=lambda t: t["created"], reverse=True)
     for t in rt:
         pct = (t["done"] / t["total"]) if t["total"] else 0.0
-        st.progress(min(1.0, pct),
-                    text=f"⏳ {t['label']} 运行中 {t['done']}/{t['total']}（自动刷新）")
+        stage = t.get("stage") or ""
+        idle = now - (t.get("updated") or t["created"])
+        if idle > _BG_STALE_SECONDS:
+            st.warning(f"⚠️ {t['label']} 已 {int(idle)} 秒无进度更新，疑似失联/卡住。"
+                       f"可清除后重试（大池收尾已自动限流，正常扫描约 2 分钟）。")
+            if st.button("清除该卡住的任务", key=f"bg_clear_{t['id']}"):
+                with _bg_lock():
+                    tk = _bg_tasks().pop(t["id"], None)
+                    if tk is not None:
+                        tk["status"] = "cleared"
+                st.rerun()
+            continue
+        if stage:
+            # 收尾阶段：显示阶段文字 + 独立刻度，不再用「100% 运行中」误导
+            st.progress(min(1.0, pct),
+                        text=f"⏳ {t['label']} · {stage} {t['done']}/{t['total']}（自动刷新）")
+        else:
+            st.progress(min(1.0, pct),
+                        text=f"⏳ {t['label']} 运行中 {t['done']}/{t['total']}（自动刷新）")
 
 def _recent_jobs(limit: int = 20) -> list:
     """最近扫描任务 [(id, trade_date, started_at, n_ok, n_fail, scan_type), ...] 降序。"""
