@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from mystery.core.bc_resonance import bc_resonance as _bc_resonance
+from mystery.apps.reports import result_fields as _rf
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +133,14 @@ def _stock_card(d: Dict[str, Any]) -> str:
     if vap.get("突破信号") or plat.get("突破信号"):
         labels.append('<span class="signal-tag">VAP-ATR突破</span>')
     cyc = vap.get("自适应周期") or {}
-    if cyc.get("avg_turnover") is not None and float(cyc["avg_turnover"]) < 2.0:
+    # W80：筹码低位标签改用 payload 的 chip_low 判定（与 Excel/扫描同源），
+    # 不再用 cyc.avg_turnover<2 的旧口径；换手缺失单独标注，不当低位。
+    if d.get("chip_low"):
         labels.append('<span class="signal-tag">筹码低位</span>')
+    elif d.get("chip_low_unknown"):
+        labels.append('<span class="signal-tag">换手缺失</span>')
+    elif d.get("chip_quiet"):
+        labels.append('<span class="signal-tag">高位缩量</span>')
     # W32b：换手分档 + 风格标签（只读 core 纯函数，缺 turn → 未知）
     from ...core.turnover_tag import tags_from_result
     _tg = tags_from_result(d)
@@ -155,6 +162,11 @@ def _stock_card(d: Dict[str, Any]) -> str:
         ("主升浪满足", f"{cl.get('满足数量', 0)}/8"),
         ("平台", _esc(plat.get("平台状态", "-"))),
         ("VAP-ATR上轨", _fmt(vap.get("自适应上轨") or pr.get("上沿"))),
+        # W80：turnover_20 数值 + chip 三态标签 + 换手来源（只读 payload 顶层）
+        ("近20日均换手(%)", _fmt(_rf.turnover_20_value(d))),
+        ("筹码低位", _esc(_rf.chip_low_text(d))),
+        ("筹码标签", _esc(_rf.chip_tag_text(d))),
+        ("换手来源", _esc(_rf.turnover_source_text(d))),
         ("换手分档", _esc(_tg["turnover_tag"])),
         ("风格", _esc(_tg["style_tag"])),
         ("POC", _fmt(vap.get("POC"))),

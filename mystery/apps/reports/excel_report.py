@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from mystery.core.bc_resonance import bc_resonance as _bc_resonance
+from mystery.apps.reports import result_fields as _rf
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,12 @@ SUMMARY_COLS = [
     ("platform", "平台状态"),
     ("vap_upper", "VAP-ATR上轨"),
     ("vap_break", "VAP-ATR突破"),
+    # W80：日报字段对齐——固定包含 turnover_20 数值 + chip 相关标签，
+    # 全部只读 to_dict()/payload 顶层字段（不重算、不取数）。
+    ("turnover_20", "近20日均换手(%)"),
+    ("chip_low", "筹码低位"),
+    ("chip_tag", "筹码标签"),
+    ("turnover_source", "换手来源"),
     ("turnover_tag", "换手分档"),
     ("style_tag", "风格"),
     ("pe", "PE"),
@@ -112,6 +119,11 @@ def _flat(d: Dict[str, Any]) -> Dict[str, Any]:
         "pe": fin.get("PE"),
         "pb": fin.get("PB"),
         "trade_date": d.get("trade_date", ""),
+        # W80：turnover_20 数值 + chip 三态标签 + 换手来源（只读 payload 顶层）
+        "turnover_20": _rf.turnover_20_value(d),
+        "chip_low": _rf.chip_low_text(d),
+        "chip_tag": _rf.chip_tag_text(d),
+        "turnover_source": _rf.turnover_source_text(d),
     }
     # W32b：换手分档 + 风格标签（只读 core 纯函数，缺 turn → 未知）
     from ...core.turnover_tag import tags_from_result
