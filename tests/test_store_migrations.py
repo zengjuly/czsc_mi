@@ -12,7 +12,8 @@ import sqlite3
 from mystery.store.db import MysteryDB
 
 MIG_FILES = ['001_scan_type.sql', '002_analysis_cache.sql', '003_turnover.sql',
-             '004_drop_orphan_analysis_cache.sql', '005_bg_task_log.sql']
+             '004_drop_orphan_analysis_cache.sql', '005_bg_task_log.sql',
+             '006_scan_job_meta.sql']
 
 
 def _migs(db_path):

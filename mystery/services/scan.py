@@ -12,6 +12,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -45,15 +46,100 @@ def _scan_job_keep() -> int:
     return max(1, min(_SCAN_JOB_KEEP_MAX, n))
 
 
+# W79：扫描 job 可解释性列（范围/股票池/limit/耗时/三浪开关）。
+# 老库未应用 006 迁移时这些列不存在——所有写入/查询都做动态列探测，
+# 缺失即退化为旧行为（零回归）。
+_SCAN_META_COLS = ("scope", "universe_n", "limit_n", "duration_sec",
+                   "wave3_enabled", "wave3_mode")
+
+
+def _infer_scan_scope(watchlist, universe, limit, scan_type: str) -> str:
+    """W79：判定本次扫描范围（避免自选扫描被误当成全市场）。"""
+    if scan_type == "board":
+        return "board"
+    if watchlist:
+        return "watchlist"
+    if universe is not None:
+        return "sector"
+    if limit:
+        return "limit"
+    return "full"
+
+
+def _build_scan_meta(watchlist, universe, limit, scan_type: str,
+                     universe_n: int, t0: float) -> Dict[str, Any]:
+    """W79：构造一次扫描的可解释性元数据（纯计算 + 只读运行时配置，不改评分/信号）。
+
+    ``_t0`` 为内部键（扫描起始 time.time()），写库前用于计算 duration_sec，
+    不会落到 scan_jobs。三浪开关/模式经 runtime_settings 稀疏覆盖层读取，
+    与 W76 网页配置同源；配置读取失败降级为「关闭」，绝不影响扫描主流程。
+    """
+    wave3_enabled, wave3_mode = 0, "off"
+    try:
+        from . import runtime_settings as _rts
+        eff = _rts.scan_wave3_options_effective()
+        on = str(eff.get("MYSTERY_SCAN_WAVE3", "1")).strip() not in (
+            "0", "false", "False", "")
+        wave3_enabled = 1 if on else 0
+        wave3_mode = _rts.scan_wave3_mode(eff) if on else "off"
+    except Exception:  # noqa: BLE001 元数据读取失败不得影响扫描
+        pass
+    return {
+        "scope": _infer_scan_scope(watchlist, universe, limit, scan_type),
+        "universe_n": int(universe_n),
+        "limit_n": int(limit) if limit else None,
+        "wave3_enabled": wave3_enabled,
+        "wave3_mode": wave3_mode,
+        "started_at": datetime.fromtimestamp(t0).isoformat(timespec="seconds"),
+        "_t0": t0,
+    }
+
+
+def _scan_job_cols(conn) -> set:
+    """返回 scan_jobs 现有列名集合（PRAGMA，兼容未迁移老库）。"""
+    try:
+        return {r[1] for r in conn.execute("PRAGMA table_info(scan_jobs)")}
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _apply_scan_job_meta(conn, job_id: int, meta: Optional[Dict[str, Any]],
+                         finished_iso: str) -> None:
+    """W79：给已插入的 scan_job 补写可解释性列（动态列探测，老库/无 meta 安全）。
+
+    INSERT 语句保持 6 列不变（所有既有调用点零回归）；本 UPDATE 仅在 W79 列
+    全部存在且传入 meta 时执行。主路径（_write_scan_batch）与断点续跑收尾
+    （_finalize_resume_job）共用，保证每条 job 都有范围/耗时/三浪口径。
+    """
+    if not meta:
+        return
+    cols = _scan_job_cols(conn)
+    if not all(c in cols for c in _SCAN_META_COLS):
+        return
+    duration = round(max(0.0, time.time() - float(meta.get("_t0", time.time()))), 1)
+    conn.execute(
+        "UPDATE scan_jobs SET scope=?, universe_n=?, limit_n=?, "
+        "duration_sec=?, wave3_enabled=?, wave3_mode=?, "
+        "started_at=?, finished_at=? WHERE id=?",
+        (meta.get("scope", ""), meta.get("universe_n"), meta.get("limit_n"),
+         duration, 1 if meta.get("wave3_enabled") else 0,
+         meta.get("wave3_mode", ""), meta.get("started_at"),
+         finished_iso, job_id))
+
+
 def _write_scan_batch(db, results: List[Dict[str, Any]], failed: int,
                       trade_date: Optional[str] = None,
-                      scan_type: str = "market") -> Optional[int]:
+                      scan_type: str = "market",
+                      meta: Optional[Dict[str, Any]] = None) -> Optional[int]:
     """写一笔 scan_jobs + 全量 scan_results，返回 job_id。
 
     W77：同类型扫描保留最近 N 份（默认 5）——先插新 job，再清理排名超过 N
     的老 job 及其 scan_results。W18 的「只保留最新一份」会让「最近任务」
     看不到多次后台扫描，故改为有限历史；``MYSTERY_SCAN_JOB_KEEP=1`` 可回退
     旧语义。新插入的 job 始终保留，不受清理影响。
+
+    W79：可选 ``meta``（由 _build_scan_meta 构造）经 _apply_scan_job_meta 补写
+    范围/耗时/三浪开关列；meta=None 或老库未迁移时保持原行为（零回归）。
     """
     import sqlite3
     conn = db._connect()
@@ -64,6 +150,7 @@ def _write_scan_batch(db, results: List[Dict[str, Any]], failed: int,
             "n_ok, n_fail, scan_type) VALUES (?,?,?,?,?,?)",
             (trade_date or "", started, started, len(results), failed, scan_type))
         job_id = cur.lastrowid
+        _apply_scan_job_meta(conn, job_id, meta, started)
         # W60（P2-4 同思路）：逐行 INSERT → executemany 批量，5000+ 票从
         # 数千次往返降为单次批量。
         _rows = [
@@ -160,16 +247,22 @@ def _append_scan_results(db, job_id: int, results: List[Dict[str, Any]],
         conn.close()
 
 
-def _finalize_resume_job(db, job_id: int) -> None:
-    """收尾 working job：重算 n_ok、写 finished_at（n_fail 已在追加时累计）。"""
+def _finalize_resume_job(db, job_id: int,
+                         meta: Optional[Dict[str, Any]] = None) -> None:
+    """收尾 working job：重算 n_ok、写 finished_at（n_fail 已在追加时累计）。
+
+    W79：可选 meta 补写范围/耗时/三浪列（与 _write_scan_batch 同口径）。
+    """
     conn = db._connect()
     try:
         n_ok = conn.execute(
             "SELECT COUNT(*) FROM scan_results WHERE job_id=?",
             (job_id,)).fetchone()[0] or 0
+        finished = datetime.now().isoformat(timespec="seconds")
         conn.execute(
             "UPDATE scan_jobs SET n_ok=?, finished_at=? WHERE id=?",
-            (n_ok, datetime.now().isoformat(timespec="seconds"), job_id))
+            (n_ok, finished, job_id))
+        _apply_scan_job_meta(conn, job_id, meta, finished)
         conn.commit()
     finally:
         conn.close()
@@ -495,6 +588,9 @@ def _scan_market_impl(limit: Optional[int] = None,
     :param auto_sync: 扫描前自动确保行情最新（None=默认开；no_persist/force
           调试路径默认关）
     """
+    # W79：本次扫描的可解释性元数据（范围/股票池/耗时/三浪口径）。t0 从 impl
+    # 入口计时，覆盖 auto_sync、逐票扫描、三浪收尾、写库；锁等待不计入。
+    _t0 = time.time()
     if scan_type is None:
         if watchlist:
             scan_type = "watchlist"
@@ -512,6 +608,9 @@ def _scan_market_impl(limit: Optional[int] = None,
         codes = [s['code'] for s in svc.market.fetch_stock_list()]
     if limit:
         codes = codes[:limit]
+    # W79：codes 确定后构造一次 meta，透传到所有写库点（主路径 + resume 收尾）。
+    _scan_meta = _build_scan_meta(watchlist, universe, limit, scan_type,
+                                  len(codes), _t0)
 
     # 扫描前确保行情最新：已收盘且落后 → 全量同步；未收盘 → 仅更新
     # 本次扫描股票；已最新 → 跳过（no_persist/force 调试路径默认关）
@@ -550,7 +649,7 @@ def _scan_market_impl(limit: Optional[int] = None,
             codes = [c for c in codes if c not in _done]
             total = len(codes)
             if total == 0:
-                _finalize_resume_job(svc.market.db, resume_job_id)
+                _finalize_resume_job(svc.market.db, resume_job_id, meta=_scan_meta)
                 logger.info(f"[scan] resume：无剩余个股，复用 job {resume_job_id}")
                 return _resume_results(svc, resume_job_id, cfg)
         logger.info(f"[scan] resume：working job {resume_job_id}，"
@@ -590,11 +689,12 @@ def _scan_market_impl(limit: Optional[int] = None,
             results.sort(key=lambda x: (x.get('score') is not None,
                                         float(x.get('score') or -1)), reverse=True)
             if resume_job_id is not None:
-                _finalize_resume_job(svc.market.db, resume_job_id)
+                _finalize_resume_job(svc.market.db, resume_job_id, meta=_scan_meta)
                 return _resume_results(svc, resume_job_id, cfg)
             return _persist_or_return(results, failed, no_persist, svc,
                                       job_holder, scan_type,
-                                      progress_cb=progress_cb)
+                                      progress_cb=progress_cb,
+                                      meta=_scan_meta)
         except Exception as e:
             logger.warning(f"[scan] 进程池不可用，回退线程池: {str(e)[:100]}")
 
@@ -631,10 +731,11 @@ def _scan_market_impl(limit: Optional[int] = None,
     results.sort(key=lambda x: (x.get('score') is not None,
                                 float(x.get('score') or -1)), reverse=True)
     if resume_job_id is not None:
-        _finalize_resume_job(svc.market.db, resume_job_id)
+        _finalize_resume_job(svc.market.db, resume_job_id, meta=_scan_meta)
         return _resume_results(svc, resume_job_id, cfg)
     return _persist_or_return(results, failed, no_persist, svc, job_holder,
-                              scan_type, progress_cb=progress_cb)
+                              scan_type, progress_cb=progress_cb,
+                              meta=_scan_meta)
 
 
 def _attach_wave3(results: List[Dict[str, Any]], *,
@@ -692,12 +793,14 @@ def _persist_or_return(results: List[Dict[str, Any]], failed: int,
                        no_persist: bool, svc: AnalysisService,
                        job_holder: Optional[list],
                        scan_type: str = "market",
-                       progress_cb=None) -> List[Dict[str, Any]]:
+                       progress_cb=None,
+                       meta: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """扫描结果落库（scan_jobs/scan_results）或仅返回。与历史行为一致。
 
     W69：落库/返回前把三浪主升结论合并进结果（只读评估，失败不影响既有扫描），
     字段随 payload_json 一起写入，日报 / Web / scan_results_of 直接可读。
     W75：收尾阶段（三浪评估 / 写库）上报进度，避免页面停在 100% 空转。
+    W79：可选 meta 透传到 _write_scan_batch 补写范围/耗时/三浪列。
     """
     _attach_wave3(results, db=svc.market.db, client=svc.market,
                   progress_cb=progress_cb)
@@ -712,7 +815,7 @@ def _persist_or_return(results: List[Dict[str, Any]], failed: int,
             trade_date = max((str(r.get('trade_date', '')) for r in results),
                              default='')
             job_id = _write_scan_batch(svc.market.db, results, failed,
-                                       trade_date, scan_type=scan_type)
+                                       trade_date, scan_type=scan_type, meta=meta)
             if job_holder is not None:
                 try:
                     job_holder.append(job_id)
@@ -735,6 +838,64 @@ def latest_scan_job(cfg: Optional[Dict] = None) -> Optional[int]:
         row = conn.execute(
             "SELECT id FROM scan_jobs ORDER BY id DESC LIMIT 1").fetchone()
         return int(row[0]) if row else None
+    finally:
+        conn.close()
+
+
+# W79：范围中文标签（Web 展示统一口径，避免自选扫描被误当成全市场）。
+_SCOPE_CN = {
+    "watchlist": "自选股", "limit": "全市场·限量", "full": "全市场",
+    "sector": "板块池", "board": "自选板块",
+}
+_WAVE3_MODE_CN = {"auto": "自动限流", "fixed": "固定上限", "full": "强制全量",
+                  "off": "关闭"}
+
+
+def scan_job_meta(job_id: int, cfg: Optional[Dict] = None) -> Dict[str, Any]:
+    """W79：读取单个 scan_job 的可解释性字段（范围/耗时/三浪口径，动态列兼容老库）。
+
+    返回 dict 含原始列 + ``label``（可直接展示的中文一行摘要）+
+    ``scope_cn`` / ``wave3_cn``。老库未迁移或无 W79 列时返回空 dict，
+    Web 侧对空 dict 有兜底文案，历史 job 不受影响。
+    """
+    svc = AnalysisService(cfg)
+    conn = svc.market.db._connect()
+    try:
+        cols = _scan_job_cols(conn)
+        if not all(c in cols for c in _SCAN_META_COLS):
+            return {}
+        row = conn.execute(
+            "SELECT scan_type, scope, universe_n, limit_n, duration_sec, "
+            "wave3_enabled, wave3_mode, started_at, finished_at "
+            "FROM scan_jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            return {}
+        (scan_type, scope, universe_n, limit_n, duration, w3_on, w3_mode,
+         started, finished) = row
+        meta = {
+            "job_id": job_id, "scan_type": scan_type, "scope": scope or "",
+            "universe_n": universe_n, "limit_n": limit_n,
+            "duration_sec": duration, "wave3_enabled": int(w3_on or 0),
+            "wave3_mode": w3_mode or "", "started_at": started,
+            "finished_at": finished,
+        }
+        meta["scope_cn"] = _SCOPE_CN.get(scope or "", scan_type or "扫描")
+        if scope == "limit" and limit_n:
+            meta["scope_cn"] = f"全市场·限量 {limit_n}"
+        meta["wave3_cn"] = (f"开（{_WAVE3_MODE_CN.get(w3_mode or '', w3_mode or '')}）"
+                            if meta["wave3_enabled"] else "关")
+        parts = [meta["scope_cn"]]
+        if universe_n:
+            parts.append(f"扫描 {universe_n} 只")
+        if duration is not None:
+            parts.append(f"耗时 {round(float(duration), 1)}s")
+        parts.append(f"三浪 {meta['wave3_cn']}")
+        if started:
+            parts.append(str(started)[:19])
+        meta["label"] = " · ".join(parts)
+        return meta
+    except Exception:  # noqa: BLE001 元数据读取失败不得影响页面
+        return {}
     finally:
         conn.close()
 

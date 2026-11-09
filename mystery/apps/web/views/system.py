@@ -239,11 +239,14 @@ def view_system():
     if jobs:
         st.caption(f"共 {len(jobs)} 条历史扫描 job（每种类型保留最近若干份）；"
                    f"后台任务的启动/失败/中断记录见下方「后台任务台账」。")
-        opts = {f"job#{j[0]} [{j[5] or 'market'}] {j[1] or ''} 成功{j[3]} 失败{j[4]} {j[2] or ''}": j[0]
-                for j in jobs}
+        opts = {_job_label(j): j[0] for j in jobs}
         pick = st.selectbox("选择扫描任务查看结果", list(opts.keys()),
                             key="sys_job_pick")
         job_id = opts[pick]
+        # W79：范围/耗时/三浪口径一行摘要（系统状态页）。
+        _jm = scan_job_meta(job_id)
+        if _jm.get("label"):
+            st.caption(f"📐 job #{job_id}：{_jm['label']}")
         sig = st.radio("信号过滤", ["全部", "真三振", "VAP-ATR突破", "筹码低位", "回踩确认突破", "假突破"],
                        horizontal=True, key="sys_job_sig")
         sig_map = {"全部": None, "真三振": "true_resonance", "回踩确认突破": "breakout_confirm",
@@ -267,6 +270,11 @@ def view_true_resonance():
         return
     rows = scan_results_of(job, signal="true_resonance")
     st.caption(f"来自 scan job #{job}，共 {len(rows)} 只真三振")
+    # W79：真三振池顶部标明本次扫描范围/耗时/三浪口径与时间来源，
+    # 避免「自选股扫描」被误当作「全市场扫描」。
+    _jm = scan_job_meta(job)
+    if _jm.get("label"):
+        st.caption(f"📐 扫描范围：{_jm['label']}")
     if rows:
         st.dataframe([{'名称': r.get('name') or '未知', '代码': r['symbol'],
                        '评分': r.get('score'), '建议': r.get('advice', ''),

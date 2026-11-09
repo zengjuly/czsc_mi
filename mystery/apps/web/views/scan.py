@@ -94,10 +94,13 @@ def view_scan():
         return
     st.caption(f"共 {len(jobs)} 条历史扫描 job（每种类型保留最近若干份）；"
                f"后台任务的启动/失败/中断记录见上方「后台任务台账」。")
-    opts = {f"job#{j[0]} [{j[5] or 'market'}] {j[1] or ''} 成功{j[3]} 失败{j[4]} {j[2] or ''}": j[0]
-            for j in jobs}
+    opts = {_job_label(j): j[0] for j in jobs}
     pick = st.selectbox("选择扫描任务查看结果", list(opts.keys()), key="scan_job_pick")
     job_id = opts[pick]
+    # W79：显示该 job 的扫描范围/耗时/三浪口径，避免自选扫描被误当成全市场。
+    _jm = scan_job_meta(job_id)
+    if _jm.get("label"):
+        st.caption(f"📐 job #{job_id}：{_jm['label']}")
     sig = st.radio("信号过滤", ["全部", "真三振", "VAP-ATR突破", "筹码低位", "回踩确认突破", "假突破"],
                    horizontal=True, key="scan_job_sig")
     sig_map = {"全部": None, "真三振": "true_resonance", "回踩确认突破": "breakout_confirm",

@@ -32,7 +32,7 @@ from mystery.core.bc_resonance import bc_resonance as _bc_resonance  # noqa: E40
 from mystery.services.analyze import (AnalysisService, chan_enabled,  # noqa: E402
                                       chan_score_enabled)
 from mystery.services.scan import (scan_market, latest_scan_job,  # noqa: E402
-                                   scan_results_of)
+                                   scan_results_of, scan_job_meta)
 from mystery.services import watchlist as _wl  # noqa: E402
 
 @st.cache_resource
@@ -208,18 +208,60 @@ def _bg_running_fragment():
         st.rerun()
 
 def _recent_jobs(limit: int = 50) -> list:
-    """最近扫描任务 [(id, trade_date, started_at, n_ok, n_fail, scan_type), ...] 降序。
+    """最近扫描任务行（降序）。
 
-    W77：默认从 20 提到 50（配合 scan_jobs 历史保留策略，展示多次扫描记录）。
+    基础 6 列 ``(id, trade_date, started_at, n_ok, n_fail, scan_type)`` +
+    W79 增加 ``scope, duration_sec, wave3_enabled, universe_n``。
+    W77：默认从 20 提到 50（配合 scan_jobs 历史保留策略）。
+    W79：用 PRAGMA 动态列探测——老库未应用 006 迁移时缺失列以 NULL/
+    默认值补齐，保证返回列数稳定、页面零回归。返回元组为：
+    ``(id, trade_date, started_at, n_ok, n_fail, scan_type, scope,
+       duration_sec, wave3_enabled, universe_n)``。
     """
     svc = _service()
     conn = svc.market.db._connect()
     try:
-        return conn.execute(
-            "SELECT id, trade_date, started_at, n_ok, n_fail, scan_type "
-            "FROM scan_jobs ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(scan_jobs)")}
+        def sel(col, default):
+            return col if col in cols else f"NULL AS {col}" if default is None \
+                else f"'{default}' AS {col}"
+        sql = (
+            "SELECT id, trade_date, started_at, n_ok, n_fail, scan_type, "
+            + sel("scope", "") + ", " + sel("duration_sec", None) + ", "
+            + sel("wave3_enabled", None) + ", " + sel("universe_n", None)
+            + " FROM scan_jobs ORDER BY id DESC LIMIT ?")
+        rows = conn.execute(sql, (int(limit),)).fetchall()
+        # 列缺失时 sel() 用默认值占位；统一成 10 元组，缺失值兜底
+        out = []
+        for r in rows:
+            t = list(r)
+            if t[6] is None:
+                t[6] = ""           # scope
+            if t[8] is None:
+                t[8] = 0            # wave3_enabled
+            out.append(tuple(t))
+        return out
     finally:
         conn.close()
+
+
+def _job_label(j) -> str:
+    """W79：扫描 job 下拉标签——范围/股票池/耗时/三浪一眼可辨。
+
+    兼容 6 列（W77 老库）与 10 列（W79）元组；缺失列按默认省略。
+    """
+    from mystery.services.scan import _SCOPE_CN
+    scope = (j[6] if len(j) > 6 and j[6] else j[5]) or "market"
+    scope_cn = _SCOPE_CN.get(scope, scope or "market")
+    extra = f"[{scope_cn}]"
+    if len(j) > 9 and j[9]:
+        extra += f" {j[9]}只"
+    if len(j) > 7 and j[7] is not None:
+        extra += f" 耗时{round(float(j[7]), 1)}s"
+    if len(j) > 8 and j[8]:
+        extra += " 三浪开"
+    return (f"job#{j[0]} {extra} {j[1] or ''} "
+            f"成功{j[3]} 失败{j[4]} {j[2] or ''}")
 
 def _render_running_tasks(db_path: str):
     """W49：写库任务互斥锁 + 进度心跳——显示正在运行的任务及进度。
@@ -441,6 +483,8 @@ __all__ = [
     '_bg_launch',
     '_bg_running_fragment',
     '_recent_jobs',
+    '_job_label',
+    'scan_job_meta',
     '_render_running_tasks',
     '_render_bg_tasks',
     '_sig_text',

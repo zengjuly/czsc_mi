@@ -99,11 +99,19 @@ CREATE TABLE IF NOT EXISTS chan_cache (
   PRIMARY KEY(symbol, freq, trade_date, czsc_ver)
 );
 
--- 10. 扫描任务（W18 起按 scan_type 分类；W77 改为每类保留最近若干份）
+-- 10. 扫描任务（W18 起按 scan_type 分类；W77 改为每类保留最近若干份；
+--     W79 增加可解释性列：范围/股票池/limit/耗时/三浪开关）
+--     新库直接带全部列；老库由 migrations/006_scan_job_meta.sql 补列（幂等）。
 CREATE TABLE IF NOT EXISTS scan_jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   trade_date TEXT, started_at TEXT, finished_at TEXT, n_ok INTEGER, n_fail INTEGER,
-  scan_type TEXT DEFAULT 'market'
+  scan_type TEXT DEFAULT 'market',
+  scope TEXT DEFAULT '',              -- watchlist/limit/full/sector/board（W79）
+  universe_n INTEGER,                 -- 本次扫描股票池只数（limit 后）
+  limit_n INTEGER,                    -- limit 参数（None → NULL）
+  duration_sec REAL,                  -- 扫描耗时（秒，含 auto_sync/三浪收尾/写库）
+  wave3_enabled INTEGER DEFAULT 0,   -- 是否启用三浪（1/0）
+  wave3_mode TEXT DEFAULT ''         -- 三浪上限模式 auto/fixed/full/off
 );
 
 -- 11. 扫描结果（三类信号 + 完整 payload）
