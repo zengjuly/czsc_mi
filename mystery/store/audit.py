@@ -21,6 +21,8 @@ def audit_kline(db_path: str, period: str = "daily",
          low>close / 任一非正）
       4. 成交量>0 但成交额缺失（amount IS NULL 或 <=0）
       5. 交易日跳空（同票相邻交易日差 > 7 自然日）
+      7. 换手缺失（W81：仅查最新一个交易日——turn 缺失/<=0 且 volume>0；
+         当日缺失占比 >50% 时判「数据源缺失 likely」，避免全表扫描）
 
     参数：
       db_path: SQLite 文件路径
@@ -100,6 +102,36 @@ def audit_kline(db_path: str, period: str = "daily",
             prev = (code, d)
         report["checks"]["date_gaps_gt_7d"] = len(gaps)
         report["samples"]["date_gaps_gt_7d"] = gaps[:sample_limit]
+
+        # 7. 换手缺失（W81，轻量：只查最新一个交易日，不全表扫）
+        #    turn 缺失/<=0 且 volume>0 → 该票当日「换手缺失」；若整日占比
+        #    >50%，大概率是数据源/股本快照缺失而非个股行为（避免 0 换手被
+        #    当成真实缩量参与换手分档）。
+        latest = cur.execute(
+            "SELECT MAX(substr(date,1,10)) FROM stock_kline_data "
+            "WHERE period=?", (period,)).fetchone()[0]
+        report["checks"]["latest_trade_date"] = latest or ""
+        if latest:
+            n_day, n_zero = cur.execute(
+                "SELECT COUNT(*), SUM(CASE WHEN (turn IS NULL OR turn<=0) "
+                "AND volume>0 THEN 1 ELSE 0 END) FROM stock_kline_data "
+                "WHERE period=? AND substr(date,1,10)=?",
+                (period, latest)).fetchone()
+            n_zero = int(n_zero or 0)
+            n_day = int(n_day or 0)
+            ratio = (n_zero / n_day) if n_day else 0.0
+            report["checks"]["turnover_zero_recent"] = n_zero
+            report["checks"]["turnover_zero_ratio"] = round(ratio, 4)
+            report["checks"]["turnover_missing_likely"] = \
+                bool(n_day and ratio > 0.5)
+            zero_rows = cur.execute(
+                "SELECT code, turn FROM stock_kline_data "
+                "WHERE period=? AND substr(date,1,10)=? "
+                "AND (turn IS NULL OR turn<=0) AND volume>0 "
+                "ORDER BY code LIMIT ?",
+                (period, latest, sample_limit)).fetchall()
+            report["samples"]["turnover_zero_recent"] = \
+                [list(r) for r in zero_rows]
 
         return report
     finally:

@@ -11,6 +11,8 @@
 #   THS_FUYAO_SCRIPT / THS_MARKETDB_DIR / TDX_API_URL / TDX_VIPDOC_DIR
 #   RUN_MARKET_SCAN（默认 0：不跑全市场扫描；=1 时用 SCAN_LIMIT 只数）
 #   SCAN_LIMIT
+#   RUN_DATA_AUDIT（W81 默认 0：不跑数据质量审计；=1 时 czsc-mi audit 一次，
+#     生产库约 4 分钟，超时 DATA_AUDIT_TIMEOUT 秒可配，失败不阻塞主流程）
 set -euo pipefail
 # W41：锁死北京时区——脚本用 date '+%F' 给 sync-turnover 传当日日期，
 # 机器 TZ 若是 UTC 会错一天。
@@ -61,9 +63,28 @@ echo "[daily_pipeline] 4/5 回算换手率（turn IS NULL → calc_float/ffill�
 if czsc-mi sync-turnover --date "$(date '+%F')"; then TURNOVER_OK=ok; else \
   echo "[daily_pipeline] ⚠️ sync-turnover 失败（不阻塞主流程）"; fi
 
+# W81（可选）数据质量审计：换手全 0 / OHLC 异常 / 重复主键告警。
+# 默认关（生产库 900 万行全量约 4 分钟）；RUN_DATA_AUDIT=1 开启，
+# 结果写 <报告目录>/audit_日期.log，摘要进 pipeline_status.json，失败不阻塞。
+AUDIT_OK=skip
+if [ "${RUN_DATA_AUDIT:-0}" = "1" ]; then
+  echo "[daily_pipeline] 4.5/5 数据质量审计（audit，RUN_DATA_AUDIT=1）..."
+  AUDIT_LOG="$(dirname "${STATUS_JSON}")/audit_$(date '+%F').log"
+  if timeout "${DATA_AUDIT_TIMEOUT:-900}" czsc-mi audit --period daily \
+      > "${AUDIT_LOG}" 2>&1; then
+    AUDIT_OK=ok
+    grep -E "重复主键|收盘价|OHLC|额缺失|跳空|换手缺失" "${AUDIT_LOG}" \
+      | sed 's/^/[audit] /' || true
+    grep -q "疑似数据源" "${AUDIT_LOG}" && AUDIT_OK=warn
+  else
+    AUDIT_OK=fail
+    echo "[daily_pipeline] ⚠️ audit 失败/超时（不阻塞主流程），日志: ${AUDIT_LOG}"
+  fi
+fi
+
 # W27b：状态落地（scan --report 页脚与 feishu_notify 读取同一文件）
 cat > "${STATUS_JSON}" <<EOF
-{"date": "$(date '+%F')", "sector_kline_sync": "${SECTOR_OK}", "shares_refresh": "${SHARES_OK}", "turnover_derive": "${TURNOVER_OK}"}
+{"date": "$(date '+%F')", "sector_kline_sync": "${SECTOR_OK}", "shares_refresh": "${SHARES_OK}", "turnover_derive": "${TURNOVER_OK}", "data_audit": "${AUDIT_OK}"}
 EOF
 
 echo "[daily_pipeline] 5/5 后台扫描自选股（落 scan_jobs/scan_results）+ 生成日报（Excel/HTML）..."

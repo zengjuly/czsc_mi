@@ -670,9 +670,18 @@ def _cmd_audit(args: argparse.Namespace) -> int:
     print(f"  OHLC 逻辑错误:               {checks['invalid_ohlc']}")
     print(f"  量>0 但额缺失:               {checks['volume_no_amount']}")
     print(f"  交易日跳空(>7天):            {checks['date_gaps_gt_7d']}")
+    # W81：换手缺失（轻量，仅查最新交易日）
+    if "turnover_zero_recent" in checks:
+        print(f"  换手缺失({checks.get('latest_trade_date', '')}): "
+              f"{checks['turnover_zero_recent']} 只，占比 "
+              f"{checks.get('turnover_zero_ratio')}")
+        if checks.get("turnover_missing_likely"):
+            print("  ⚠️ 当日换手缺失占比 >50%，疑似数据源/股本快照缺失"
+                  "（勿当成真实缩量）")
     if args.verbose:
         for key in ("duplicate_pk", "null_or_nonpos_close", "invalid_ohlc",
-                    "volume_no_amount", "date_gaps_gt_7d"):
+                    "volume_no_amount", "date_gaps_gt_7d",
+                    "turnover_zero_recent"):
             samples = report["samples"].get(key) or []
             if samples:
                 print(f"\n样本[{key}]（前 {len(samples)} 条）:")

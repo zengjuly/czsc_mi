@@ -35,6 +35,14 @@ echo "[weekly_shares] 2/2 全市场铺快照（100/批 auction final）..."
 czsc-mi sync-shares --fresh-skip-days 6 \
   || echo "[weekly_shares] ⚠️ 全市场对账中断 —— 直接重跑本脚本即可续（已刷票自动跳过）"
 
+# W81（可选）数据质量审计：RUN_DATA_AUDIT=1 时执行（默认关，生产库约 4 分钟）；
+# 换手全 0 / OHLC 异常 / 重复主键告警写本日志，失败不影响铺盘与退出码判定。
+if [ "${RUN_DATA_AUDIT:-0}" = "1" ]; then
+  echo "[weekly_shares] 数据质量审计（audit，RUN_DATA_AUDIT=1）..."
+  timeout "${DATA_AUDIT_TIMEOUT:-900}" czsc-mi audit --period daily \
+    || echo "[weekly_shares] ⚠️ audit 失败/超时（不影响铺盘结果）"
+fi
+
 # W28b：双口径 QA + 阈值判定 + 状态文件。python 退出码即脚本退出码。
 /home/ai/ai_runner/venv/bin/python - <<'PYEOF'
 import json
