@@ -327,6 +327,16 @@ def cache_allowed(daily: BarSeries) -> bool:
     return str(getattr(daily, 'source', '') or '') in ('db', 'sqlite', 'duckdb')
 
 
+def _candlestick_result(daily, weekly) -> Dict[str, Any]:
+    """W82：唯一分析入口内附加形态结论；失败返回空 dict，绝不影响评分链路。"""
+    try:
+        from .candlestick_scan import analyze_candlestick
+        return analyze_candlestick(daily, weekly)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"[candlestick] 形态分析跳过: {str(exc)[:80]}")
+        return {}
+
+
 def _result_from_payload(data: dict) -> AnalysisResult:
     """analysis_cache payload（AnalysisResult.to_dict 形态）→ AnalysisResult。
 
@@ -360,6 +370,7 @@ def _result_from_payload(data: dict) -> AnalysisResult:
         czsc_ver=data.get('czsc_ver', ''),
         bars_fingerprint=data.get('bars_fingerprint', ''),
         data_source=data.get('data_source', ''),
+        candlestick=data.get('candlestick') or {},
     )
 
 
@@ -564,6 +575,9 @@ class AnalysisService:
                 # W73：口径恒入缓存键（tag 非空）。旧 ma/85 缓存无此后缀，
                 # 不会被 yearline/80 命中，避免切换默认后的口径污染。
                 flags += resonance_cache_tag()
+                # W82：形态口径恒入键（网页勾选/窗口/日周开关变更后旧缓存必 miss）
+                from mystery.services.runtime_settings import candle_cache_tag
+                flags += candle_cache_tag()
                 ck = make_cache_key(
                     daily.adjust, rule, flags, ver, fp)
                 hit = AnalysisCache(self.market.db).get(
@@ -630,6 +644,8 @@ class AnalysisService:
             czsc_ver=czsc_ver,
             bars_fingerprint=fp[:8],   # W33 诊断展示（W优化⑥：复用单次计算）
             data_source=daily.source,               # W33 诊断展示
+            # W82：日 K / 周 K 分别做典型组合形态识别（仅展示，不进评分）
+            candlestick=_candlestick_result(daily, weekly),
         )
         # ---- 缓存写（W23）----
         if ck is not None:

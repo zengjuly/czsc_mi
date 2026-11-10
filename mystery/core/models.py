@@ -187,6 +187,7 @@ class AnalysisResult:
     czsc_ver: str = ""
     bars_fingerprint: str = ""  # W33：日K指纹前8位（诊断「扫描 vs 详情不一致」用）
     data_source: str = ""       # W33：日K来源 db/ths_official/tdx_api/tdx_local
+    candlestick: Dict[str, Any] = field(default_factory=dict)  # W82：典型K线组合形态（日/周独立，仅展示）
 
     def to_dict(self) -> Dict[str, Any]:
         return _todict(self)

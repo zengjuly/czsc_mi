@@ -60,6 +60,10 @@ SUMMARY_COLS = [
     ("w3_stop", "三浪止损"),
     ("w3_lots", "三浪建议(手)"),
     ("w3_scale", "组合缩放"),
+    # W82：典型 K 线组合形态（日 K / 周 K 独立分析，只读 payload 附加字段）
+    ("candle_daily", "日K形态"),
+    ("candle_weekly", "周K形态"),
+    ("candle_direction", "形态方向"),
 ]
 
 # 年线过滤系统各条件（与 basic_filter._basic_filter_checks 键一一对应，
@@ -147,6 +151,12 @@ def _flat(d: Dict[str, Any]) -> Dict[str, Any]:
         "w3_lots": w3.get("lots") if w3.get("lots") is not None else "-",
         "w3_scale": (w3.get("scale_down")
                      if w3.get("scale_down") is not None else "-"),
+    })
+    # W82：形态结论（只读 payload 顶层 candlestick；旧任务无字段显示 '—'）
+    row.update({
+        "candle_daily": _rf.candlestick_daily_text(d),
+        "candle_weekly": _rf.candlestick_weekly_text(d),
+        "candle_direction": _rf.candlestick_direction_text(d),
     })
     # 个股详情补充列（W14：原个股详情 sheet 内容并入汇总页）
     row.update(_detail_flat(d))
@@ -260,6 +270,19 @@ def _detail_flat(d: Dict[str, Any]) -> Dict[str, Any]:
         ("回撤%", _low_det.get("回撤%")),
         ("量/60日均量", _low_det.get("量/60日均量")),
     ])
+
+    # W82：典型组合形态明细（按周期分区，逐条铺列，便于对账）
+    _cs = d.get("candlestick") or {}
+    if _cs:
+        for _period, _label in (("daily", "日K形态"), ("weekly", "周K形态")):
+            _hits = _rf.candlestick_hits(d, _period, limit=5)
+            _prefix = "日K" if _period == "daily" else "周K"
+            sec_rows(_label, [
+                (f"{_prefix}命中{i + 1}",
+                 f"{h.get('name', '-')}({h.get('date', '-')}"
+                 f"·{h.get('direction', '-')})")
+                for i, h in enumerate(_hits)
+            ] or [(f"{_prefix}命中1", "—")])
 
     sec_rows("财务", [
         ("PE", fin.get("PE")),

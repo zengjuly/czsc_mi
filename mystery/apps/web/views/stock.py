@@ -145,6 +145,41 @@ def render_stock(d: dict):
                             f" · 量/60日均量 {_ld.get('量/60日均量')}"
                             f" · 长期缩量(MA20<MA60) {_ld.get('MA20<MA60(长期缩量)')}")
 
+    # ---------- W82 典型 K 线组合形态（日 K / 周 K 独立分析，仅展示） ----------
+    _cs = d.get('candlestick') or {}
+    if _cs:
+        with st.expander("典型K线组合形态（日K / 周K 独立分析）", expanded=False):
+            _cfg = _cs.get('config') or {}
+            st.caption(
+                f"回溯 {_cfg.get('lookback', '-')} 根 · 启用 "
+                f"{len(_cfg.get('patterns') or [])} 个形态 · "
+                f"日K{'开' if _cfg.get('daily') else '关'} / "
+                f"周K{'开' if _cfg.get('weekly') else '关'} · "
+                "仅展示，不进综合分（配置见「系统状态」页）")
+            _cd, _cw = st.columns(2)
+            for _col, _per, _plabel in ((_cd, 'daily', '日 K'),
+                                         (_cw, 'weekly', '周 K')):
+                with _col:
+                    st.markdown(f"**{_plabel}**")
+                    _part = _cs.get(_per) or {}
+                    _hits = [h for h in (_part.get('hits') or [])
+                             if isinstance(h, dict)][:5]
+                    if not _hits:
+                        st.caption(_part.get('reason') or '窗口内未命中')
+                        continue
+                    for _h in _hits:
+                        _dir = _h.get('direction') or '-'
+                        # 中国习惯：看涨红、看跌绿
+                        _icon = ('🔴' if _dir == '看涨' else
+                                 '🟢' if _dir == '看跌' else '⚪')
+                        st.markdown(
+                            f"- {_icon} **{_h.get('name', '-')}**"
+                            f"（{_h.get('date', '-')}）· {_dir}")
+                        _det = _h.get('detail') or {}
+                        if _det:
+                            st.caption(" · ".join(
+                                f"{k}={v}" for k, v in _det.items()))
+
     fin = d.get('financial', {}) or {}
     if fin:
         c1, c2, c3, c4 = st.columns(4)

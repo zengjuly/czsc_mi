@@ -151,6 +151,14 @@ def _stock_card(d: Dict[str, Any]) -> str:
     # W69：三浪主升候选用标签直接标出（只读 payload 附加字段）
     if (d.get("wave3") or {}).get("verdict") == "候选":
         labels.append('<span class="signal-tag">三浪候选</span>')
+    # W82：典型 K 线组合形态标签（日 K / 周 K 分开，只看 payload 不重算）
+    if d.get("candlestick"):
+        for _per, _plabel in (("daily", "日K"), ("weekly", "周K")):
+            for _h in _rf.candlestick_hits(d, _per, limit=2):
+                _cls = "warn" if _h.get("direction") == "看跌" else "pat"
+                labels.append(
+                    f'<span class="signal-tag {_cls}">'
+                    f'{_esc(_plabel + "·" + str(_h.get("name", "")))}</span>')
     tags = "".join(labels)
 
     metrics = [
@@ -169,6 +177,10 @@ def _stock_card(d: Dict[str, Any]) -> str:
         ("换手来源", _esc(_rf.turnover_source_text(d))),
         ("换手分档", _esc(_tg["turnover_tag"])),
         ("风格", _esc(_tg["style_tag"])),
+        # W82：日 K / 周 K 形态（只读 payload 附加字段）
+        ("日K形态", _esc(_rf.candlestick_daily_text(d))),
+        ("周K形态", _esc(_rf.candlestick_weekly_text(d))),
+        ("形态方向", _esc(_rf.candlestick_direction_text(d))),
         ("POC", _fmt(vap.get("POC"))),
         ("PE", _fmt(fin.get("PE"))),
         ("PB", _fmt(fin.get("PB"))),

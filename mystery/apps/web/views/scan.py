@@ -176,6 +176,11 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
             '三浪止损': _wave3_cell(row, 'stop'),
             '三浪建议(手)': _wave3_cell(row, 'lots'),
             '组合缩放': _wave3_cell(row, 'scale_down'),
+            # W82：典型 K 线组合形态（随 payload_json 落库；旧 job 显示 '—'）
+            '日K形态': ((row.get('candlestick') or {}).get('summary_daily')
+                       or '—'),
+            '周K形态': ((row.get('candlestick') or {}).get('summary_weekly')
+                       or '—'),
             '详情': f"?stock={row['symbol']}&nav_key={nav_key}&nav_idx={idx}{at_qs}",
         }
         # W16：年线系统 7 项具体条件 + 主升浪 8 项具体指标（只展示不改判）

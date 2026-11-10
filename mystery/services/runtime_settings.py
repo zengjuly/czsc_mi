@@ -175,6 +175,116 @@ def scan_wave3_mode(effective: Optional[Dict[str, str]] = None) -> str:
         return "fixed"
 
 
+# ---------------------------------------------------------------------------
+# W82：典型 K 线组合形态（网页可勾选/调窗口/日周开关 + 一键还原）
+# ---------------------------------------------------------------------------
+# 键名即 env 名，网页覆盖层与 env 完全等价、显式 env 优先。
+CANDLE_ENV_KEYS: tuple = (
+    "MYSTERY_CANDLE_ENABLED",       # 形态分析总开关 1/0
+    "MYSTERY_CANDLE_DAILY",         # 日 K 单独分析 1/0
+    "MYSTERY_CANDLE_WEEKLY",        # 周 K 单独分析 1/0
+    "MYSTERY_CANDLE_LOOKBACK",      # 回溯窗口（根数）
+    "MYSTERY_CANDLE_PATTERNS",      # 启用形态 code 逗号分隔，all=全部
+)
+
+CANDLE_DEFAULTS: Dict[str, str] = {
+    "MYSTERY_CANDLE_ENABLED": "1",
+    "MYSTERY_CANDLE_DAILY": "1",
+    "MYSTERY_CANDLE_WEEKLY": "1",
+    "MYSTERY_CANDLE_LOOKBACK": "60",
+    "MYSTERY_CANDLE_PATTERNS": "all",
+}
+
+CANDLE_OVERRIDE_PATH: Path = resolve_override_path(
+    "MYSTERY_CANDLE_OVERRIDE", "candlestick_override.json")
+
+
+def load_candle_override() -> Dict[str, str]:
+    """网页保存的稀疏覆盖层（只含显式设置项）。"""
+    return load_override(CANDLE_OVERRIDE_PATH, CANDLE_ENV_KEYS)
+
+
+def save_candle_override(opts: Dict[str, Any]) -> None:
+    """保存网页表单：只存已知键、跳过 None/空串（保持稀疏语义）。"""
+    clean: Dict[str, str] = {}
+    for k, v in (opts or {}).items():
+        if k not in CANDLE_ENV_KEYS or v is None:
+            continue
+        if isinstance(v, (list, tuple, set)):
+            s = ",".join(str(x).strip() for x in v if str(x).strip()) or "all"
+        else:
+            s = str(v).strip()
+        if s != "":
+            clean[k] = s
+    save_override(CANDLE_OVERRIDE_PATH, clean)
+
+
+def clear_candle_override() -> None:
+    """一键还原默认值：删除覆盖层文件。"""
+    clear_override(CANDLE_OVERRIDE_PATH)
+
+
+def candle_override_exists() -> bool:
+    return CANDLE_OVERRIDE_PATH.is_file()
+
+
+def candle_options_effective() -> Dict[str, str]:
+    """实际生效的**稀疏**口径 = 覆盖层文件 + 显式 env（优先级递增）。"""
+    out: Dict[str, str] = dict(load_candle_override())
+    for k in CANDLE_ENV_KEYS:
+        v = os.environ.get(k)
+        if v is not None and str(v).strip() != "":
+            out[k] = str(v).strip()
+    return out
+
+
+def candle_options_display() -> Dict[str, str]:
+    """面板展示用**完整**生效值 = 生产默认 + 覆盖层 + env。"""
+    out: Dict[str, str] = dict(CANDLE_DEFAULTS)
+    out.update(candle_options_effective())
+    return out
+
+
+def candle_options_normalized() -> Dict[str, Any]:
+    """归一化后的完整配置（service / Web / 缓存 tag 共用单一口径）。
+
+    :return: ``{'enabled': bool, 'daily': bool, 'weekly': bool,
+                'lookback': int, 'patterns': list[str]}``
+    """
+    from ..core.candlestick_patterns import PATTERN_CODES, resolve_enabled
+    eff = candle_options_display()
+
+    def _flag(key: str) -> bool:
+        return str(eff.get(key, "1")).strip().lower() not in ("0", "false", "off", "no")
+
+    try:
+        lb = int(float(eff.get("MYSTERY_CANDLE_LOOKBACK", "60")))
+    except (TypeError, ValueError):
+        lb = 60
+    lb = max(5, min(500, lb))
+    raw = str(eff.get("MYSTERY_CANDLE_PATTERNS", "all")).strip()
+    if not raw or raw.lower() in ("all", "*", "全部"):
+        patterns = list(PATTERN_CODES)
+    else:
+        patterns = resolve_enabled([x.strip() for x in raw.split(",")])
+    return {"enabled": _flag("MYSTERY_CANDLE_ENABLED"),
+            "daily": _flag("MYSTERY_CANDLE_DAILY"),
+            "weekly": _flag("MYSTERY_CANDLE_WEEKLY"),
+            "lookback": lb, "patterns": patterns}
+
+
+def candle_cache_tag() -> str:
+    """W82：形态口径入分析缓存键（改任何一项必 miss，W73 同款护栏）。
+
+    恒非空：首次上线即让旧缓存（无 |C[...] 后缀）整体失效一次，避免
+    「改了勾选却仍读到不含形态字段的旧 payload」。
+    """
+    n = candle_options_normalized()
+    sig = (f"E{int(n['enabled'])}|D{int(n['daily'])}|W{int(n['weekly'])}"
+           f"|L{n['lookback']}|P{','.join(n['patterns'])}")
+    return f"|C[{sig}]"
+
+
 __all__ = [
     "RUNTIME_OVERRIDE_DIR", "resolve_override_path",
     "load_override", "save_override", "clear_override",
@@ -184,4 +294,8 @@ __all__ = [
     "clear_scan_wave3_override", "scan_wave3_override_exists",
     "scan_wave3_options_effective", "scan_wave3_options_display",
     "scan_wave3_mode",
+    "CANDLE_ENV_KEYS", "CANDLE_DEFAULTS", "CANDLE_OVERRIDE_PATH",
+    "load_candle_override", "save_candle_override", "clear_candle_override",
+    "candle_override_exists", "candle_options_effective",
+    "candle_options_display", "candle_options_normalized", "candle_cache_tag",
 ]

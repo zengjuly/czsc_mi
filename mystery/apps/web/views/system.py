@@ -13,6 +13,8 @@ from mystery.services.analyze import (
 from mystery.core.resonance import resolve_resonance_options
 # W76：三浪扫描参数覆盖层（与共振面板同一套「覆盖层文件 + 一键还原」机制）。
 from mystery.services import runtime_settings as rts
+# W82：典型 K 线组合形态网页配置（勾选形态 / 窗口 / 日周开关）。
+from mystery.core.candlestick_patterns import PATTERN_SPECS, PATTERN_CODES
 
 
 def _int_or(v, default: int) -> int:
@@ -21,6 +23,90 @@ def _int_or(v, default: int) -> int:
         return int(float(v))
     except (TypeError, ValueError):
         return default
+
+
+def render_candlestick_config():
+    """W82：典型 K 线组合形态网页配置（勾选/窗口/日周开关 + 一键还原）。
+
+    写入 ``runtime_settings.CANDLE_OVERRIDE_PATH`` 覆盖层；Web / CLI /
+    日报 / 扫描全部经 ``candle_options_normalized()`` 读取，保存后**下次
+    分析即热生效**（配置入分析缓存键，旧缓存自动失效重建；历史 job 不变）。
+    """
+    st.subheader("🕯️ 典型 K 线组合形态（可勾选 / 一键还原）")
+    eff = rts.candle_options_display()
+    norm = rts.candle_options_normalized()
+    customized = rts.candle_override_exists()
+    _def = rts.CANDLE_DEFAULTS
+
+    st.caption(
+        "日 K / 周 K **独立分析**经典组合（多方炮、仙人指路、早晨之星…）。"
+        "结论仅展示、不进综合分；报告见 Excel/HTML 日报与个股页。"
+        "保存后下次分析/扫描即热生效（无需重启，历史结果不变）。"
+    )
+    rows = [
+        {"参数": "总开关", "当前生效": "开启" if norm["enabled"] else "关闭",
+         "生产默认": "开启", "状态": "✅ 已自定义" if customized else "默认"},
+        {"参数": "日 K 分析", "当前生效": "开启" if norm["daily"] else "关闭",
+         "生产默认": "开启", "状态": "✅ 已自定义" if customized else "默认"},
+        {"参数": "周 K 分析", "当前生效": "开启" if norm["weekly"] else "关闭",
+         "生产默认": "开启", "状态": "✅ 已自定义" if customized else "默认"},
+        {"参数": "回溯窗口(根)", "当前生效": str(norm["lookback"]),
+         "生产默认": str(_def["MYSTERY_CANDLE_LOOKBACK"]),
+         "状态": "✅ 已自定义" if customized else "默认"},
+        {"参数": "启用形态",
+         "当前生效": f"{len(norm['patterns'])} 个："
+                     + "、".join(PATTERN_SPECS[c]["name"]
+                                 for c in norm["patterns"] if c in PATTERN_SPECS),
+         "生产默认": f"全部 {len(PATTERN_CODES)} 个",
+         "状态": "✅ 已自定义" if customized else "默认"},
+    ]
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    with st.form("candlestick_config_form"):
+        on = st.selectbox(
+            "形态分析总开关", ["1", "0"],
+            index=0 if eff.get("MYSTERY_CANDLE_ENABLED", "1") != "0" else 1,
+            format_func=lambda v: "开启" if v == "1" else "关闭（跳过形态分析）",
+            key="w82_enabled")
+        c1, c2 = st.columns(2)
+        with c1:
+            daily = st.checkbox(
+                "分析日 K", value=eff.get("MYSTERY_CANDLE_DAILY", "1") != "0",
+                key="w82_daily")
+        with c2:
+            weekly = st.checkbox(
+                "分析周 K", value=eff.get("MYSTERY_CANDLE_WEEKLY", "1") != "0",
+                key="w82_weekly")
+        lookback = st.number_input(
+            "回溯窗口（最近 N 根 K 线内找形态）", min_value=5, max_value=500,
+            value=_int_or(eff.get("MYSTERY_CANDLE_LOOKBACK"), 60), step=5,
+            help="按根数计，日 K 与周 K 用同一窗口；越大越能发现历史形态，也略增计算量",
+            key="w82_lookback")
+        picked = st.multiselect(
+            "启用哪些形态（可多选，全选=全部）", list(PATTERN_CODES),
+            default=list(norm["patterns"]),
+            format_func=lambda c: (f"{PATTERN_SPECS[c]['name']}"
+                                   f"（{PATTERN_SPECS[c]['direction']}）"
+                                   f" — {PATTERN_SPECS[c]['desc']}"),
+            key="w82_patterns",
+            help="只勾选的形态会参与日K/周K检测；形态定义见 core/candlestick_patterns.py")
+        if st.form_submit_button("保存配置（下次分析热生效）", type="primary"):
+            rts.save_candle_override({
+                "MYSTERY_CANDLE_ENABLED": on,
+                "MYSTERY_CANDLE_DAILY": "1" if daily else "0",
+                "MYSTERY_CANDLE_WEEKLY": "1" if weekly else "0",
+                "MYSTERY_CANDLE_LOOKBACK": int(lookback),
+                "MYSTERY_CANDLE_PATTERNS": (
+                    "all" if len(picked) == len(PATTERN_CODES) else picked),
+            })
+            st.success("已保存并热生效。下次分析/扫描即用新口径；历史结果不变。")
+            st.rerun()
+
+    if st.button("🔄 一键还原默认值", key="w82_restore",
+                 help="清除网页自定义：全部形态 / 日+周 K / 回溯 60 根"):
+        rts.clear_candle_override()
+        st.success("已还原到生产默认（全部 10 个形态、日K+周K、回溯 60 根）。")
+        st.rerun()
 
 
 def render_scan_wave3_config():
@@ -193,6 +279,7 @@ def view_system():
     st.header("系统状态（只读）")
     render_resonance_config()
     render_scan_wave3_config()
+    render_candlestick_config()
     cfg = load_config()
     svc = _service()
     db = svc.market.db
@@ -290,4 +377,5 @@ __all__ = [
     'view_true_resonance',
     'render_resonance_config',
     'render_scan_wave3_config',
+    'render_candlestick_config',
 ]

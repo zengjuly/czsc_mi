@@ -1,4 +1,4 @@
-"""W80：日报汇总字段的单一映射（Excel / HTML 共用）。
+"""W80/W82：日报汇总字段的单一映射（Excel / HTML 共用）。
 
 全部只读 ``AnalysisResult.to_dict()`` / scan payload 的**顶层字段**，
 不取数、不重算、不改判——与 ``core.scan_signals.classify`` 落库时的口径一致：
@@ -52,3 +52,44 @@ def turnover_source_text(d: Dict[str, Any]) -> str:
     if v is None:
         return "缺失"
     return "低换手" if v < 2 else "bar"
+
+
+# ---------------------------------------------------------------------------
+# W82：典型 K 线组合形态（全部只读 payload 顶层 candlestick 字段，不重算）
+# ---------------------------------------------------------------------------
+def candlestick_part(d: Dict[str, Any], period: str) -> Dict[str, Any]:
+    """取日/周某一周期的分析结果（旧结果无字段 → 空 dict）。"""
+    cs = d.get("candlestick") or {}
+    part = cs.get(period) or {}
+    return part if isinstance(part, dict) else {}
+
+
+def candlestick_daily_text(d: Dict[str, Any]) -> str:
+    """日 K 形态摘要；旧任务/未启用 → '—'。"""
+    cs = d.get("candlestick") or {}
+    if not cs:
+        return "—"
+    return str(cs.get("summary_daily") or
+               candlestick_part(d, "daily").get("summary") or "—")
+
+
+def candlestick_weekly_text(d: Dict[str, Any]) -> str:
+    """周 K 形态摘要；旧任务/未启用 → '—'。"""
+    cs = d.get("candlestick") or {}
+    if not cs:
+        return "—"
+    return str(cs.get("summary_weekly") or
+               candlestick_part(d, "weekly").get("summary") or "—")
+
+
+def candlestick_direction_text(d: Dict[str, Any]) -> str:
+    """最近形态方向（看涨/看跌/—），仅供速览，不进评分。"""
+    cs = d.get("candlestick") or {}
+    return str(cs.get("direction") or "—")
+
+
+def candlestick_hits(d: Dict[str, Any], period: str,
+                     limit: int = 5) -> list:
+    """某周期命中明细列表（Web 个股页用；最多 limit 条）。"""
+    hits = candlestick_part(d, period).get("hits") or []
+    return [h for h in hits if isinstance(h, dict)][:max(0, int(limit))]
