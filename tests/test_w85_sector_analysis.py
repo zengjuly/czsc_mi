@@ -57,16 +57,29 @@ def test_normalize_sector_code():
     assert sa.normalize_sector_code("885863") == "ths_885863"
 
 
-def test_sector_config_defaults_and_roundtrip():
-    """W85 配置：默认 auto + 稀疏覆盖层 + 一键还原（不影响其他覆盖层）。"""
-    opts = rts.sector_options_normalized()
-    assert opts["enabled"] is True
-    assert opts["focus"] == "auto"
-    assert opts["top_n"] == 8
-    assert opts["corr_window"] == 60
-    assert opts["auto_max"] == 8
-    # 归一：显式 code 列表 / all
-    assert rts.save_sector_override is not None
+def test_sector_config_defaults_and_roundtrip(monkeypatch, tmp_path):
+    """W85 配置：默认 auto + 稀疏覆盖层 + 一键还原（不影响其他覆盖层）。
+
+    线上 ``data/sector_override.json``（网页面板保存的关注来源）会把默认值
+    覆盖成 all/显式列表；这里用临时目录隔离，保证断言的是代码默认值，
+    而不是部署环境的运行时配置。
+    """
+    monkeypatch.setenv("MYSTERY_RUNTIME_OVERRIDE_DIR", str(tmp_path))
+    import importlib
+    import mystery.services.runtime_settings as m
+    importlib.reload(m)
+    try:
+        opts = m.sector_options_normalized()
+        assert opts["enabled"] is True
+        assert opts["focus"] == "auto"
+        assert opts["top_n"] == 8
+        assert opts["corr_window"] == 60
+        assert opts["auto_max"] == 8
+        # 归一：显式 code 列表 / all
+        assert m.save_sector_override is not None
+    finally:
+        monkeypatch.delenv("MYSTERY_RUNTIME_OVERRIDE_DIR", raising=False)
+        importlib.reload(m)  # 复位模块级路径，避免影响后续测试
 
 
 def test_sector_options_normalized_explicit_codes(monkeypatch, tmp_path):

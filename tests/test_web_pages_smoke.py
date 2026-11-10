@@ -92,6 +92,26 @@ def test_sector_page_renders():
     labels = [b.label for b in at.button]
     assert any("后台扫描全部成分股" in l for l in labels)
 
+    # W87：板块钻取页新增板块研判区块（无指数 K 线时降级，subheader 恒在）
+    assert any("板块研判" in s.value for s in at.subheader)
+    # 尽量选一个确定有真实指数 K 线的板块，验证完整研判内容
+    sb = [s for s in at.selectbox if s.label == "选择板块"]
+    if sb:
+        cand = [o for o in sb[0].options
+                if o.startswith("电力（") or o.startswith("银行（")]
+        if cand:
+            sb[0].set_value(cand[0])
+            at.run()
+            assert len(at.exception) == 0, [str(e) for e in at.exception]
+    m_labels = [m.label for m in at.metric]
+    assert ("板块强度分" in m_labels
+            or "行业强度分（0~25）" in m_labels)
+    if "板块强度分" in m_labels:
+        assert "年线位置" in m_labels
+        assert "最新收盘" in m_labels
+        assert any("主力建仓 / 吸筹研判" in e.label for e in at.expander)
+        assert any("与板块强相关的个股" in e.label for e in at.expander)
+
 
 def test_system_page_renders():
     at = _make()
