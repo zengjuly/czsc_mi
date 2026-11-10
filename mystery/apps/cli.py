@@ -145,10 +145,20 @@ def _cmd_daily(args: argparse.Namespace) -> int:
         major_indexes = analyze_major_indexes(svc.market)
     except Exception:  # noqa: BLE001 指数分析失败不影响个股报告
         pass
+    # W85：关注行业板块研判（真实板块指数 K 线 + 强相关个股；只读库）
+    focus_sectors = None
+    try:
+        from ..services.sector_analysis import analyze_focus_sectors, sector_summary_line
+        focus_sectors = analyze_focus_sectors(svc.market.db, results=results)
+        if focus_sectors:
+            qa_line = ((qa_line + "\n") if qa_line else "") + \
+                sector_summary_line(focus_sectors)
+    except Exception:  # noqa: BLE001 板块分析失败不影响个股报告
+        pass
     write_excel(results, xlsx, qa_line=qa_line or None,
-                major_indexes=major_indexes)
+                major_indexes=major_indexes, focus_sectors=focus_sectors)
     write_html(results, html, qa_line=qa_line or None,
-               major_indexes=major_indexes)
+               major_indexes=major_indexes, focus_sectors=focus_sectors)
     print(f"共 {len(results)} 只（失败 {failed}）")
     print(xlsx)
     print(html)
@@ -190,10 +200,22 @@ def _write_scan_report(results, args) -> None:
     # 个股表只传股票结果，避免指数条目进入个股卡片/排序。
     major_indexes = [r for r in results if r.get("is_index")]
     stock_results = [r for r in results if not r.get("is_index")]
+    # W85：关注行业板块研判（真实板块指数 K 线；相关个股附带本期分析结论）
+    focus_sectors = None
+    try:
+        from ..services.sector_analysis import analyze_focus_sectors, sector_summary_line
+        focus_sectors = analyze_focus_sectors(MysteryDB(), results=stock_results)
+        if focus_sectors:
+            qa_line = ((qa_line + "\n") if qa_line else "") + \
+                sector_summary_line(focus_sectors)
+    except Exception:  # noqa: BLE001 板块分析失败不影响报告主体
+        pass
     write_excel(stock_results, xlsx, qa_line=qa_line or None,
-                major_indexes=major_indexes or None)
+                major_indexes=major_indexes or None,
+                focus_sectors=focus_sectors)
     write_html(stock_results, html, qa_line=qa_line or None,
-               major_indexes=major_indexes or None)
+               major_indexes=major_indexes or None,
+               focus_sectors=focus_sectors)
     print(f"报告已生成: {xlsx}")
     print(f"报告已生成: {html}")
     if qa_line:

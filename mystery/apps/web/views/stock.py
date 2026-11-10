@@ -186,6 +186,28 @@ def render_stock(d: dict):
                             st.caption(" · ".join(
                                 f"{k}={v}" for k, v in _rest.items()))
 
+    # ---------- W86 主力建仓 / 吸筹研判（四层证据链，仅展示不进分） ----------
+    from mystery.apps.reports import result_fields as _rf86
+    _acc = _rf86.accumulation_of(d)
+    if _acc and _acc.get('level') != 'unknown':
+        _lvl = str(_acc.get('level_cn') or '—')
+        _acc_ok = _acc.get('level') in ('strong', 'medium')
+        with st.expander(f"主力建仓 / 吸筹研判：{_lvl}", expanded=_acc_ok):
+            st.caption(
+                f"阶段 {_acc.get('stage') or '—'} · 按 Mistery 四层证据链"
+                "（位置 / 量能 / 筹码 / 阶段）推导，仅展示不进综合分")
+            _m1, _m2, _m3, _m4 = st.columns(4)
+            _m1.metric("较近120高点回撤", f"{_acc.get('retrace_pct')}%"
+                       if _acc.get('retrace_pct') is not None else '—')
+            _m2.metric("量能状态", str(_acc.get('vol_state') or '—'))
+            _m3.metric("20日涨跌", f"{_acc.get('chg_20d')}%"
+                       if _acc.get('chg_20d') is not None else '—')
+            _m4.metric("年线", "站上" if _acc.get('above_year') is True else
+                       ("跌破" if _acc.get('above_year') is False else '未知'))
+            for _ev in (_acc.get('evidence') or []):
+                st.markdown(f"- {_ev}")
+            st.info(str(_acc.get('conclusion') or '—'))
+
     fin = d.get('financial', {}) or {}
     if fin:
         c1, c2, c3, c4 = st.columns(4)

@@ -66,6 +66,9 @@ SUMMARY_COLS = [
     ("candle_direction", "形态方向"),
     # W83：多方炮变体的「重点观察」量化结论（缺口支撑/缩量/低点抬高/待确认）
     ("candle_focus", "形态重点观察"),
+    # W86：主力建仓/吸筹研判（只读 payload + core 纯函数推导，不进评分）
+    ("accumulation", "主力吸筹"),
+    ("accumulation_stage", "吸筹阶段"),
 ]
 
 # 年线过滤系统各条件（与 basic_filter._basic_filter_checks 键一一对应，
@@ -160,6 +163,11 @@ def _flat(d: Dict[str, Any]) -> Dict[str, Any]:
         "candle_weekly": _rf.candlestick_weekly_text(d),
         "candle_direction": _rf.candlestick_direction_text(d),
         "candle_focus": _rf.candlestick_focus_text(d),
+    })
+    # W86：主力吸筹研判（只读 payload + 纯函数推导；旧 job 也能展示）
+    row.update({
+        "accumulation": _rf.accumulation_text(d),
+        "accumulation_stage": _rf.accumulation_stage_text(d),
     })
     # 个股详情补充列（W14：原个股详情 sheet 内容并入汇总页）
     row.update(_detail_flat(d))
@@ -397,12 +405,15 @@ def excel_bytes(results: List[Dict[str, Any]]) -> bytes:
 
 def write_excel(results: List[Dict[str, Any]], path: str,
                 qa_line: Optional[str] = None,
-                major_indexes: Optional[List[Dict[str, Any]]] = None) -> str:
+                major_indexes: Optional[List[Dict[str, Any]]] = None,
+                focus_sectors: Optional[List[Dict[str, Any]]] = None) -> str:
     """单「汇总报告」页（含全部个股详情列 + 年线条件列）。返回写入路径。
 
     qa_line：W26b 换手覆盖率 QA，写入表格下方一行（只读观测，不加列、不改排序）。
     major_indexes：W84 各大指数研判列表（analyze_major_indexes 产出），
     非空时追加「各大指数」工作表（只读展示）。
+    focus_sectors：W85 关注行业板块研判列表（analyze_focus_sectors 产出），
+    非空时追加「行业板块」工作表（板块研判 + 强相关个股，只读展示）。
     """
     import os
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -419,6 +430,9 @@ def write_excel(results: List[Dict[str, Any]], path: str,
     # W84：各大指数分析独立工作表（只读展示，不改个股排序/列）。
     if major_indexes:
         _append_index_sheet(path, major_indexes)
+    # W85：关注行业板块独立工作表（板块研判 + 强相关个股）。
+    if focus_sectors:
+        _append_sector_sheet(path, focus_sectors)
     logger.info("✅ Excel 报告生成完成: %s（%d 只，单汇总页）", path, len(results))
     return path
 
@@ -431,7 +445,8 @@ def _append_index_sheet(path: str, indexes: List[Dict[str, Any]]) -> None:
         wb = load_workbook(path)
         ws = wb.create_sheet("各大指数")
         cols = ["指数", "代码", "最新收盘", "涨跌幅5日(%)", "涨跌幅20日(%)",
-                "年线位置", "MA排列", "日K形态", "周K形态"]
+                "年线位置", "MA排列", "日K形态", "周K形态",
+                "主力吸筹(W86)", "吸筹结论"]
         ws.append(cols)
         for c in ws[1]:
             c.font = Font(bold=True)
@@ -444,12 +459,15 @@ def _append_index_sheet(path: str, indexes: List[Dict[str, Any]]) -> None:
                 year += f"({dist:+.1f}%)"
             ma = d.get("ma_aligned")
             ma_s = "多头排列" if ma else ("非多头" if ma is not None else "未知")
+            acc = d.get("accumulation") or {}
             ws.append([
                 d.get("name", ""), d.get("code", ""),
                 d.get("close"), d.get("chg_5d"), d.get("chg_20d"),
                 year, ma_s,
                 (d.get("candle_daily") or "—"),
                 (d.get("candle_weekly") or "—"),
+                d.get("accumulation_level") or "—",
+                acc.get("conclusion") or "—",
             ])
         # 列宽自适应（上限 40，日/周形态较长）
         for col_idx, _ in enumerate(cols, 1):
@@ -461,6 +479,66 @@ def _append_index_sheet(path: str, indexes: List[Dict[str, Any]]) -> None:
         wb.save(path)
     except Exception as e:  # noqa: BLE001 指数表失败不阻塞报告
         logger.warning("Excel 各大指数表写入失败（不影响报告主体）: %s", e)
+
+
+def _append_sector_sheet(path: str, sectors: List[Dict[str, Any]]) -> None:
+    """W85：追加「行业板块」工作表 = 板块研判区 + 强相关个股区（只读展示）。"""
+    try:
+        from openpyxl import load_workbook
+        from openpyxl.styles import Font
+        wb = load_workbook(path)
+        ws = wb.create_sheet("行业板块")
+        cols = ["板块", "代码", "日期", "最新", "涨跌幅5日(%)", "涨跌幅20日(%)",
+                "年线位置", "MA排列", "板块强度分(0-25)", "强度方向",
+                "日K形态", "周K形态", "主力吸筹(W86)", "强相关个股数"]
+        ws.append(cols)
+        for c in ws[1]:
+            c.font = Font(bold=True)
+        for d in sectors:
+            above = d.get("above_year")
+            dist = d.get("year_dist_pct")
+            year = ("站上年线" if above else "跌破年线") if above is not None \
+                else "未知"
+            if dist is not None:
+                year += f"({dist:+.1f}%)"
+            ma = d.get("ma_aligned")
+            ma_s = "多头排列" if ma else ("非多头" if ma is not None else "未知")
+            st = d.get("strength_score")
+            ws.append([
+                d.get("name", ""), d.get("code", ""), d.get("date", ""),
+                d.get("close"), d.get("chg_5d"), d.get("chg_20d"),
+                year, ma_s, st,
+                "偏强" if d.get("strength_up") else "偏弱",
+                (d.get("candle_daily") or "—"),
+                (d.get("candle_weekly") or "—"),
+                d.get("accumulation_level") or "—",
+                len(d.get("related") or []),
+            ])
+        # 强相关个股明细区（板块名 / 个股 / 相关系数 / 是否本期分析 / 评分 / 吸筹）
+        ws.append([])
+        hdr = ws.max_row + 1
+        ws.append(["板块", "强相关个股", "代码", "相关系数", "本期已分析",
+                   "评分", "操作建议", "主力吸筹(W86)"])
+        for c in ws[hdr]:
+            c.font = Font(bold=True)
+        for d in sectors:
+            for r in (d.get("related") or []):
+                ws.append([
+                    d.get("name", ""), r.get("name") or "",
+                    r.get("symbol") or "", r.get("corr"),
+                    "是" if r.get("analyzed") else "否",
+                    r.get("score"), r.get("advice") or "—",
+                    r.get("accumulation_level") or "—",
+                ])
+        for col_idx, _ in enumerate(cols, 1):
+            letter = ws.cell(row=1, column=col_idx).column_letter
+            vals = [len(str(cols[col_idx - 1]))] + [
+                len(str(r.value)) for row in ws.iter_rows()
+                for r in row if r.column == col_idx and r.value is not None]
+            ws.column_dimensions[letter].width = min(max(vals or [8]), 42)
+        wb.save(path)
+    except Exception as e:  # noqa: BLE001 板块表失败不阻塞报告
+        logger.warning("Excel 行业板块表写入失败（不影响报告主体）: %s", e)
 
 
 def _append_qa_row(path: str, qa_line: str) -> None:

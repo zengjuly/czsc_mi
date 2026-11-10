@@ -285,6 +285,112 @@ def candle_cache_tag() -> str:
     return f"|C[{sig}]"
 
 
+# ---------------------------------------------------------------------------
+# W85：行业板块关注跟踪 + 板块分析（网页可勾选关注板块 / 相关个股数 / 一键还原）
+# ---------------------------------------------------------------------------
+# 键名即 env 名，网页覆盖层与 env 完全等价、显式 env 优先。
+SECTOR_ENV_KEYS: tuple = (
+    "MYSTERY_SECTOR_ENABLED",       # 板块分析总开关 1/0
+    "MYSTERY_SECTOR_FOCUS",         # 关注板块：auto(跟自选股主行业) / all / 逗号分隔 ths_ 代码
+    "MYSTERY_SECTOR_TOP_N",         # 每板块「强相关个股」展示数
+    "MYSTERY_SECTOR_CORR_WINDOW",   # 相关性窗口（交易日）
+    "MYSTERY_SECTOR_AUTO_MAX",      # auto 模式最多关注几个板块
+)
+
+SECTOR_DEFAULTS: Dict[str, str] = {
+    "MYSTERY_SECTOR_ENABLED": "1",
+    "MYSTERY_SECTOR_FOCUS": "auto",
+    "MYSTERY_SECTOR_TOP_N": "8",
+    "MYSTERY_SECTOR_CORR_WINDOW": "60",
+    "MYSTERY_SECTOR_AUTO_MAX": "8",
+}
+
+SECTOR_OVERRIDE_PATH: Path = resolve_override_path(
+    "MYSTERY_SECTOR_OVERRIDE", "sector_override.json")
+
+
+def load_sector_override() -> Dict[str, str]:
+    """网页保存的稀疏覆盖层（只含显式设置项）。"""
+    return load_override(SECTOR_OVERRIDE_PATH, SECTOR_ENV_KEYS)
+
+
+def save_sector_override(opts: Dict[str, Any]) -> None:
+    """保存网页表单：只存已知键、跳过 None/空串（保持稀疏语义）。
+
+    ``MYSTERY_SECTOR_FOCUS`` 可为 code 列表（自动逗号拼接）或字符串。
+    """
+    clean: Dict[str, str] = {}
+    for k, v in (opts or {}).items():
+        if k not in SECTOR_ENV_KEYS or v is None:
+            continue
+        if isinstance(v, (list, tuple, set)):
+            s = ",".join(str(x).strip() for x in v if str(x).strip()) or "auto"
+        else:
+            s = str(v).strip()
+        if s != "":
+            clean[k] = s
+    save_override(SECTOR_OVERRIDE_PATH, clean)
+
+
+def clear_sector_override() -> None:
+    """一键还原默认值：删除覆盖层文件。"""
+    clear_override(SECTOR_OVERRIDE_PATH)
+
+
+def sector_override_exists() -> bool:
+    return SECTOR_OVERRIDE_PATH.is_file()
+
+
+def sector_options_effective() -> Dict[str, str]:
+    """实际生效的**稀疏**口径 = 覆盖层文件 + 显式 env（优先级递增）。"""
+    out: Dict[str, str] = dict(load_sector_override())
+    for k in SECTOR_ENV_KEYS:
+        v = os.environ.get(k)
+        if v is not None and str(v).strip() != "":
+            out[k] = str(v).strip()
+    return out
+
+
+def sector_options_display() -> Dict[str, str]:
+    """面板展示用**完整**生效值 = 生产默认 + 覆盖层 + env。"""
+    out: Dict[str, str] = dict(SECTOR_DEFAULTS)
+    out.update(sector_options_effective())
+    return out
+
+
+def sector_options_normalized() -> Dict[str, Any]:
+    """归一化后的完整配置（Web / CLI / 日报 / 扫描共用单一口径）。
+
+    :return: ``{'enabled': bool, 'focus': 'auto'|'all'|list[str],
+                'top_n': int, 'corr_window': int, 'auto_max': int}``
+    """
+    def _flag(key: str) -> bool:
+        return str(eff.get(key, "1")).strip().lower() not in (
+            "0", "false", "off", "no")
+
+    def _int(key: str, default: int, lo: int, hi: int) -> int:
+        try:
+            return max(lo, min(hi, int(float(eff.get(key, default)))))
+        except (TypeError, ValueError):
+            return default
+
+    eff = sector_options_display()
+    raw = str(eff.get("MYSTERY_SECTOR_FOCUS", "auto")).strip()
+    if not raw or raw.lower() in ("auto", "自动", "跟随自选"):
+        focus: Any = "auto"
+    elif raw.lower() in ("all", "*", "全部"):
+        focus = "all"
+    else:
+        focus = [x.strip() for x in raw.split(",") if x.strip()]
+    return {
+        "enabled": _flag("MYSTERY_SECTOR_ENABLED"),
+        "focus": focus,
+        "top_n": _int("MYSTERY_SECTOR_TOP_N", 8, 1, 30),
+        "corr_window": _int("MYSTERY_SECTOR_CORR_WINDOW", 60, 20, 250),
+        "auto_max": _int("MYSTERY_SECTOR_AUTO_MAX", 8, 1, 30),
+    }
+
+
 __all__ = [
     "RUNTIME_OVERRIDE_DIR", "resolve_override_path",
     "load_override", "save_override", "clear_override",
@@ -298,4 +404,8 @@ __all__ = [
     "load_candle_override", "save_candle_override", "clear_candle_override",
     "candle_override_exists", "candle_options_effective",
     "candle_options_display", "candle_options_normalized", "candle_cache_tag",
+    "SECTOR_ENV_KEYS", "SECTOR_DEFAULTS", "SECTOR_OVERRIDE_PATH",
+    "load_sector_override", "save_sector_override", "clear_sector_override",
+    "sector_override_exists", "sector_options_effective",
+    "sector_options_display", "sector_options_normalized",
 ]

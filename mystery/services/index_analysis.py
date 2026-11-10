@@ -17,6 +17,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from mystery.core import candlestick_patterns as _cp
+# W86：指数主力建仓/吸筹研判（core 纯函数，只读价格量能，不进评分）
+from mystery.core.accumulation import analyze_accumulation, accumulation_label
 
 # 各大宽基指数（名称, 内部代码）；内部代码走既有 normalize_symbol 归一通道。
 MAJOR_INDEXES: Tuple[Tuple[str, str], ...] = (
@@ -93,7 +95,10 @@ def analyze_index(market, name: str, code: str) -> Dict[str, Any]:
     base = {"name": name, "code": code, "date": "", "close": None,
             "chg_5d": None, "chg_20d": None, "above_year": None,
             "year_dist_pct": None, "ma_aligned": None,
-            "candle_daily": "—", "candle_weekly": "—", "has_data": False}
+            "candle_daily": "—", "candle_weekly": "—",
+            # W86：指数吸筹研判（纯价格口径，无换手/筹码峰）
+            "accumulation": None, "accumulation_level": "—",
+            "has_data": False}
     try:
         daily = market.fetch_index(code, "1d")
         if not daily or not daily.bars:
@@ -103,19 +108,24 @@ def analyze_index(market, name: str, code: str) -> Dict[str, Any]:
             return base
         weekly = market.fetch_index(code, "1w")
         last = daily.bars[-1]
+        # W86：指数吸筹研判与 W84 年线口径同源（同一份 closes），避免两份结论冲突。
+        _yl = _year_line_state(closes)
+        acc = analyze_accumulation(daily, period="daily", name=name)
         base.update({
             "date": str(last.dt)[:10],
             "close": round(float(last.close), 2),
             "chg_5d": _pct_change(closes, 5),
             "chg_20d": _pct_change(closes, 20),
-            "above_year": _year_line_state(closes)["above"],
-            "year_dist_pct": _year_line_state(closes)["dist_pct"],
+            "above_year": _yl["above"],
+            "year_dist_pct": _yl["dist_pct"],
             "ma_aligned": _ma_aligned(closes),
             "candle_daily": (_cp.detect_combo_patterns(daily, period="daily",
                                 lookback=120).get("summary") or "—"),
             "candle_weekly": (_cp.detect_combo_patterns(weekly, period="weekly",
                                   lookback=120).get("summary") or "—"
                               if weekly and weekly.bars else "—"),
+            "accumulation": acc,
+            "accumulation_level": accumulation_label(acc),
             "has_data": True,
         })
     except Exception:  # noqa: BLE001 指数研判失败不阻塞主流程

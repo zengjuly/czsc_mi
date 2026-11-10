@@ -187,6 +187,9 @@ def _stock_card(d: Dict[str, Any]) -> str:
         ("形态方向", _esc(_rf.candlestick_direction_text(d))),
         # W83：多方炮重点观察结论汇总（日 K 优先，见下方独立区块）
         ("形态重点观察", _esc(_rf.candlestick_focus_text(d))),
+        # W86：主力建仓/吸筹研判（等级 + 阶段，见下方独立证据区块）
+        ("主力吸筹", _esc(_rf.accumulation_text(d))),
+        ("吸筹阶段", _esc(_rf.accumulation_stage_text(d))),
         ("POC", _fmt(vap.get("POC"))),
         ("PE", _fmt(fin.get("PE"))),
         ("PB", _fmt(fin.get("PB"))),
@@ -227,6 +230,24 @@ def _stock_card(d: Dict[str, Any]) -> str:
             '<div style="font-weight:600;margin-bottom:4px">'
             '多方炮重点观察（验证点量化结论，仅展示不进评分）</div>'
             + "<br>".join(_fl) + "</div>")
+
+    # W86：主力建仓/吸筹四层证据链独立区块（低位/量能/阶段/年线 + 结论）
+    _acc = _rf.accumulation_of(d)
+    acc_html = ""
+    if _acc and _acc.get("level") != "unknown":
+        lv = _esc(_acc.get("level_cn") or "—")
+        _ev = "；".join(_esc(x) for x in (_acc.get("evidence") or [])) or "—"
+        _cc = _esc(_acc.get("conclusion") or "—")
+        _ac = "#2e7d5b" if _acc.get("level") in ("strong", "medium") else \
+              ("#c0392b" if _acc.get("level") == "none" else "#b8860b")
+        acc_html = (
+            '<div style="margin:8px 0;padding:8px 12px;'
+            f'border-left:3px solid {_ac};background:rgba(46,125,91,.06);'
+            'font-size:13px;line-height:1.75">'
+            '<div style="font-weight:600;margin-bottom:4px">'
+            f'主力建仓 / 吸筹研判：<span style="color:{_ac}">{lv}</span>'
+            f'（阶段 {_esc(_acc.get("stage") or "—")}，仅展示不进评分）</div>'
+            f'<div>证据：{_ev}</div><div>结论：{_cc}</div></div>')
 
     reasons: List[str] = []
     for line in (main_wave.get("判定依据") or [])[:4]:
@@ -276,6 +297,7 @@ def _stock_card(d: Dict[str, Any]) -> str:
   </div>
   <div class="metrics">{metric_html}</div>
   {focus_html}
+  {acc_html}
   {chan_html}
   <details class="detail"><summary>判定依据（{len(reasons)} 条）</summary><ul>{reason_html}</ul></details>
 </div>"""
@@ -283,11 +305,14 @@ def _stock_card(d: Dict[str, Any]) -> str:
 
 def write_html(results: List[Dict[str, Any]], path: str,
                qa_line: Optional[str] = None,
-               major_indexes: Optional[List[Dict[str, Any]]] = None) -> str:
+               major_indexes: Optional[List[Dict[str, Any]]] = None,
+               focus_sectors: Optional[List[Dict[str, Any]]] = None) -> str:
     """汇总 HTML（按分降序，每只一张卡片）。返回写入路径。
 
     qa_line：W26b 换手覆盖率 QA，展示在头部统计行（只读观测）。
     major_indexes：W84 各大指数研判列表，非空时在个股卡片前渲染指数区块。
+    focus_sectors：W85 关注行业板块研判列表，非空时渲染板块研判区块
+    （含板块吸筹结论 + 强相关个股），位于指数区块之后、个股卡片之前。
     """
     import os
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -305,6 +330,8 @@ def write_html(results: List[Dict[str, Any]], path: str,
     w3_html = f'<p class="qa">{_esc(w3_line)}</p>' if w3_line else ""
     # W84：各大指数区块（只读展示，位于个股卡片之前）
     idx_html = _index_block(major_indexes) if major_indexes else ""
+    # W85：行业板块区块（板块研判 + 强相关个股）
+    sec_html = _sector_block(focus_sectors) if focus_sectors else ""
     doc = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><title>每日股票分析报告</title>{_CSS}</head>
@@ -312,7 +339,7 @@ def write_html(results: List[Dict[str, Any]], path: str,
 <div class="header"><h1>📈 每日股票分析报告</h1>
 <p>{len(ordered)} 只 · 真三振 {n_true} 只 · 生成于 {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
 {qa_html}{w3_html}</div>
-{idx_html}{cards}
+{idx_html}{sec_html}{cards}
 <footer>Mistery 趋势交易分析 · czsc_mi · 分数来自 mystery.services.analyze.analyze_one_stock</footer>
 </div></body></html>"""
     with open(path, "w", encoding="utf-8") as f:
@@ -333,6 +360,8 @@ def _index_block(indexes: List[Dict[str, Any]]) -> str:
         if dist is not None:
             year_txt += f"({dist:+.1f}%)"
         ma_txt = "多头排列" if ma else ("非多头" if ma is not None else "未知")
+        acc_cls = "up" if (d.get("accumulation") or {}).get("level") in (
+            "strong", "medium") else "down"
         rows += (
             f"<tr><td>{_esc(d.get('name', ''))}</td>"
             f"<td>{_esc(str(d.get('code', '')))}</td>"
@@ -341,11 +370,78 @@ def _index_block(indexes: List[Dict[str, Any]]) -> str:
             f"<td class='{year_cls}'>{year_txt}</td>"
             f"<td>{ma_txt}</td>"
             f"<td>{_esc(d.get('candle_daily') or '—')}</td>"
-            f"<td>{_esc(d.get('candle_weekly') or '—')}</td></tr>"
+            f"<td>{_esc(d.get('candle_weekly') or '—')}</td>"
+            f"<td class='{acc_cls}'>{_esc(d.get('accumulation_level') or '—')}</td></tr>"
         )
     return f"""<div class="card">
 <h3>📊 各大指数研判（{len(indexes)}）</h3>
 <table class="idx-table">
 <thead><tr><th>指数</th><th>代码</th><th>最新</th><th>20日%</th>
-<th>年线位置</th><th>MA排列</th><th>日K形态</th><th>周K形态</th></tr></thead>
+<th>年线位置</th><th>MA排列</th><th>日K形态</th><th>周K形态</th>
+<th>主力吸筹(W86)</th></tr></thead>
 <tbody>{rows}</tbody></table></div>"""
+
+
+def _sector_block(sectors: List[Dict[str, Any]]) -> str:
+    """W85：关注行业板块研判区块 + 强相关个股（只读展示）。"""
+    rows = ""
+    detail = ""
+    for d in sectors:
+        above = d.get("above_year")
+        dist = d.get("year_dist_pct")
+        ma = d.get("ma_aligned")
+        st = d.get("strength_score")
+        year_cls = "up" if above else "down"
+        year_txt = "站上年线" if above else "跌破年线"
+        if dist is not None:
+            year_txt += f"({dist:+.1f}%)"
+        ma_txt = "多头" if ma else ("非多头" if ma is not None else "未知")
+        st_txt = f"{st:.1f}" if st is not None else "—"
+        acc = d.get("accumulation_level") or "—"
+        acc_cls = "up" if (d.get("accumulation") or {}).get("level") in (
+            "strong", "medium") else "down"
+        rel = d.get("related") or []
+        rel_txt = "、".join(
+            f"{_esc(r.get('name') or '?')}({r.get('corr')})"
+            for r in rel[:5]) or "—"
+        rows += (
+            f"<tr><td>{_esc(d.get('name', ''))}</td>"
+            f"<td>{_esc(str(d.get('code', '')))}</td>"
+            f"<td>{d.get('close')}</td>"
+            f"<td>{d.get('chg_20d')}</td>"
+            f"<td class='{year_cls}'>{year_txt}</td>"
+            f"<td>{ma_txt}</td>"
+            f"<td>{st_txt}</td>"
+            f"<td class='{acc_cls}'>{_esc(acc)}</td>"
+            f"<td>{len(rel)}</td>"
+            f"<td>{rel_txt}</td></tr>"
+        )
+        ev = "；".join(_esc(x) for x in (
+            (d.get("accumulation") or {}).get("evidence") or [])) or "—"
+        cc = _esc((d.get("accumulation") or {}).get("conclusion") or "—")
+        if rel:
+            rel_rows = "".join(
+                f"<tr><td>{_esc(r.get('name') or '')}</td>"
+                f"<td>{_esc(str(r.get('symbol') or ''))}</td>"
+                f"<td>{r.get('corr')}</td>"
+                f"<td>{'是' if r.get('analyzed') else '否'}</td>"
+                f"<td>{r.get('score') if r.get('score') is not None else '—'}</td>"
+                f"<td>{_esc(r.get('advice') or '—')}</td>"
+                f"<td>{_esc(r.get('accumulation_level') or '—')}</td></tr>"
+                for r in rel)
+            detail += (
+                f"<details class='detail'><summary>{_esc(d.get('name', ''))} "
+                f"· 吸筹证据与 {len(rel)} 只强相关个股</summary>"
+                f"<p><b>吸筹证据</b>：{ev}<br><b>结论</b>：{cc}</p>"
+                f"<table class='idx-table'><thead><tr><th>个股</th><th>代码</th>"
+                f"<th>相关系数</th><th>本期已分析</th><th>评分</th>"
+                f"<th>操作建议</th><th>吸筹</th></tr></thead>"
+                f"<tbody>{rel_rows}</tbody></table></details>")
+    return f"""<div class="card">
+<h3>🏭 行业板块研判（关注 {len(sectors)} 个 · 真实板块指数K线）</h3>
+<table class="idx-table">
+<thead><tr><th>板块</th><th>代码</th><th>最新</th><th>20日%</th>
+<th>年线位置</th><th>MA排列</th><th>强度分</th>
+<th>主力吸筹(W86)</th><th>强相关数</th><th>强相关个股(前5)</th></tr></thead>
+<tbody>{rows}</tbody></table>
+{detail}</div>"""

@@ -35,6 +35,22 @@ def _index_cell(row: dict):
     m = '多头' if ma else ('非多头' if ma is not None else '未知')
     return f'{y}·MA{m}'
 
+
+def _acc_cell(row: dict) -> str:
+    """W86：主力吸筹等级单元格；统一返回 str（避免 pyarrow int/str 混合告警）。"""
+    if row.get('is_index'):
+        ia = row.get('index_analysis') or {}
+        return str(ia.get('accumulation_level') or '—')
+    return str(_rf.accumulation_text(row))
+
+
+def _acc_stage_cell(row: dict) -> str:
+    """W86：吸筹阶段单元格；指数取 index_analysis.accumulation.stage。"""
+    if row.get('is_index'):
+        acc = (row.get('index_analysis') or {}).get('accumulation') or {}
+        return str(acc.get('stage') or '—')
+    return str(_rf.accumulation_stage_text(row))
+
 # 年线系统 7 项具体条件（src 键 → 展示列名）[P2-3：原 app.py 顶层常量，随 _scan_table_data 迁入]
 _YEARLINE_DISP = [
     ('收盘价>MA250', '价>MA250'),
@@ -204,6 +220,9 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
             '形态重点观察': _rf.candlestick_focus_text(row),
             # W84：各大指数研判（仅指数行有值；个股行显示 '—'）
             '指数研判': _index_cell(row),
+            # W86：主力建仓/吸筹研判（指数/个股统一口径，只读 payload）
+            '主力吸筹': _acc_cell(row),
+            '吸筹阶段': _acc_stage_cell(row),
             '详情': f"?stock={row['symbol']}&nav_key={nav_key}&nav_idx={idx}{at_qs}",
         }
         # W16：年线系统 7 项具体条件 + 主升浪 8 项具体指标（只展示不改判）

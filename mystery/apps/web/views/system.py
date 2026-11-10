@@ -128,6 +128,121 @@ def render_candlestick_config():
         st.rerun()
 
 
+def render_sector_config():
+    """W85：行业板块关注跟踪网页配置（多选关注板块 / 相关个股数 / 一键还原）。
+
+    写入 ``runtime_settings.SECTOR_OVERRIDE_PATH`` 覆盖层；Web / CLI /
+    日报 / 扫描报告全部经 ``sector_options_normalized()`` 读取，保存后下次
+    日报/扫描即热生效。板块清单来自真实 ``sector_kline``（688 个有指数数据）。
+    """
+    st.subheader("🏭 行业板块关注跟踪（可多选 / 一键还原）")
+    eff = rts.sector_options_display()
+    norm = rts.sector_options_normalized()
+    customized = rts.sector_override_exists()
+    _def = rts.SECTOR_DEFAULTS
+
+    st.caption(
+        "选择要关注跟踪的行业板块，日报 Excel/HTML 会新增「行业板块」区块："
+        "板块年线/强度分/日周K形态/主力吸筹研判，以及**与板块强相关的个股**"
+        "（板块指数与成分股近 N 日收益率相关系数 Top N，附带本期分析结论）。"
+        "默认 ``auto`` = 自动跟随当前自选股主行业。仅展示、不进综合分。"
+    )
+    # 板块清单（只读库，缓存避免每次 rerun 重扫）
+    try:
+        from mystery.services.sector_analysis import list_sectors
+        db = _service().market.db
+        sectors = list_sectors(db)
+    except Exception:
+        sectors = []
+    code_to_name = {d["code"]: d["name"] for d in sectors}
+    name_to_code = {f"{d['name']}（{d['code']}）": d["code"] for d in sectors}
+
+    focus = norm["focus"]
+    focus_mode = focus if isinstance(focus, str) else "custom"
+    rows = [
+        {"参数": "板块分析总开关",
+         "当前生效": "开启" if norm["enabled"] else "关闭",
+         "生产默认": "开启", "状态": "✅ 已自定义" if customized else "默认"},
+        {"参数": "关注板块",
+         "当前生效": ("auto（跟随自选股主行业）" if focus == "auto" else
+                    "all（全部）" if focus == "all" else
+                    f"{len(focus)} 个：" + "、".join(
+                        code_to_name.get(c, c) for c in focus[:6])),
+         "生产默认": "auto（跟随自选股主行业）",
+         "状态": "✅ 已自定义" if customized else "默认"},
+        {"参数": "强相关个股数", "当前生效": str(norm["top_n"]),
+         "生产默认": str(_def["MYSTERY_SECTOR_TOP_N"]),
+         "状态": "✅ 已自定义" if customized else "默认"},
+        {"参数": "相关性窗口(交易日)", "当前生效": str(norm["corr_window"]),
+         "生产默认": str(_def["MYSTERY_SECTOR_CORR_WINDOW"]),
+         "状态": "✅ 已自定义" if customized else "默认"},
+        {"参数": "auto 模式最多板块数", "当前生效": str(norm["auto_max"]),
+         "生产默认": str(_def["MYSTERY_SECTOR_AUTO_MAX"]),
+         "状态": "✅ 已自定义" if customized else "默认"},
+    ]
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.caption(f"库内有真实指数 K 线的可选板块：{len(sectors)} 个（行业 881 段排前）。")
+
+    with st.form("sector_config_form"):
+        on = st.selectbox(
+            "板块分析总开关", ["1", "0"],
+            index=0 if eff.get("MYSTERY_SECTOR_ENABLED", "1") != "0" else 1,
+            format_func=lambda v: "开启" if v == "1" else "关闭（日报不出板块区块）",
+            key="w85_enabled")
+        mode = st.radio(
+            "关注板块来源", ["auto（跟随自选股主行业）", "手动勾选", "all（全部板块）"],
+            index=(0 if focus_mode == "auto" else
+                   2 if focus_mode == "all" else 1),
+            horizontal=True, key="w85_mode")
+        picked: list = []
+        if mode.startswith("手动"):
+            default_codes = [c for c in (focus if isinstance(focus, list) else [])
+                             if c in name_to_code.values()]
+            default_labels = [lbl for lbl, c in name_to_code.items()
+                              if c in default_codes]
+            sel = st.multiselect(
+                "选择关注板块（可多选，支持输入名称搜索）",
+                list(name_to_code.keys()), default=default_labels,
+                key="w85_picked",
+                help="板块清单来自 sector_kline 真实指数数据；关注板块会进入每日报告的行业板块区块")
+            picked = [name_to_code[l] for l in sel]
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            top_n = st.number_input(
+                "强相关个股数", min_value=1, max_value=30,
+                value=_int_or(eff.get("MYSTERY_SECTOR_TOP_N"), 8), step=1,
+                key="w85_topn")
+        with c2:
+            corr_win = st.number_input(
+                "相关性窗口(交易日)", min_value=20, max_value=250,
+                value=_int_or(eff.get("MYSTERY_SECTOR_CORR_WINDOW"), 60), step=10,
+                key="w85_corrwin")
+        with c3:
+            auto_max = st.number_input(
+                "auto 最多板块数", min_value=1, max_value=30,
+                value=_int_or(eff.get("MYSTERY_SECTOR_AUTO_MAX"), 8), step=1,
+                key="w85_automax")
+        if st.form_submit_button("保存配置（下次日报/扫描热生效）", type="primary"):
+            focus_val = ("auto" if mode.startswith("auto") else
+                         "all" if mode.startswith("all") else
+                         (picked or "auto"))
+            rts.save_sector_override({
+                "MYSTERY_SECTOR_ENABLED": on,
+                "MYSTERY_SECTOR_FOCUS": focus_val,
+                "MYSTERY_SECTOR_TOP_N": int(top_n),
+                "MYSTERY_SECTOR_CORR_WINDOW": int(corr_win),
+                "MYSTERY_SECTOR_AUTO_MAX": int(auto_max),
+            })
+            st.success("已保存。下次日报/扫描即用新板块口径；历史结果不变。")
+            st.rerun()
+
+    if st.button("🔄 一键还原默认值", key="w85_restore",
+                 help="清除网页自定义：恢复 auto（跟随自选股主行业）/ 8 只相关个股 / 60 日窗口"):
+        rts.clear_sector_override()
+        st.success("已还原到生产默认（auto 跟随自选股主行业、8 个板块、8 只相关个股、60 日窗口）。")
+        st.rerun()
+
+
 def render_scan_wave3_config():
     """W76：三浪扫描参数网页配置（评估上限可调、一键还原默认值）。
 
@@ -299,6 +414,7 @@ def view_system():
     render_resonance_config()
     render_scan_wave3_config()
     render_candlestick_config()
+    render_sector_config()
     cfg = load_config()
     svc = _service()
     db = svc.market.db
@@ -397,4 +513,5 @@ __all__ = [
     'render_resonance_config',
     'render_scan_wave3_config',
     'render_candlestick_config',
+    'render_sector_config',
 ]

@@ -129,3 +129,48 @@ def candlestick_focus_text(d: Dict[str, Any], period: str = "all") -> str:
         if len(parts) >= 3:
             break
     return "；".join(parts) or "—"
+
+
+# ---------------------------------------------------------------------------
+# W86：主力建仓 / 吸筹研判（只读 payload + core 纯函数推导，不取数、不改分）
+# ---------------------------------------------------------------------------
+def accumulation_of(d: Dict[str, Any]) -> Dict[str, Any]:
+    """个股吸筹研判 dict。
+
+    优先读 payload 顶层 ``accumulation``（service 层已挂载时）；历史结果无
+    该字段则走 ``core.accumulation.accumulation_from_result`` 纯函数推导
+    （只读 to_dict() 已有字段，不取数、不重算评分/信号），保证旧 job 也能展示。
+    """
+    acc = d.get("accumulation")
+    if isinstance(acc, dict) and acc:
+        return acc
+    try:
+        from mystery.core.accumulation import accumulation_from_result
+        return accumulation_from_result(d, name=d.get("name") or "")
+    except Exception:  # noqa: BLE001 展示层推导失败不影响报告主体
+        return {}
+
+
+def accumulation_text(d: Dict[str, Any]) -> str:
+    """吸筹等级短标签（强吸筹/疑似吸筹/观察/非吸筹/数据不足），供汇总列。"""
+    acc = accumulation_of(d)
+    return str(acc.get("level_cn") or "—") if acc else "—"
+
+
+def accumulation_stage_text(d: Dict[str, Any]) -> str:
+    """吸筹阶段（吸筹/洗盘/拉升/派发/震荡/打压吸筹），供速览。"""
+    acc = accumulation_of(d)
+    return str(acc.get("stage") or "—") if acc else "—"
+
+
+def accumulation_evidence_text(d: Dict[str, Any], limit: int = 4) -> str:
+    """四层证据链摘要（低位/量能/阶段/年线），供 HTML 卡片与个股页。"""
+    acc = accumulation_of(d)
+    ev = acc.get("evidence") or []
+    return "；".join(str(x) for x in ev[:max(1, int(limit))]) or "—"
+
+
+def accumulation_conclusion_text(d: Dict[str, Any]) -> str:
+    """一句话结论（含「观察区间非买点」提示）。"""
+    acc = accumulation_of(d)
+    return str(acc.get("conclusion") or "—") if acc else "—"
