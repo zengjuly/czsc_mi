@@ -69,9 +69,38 @@ PATTERN_SPECS: Dict[str, Dict[str, Any]] = {
         "name": "看跌吞没", "direction": "看跌", "min_bars": 2,
         "desc": "后一根阴线实体完全包住前一根阳线实体",
     },
+    # ---- W83：多方炮最值得重点研究的三种形态 + 蓄势待确认态 ----
+    # 四种均在 detail 内输出统一键「重点观察」，把该形态的核心验证点
+    # 量化成结论文本（缺口支撑 / 调整缩量 / 回调低点抬高 / 下周一能否确认）。
+    "gap_duofangpao": {
+        "name": "跳空多方炮", "direction": "看涨", "min_bars": 6,
+        "group": "多方炮变体",
+        "desc": "首阳跳空突破 + 阴线回踩 + 再阳创新高；重点观察突破缺口是否得到支撑",
+    },
+    "liangyang_liangyin": {
+        "name": "两阳夹两阴", "direction": "看涨", "min_bars": 5,
+        "group": "多方炮变体",
+        "desc": "阳-阴-阴-阳四根组合；重点观察调整期间是否缩量",
+    },
+    "diedie_duofangpao": {
+        "name": "叠叠多方炮", "direction": "看涨", "min_bars": 7,
+        "group": "多方炮变体",
+        "desc": "两组以上阳-调整-阳叠加推升；重点观察每次回调低点是否抬高",
+    },
+    "duofangpao_pending": {
+        "name": "多方炮蓄势(待确认)", "direction": "中性", "min_bars": 8,
+        "group": "多方炮变体",
+        "desc": "一阳后连续两天缩量震荡小阴小阳；重点观察下周一能否放量阳线确认",
+    },
 }
 
 PATTERN_CODES: tuple = tuple(PATTERN_SPECS.keys())
+
+# W83：多方炮变体分组（供网页配置按组展示 / 报告排序，不改评分）
+PATTERN_GROUPS: Dict[str, List[str]] = {
+    "多方炮变体": ["gap_duofangpao", "liangyang_liangyin",
+                  "diedie_duofangpao", "duofangpao_pending"],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +368,166 @@ def _p_kandietunmo(bs, i):
             "量比(前5日)": round(_vol_ratio(bs, i), 2)}
 
 
+# ---------------------------------------------------------------------------
+# W83：多方炮三种重点变体 + 蓄势待确认态
+#   统一约定：每个 detail 都带「重点观察」键，值为该形态核心验证点的量化
+#   结论文本（是**观察结论**而非硬过滤条件），报告层原样只读展示。
+# ---------------------------------------------------------------------------
+def _p_gap_duofangpao(bs, i):
+    """跳空多方炮：首阳向上跳空突破 → 阴线回踩 → 再阳创新高。
+
+    重点观察：突破缺口是否得到支撑（用形态之后的 K 线验证是否回补）。
+    """
+    if i < 3:
+        return None
+    prev, a, b, c = bs[i - 3], bs[i - 2], bs[i - 1], bs[i]
+    gap_lo = _h(prev)                     # 缺口下沿 = 突破前最高
+    gap_hi = _l(a)                        # 缺口上沿 = 首阳最低
+    if not (_yang(a) and _yin(b) and _yang(c)):
+        return None
+    if gap_hi <= gap_lo + _EPS:           # 必须是真实向上跳空缺口
+        return None
+    if _c(c) <= _c(a):                    # 第三阳创组合新高
+        return None
+    if _body(c) < _body(b):               # 阳包阴
+        return None
+    if _l(b) < gap_lo - _EPS:             # 阴线回踩不能当场补掉缺口
+        return None
+    # 重点观察：形态之后（含 b/c 至今）缺口是否一直守住
+    later = bs[i + 1:]
+    tail = [_l(x) for x in later]
+    support_lo = min([_l(b), _l(c)] + tail)
+    held = support_lo >= gap_lo - _EPS
+    if not later:
+        verdict = (f"突破缺口 {gap_lo:.2f}~{gap_hi:.2f} 暂获支撑"
+                   f"（回踩最低 {support_lo:.2f}，尚无后续K线，待验证）")
+    elif held:
+        verdict = (f"突破缺口 {gap_lo:.2f}~{gap_hi:.2f} 得到支撑"
+                   f"（后续 {len(later)} 根最低 {support_lo:.2f}，未回补）")
+    else:
+        verdict = (f"突破缺口 {gap_lo:.2f}~{gap_hi:.2f} 已回补"
+                   f"（最低 {support_lo:.2f} 跌破 {gap_lo:.2f}），支撑失效")
+    return {
+        "重点观察": verdict,
+        "缺口区间": f"{gap_lo:.2f}~{gap_hi:.2f}",
+        "缺口幅度%": round((gap_hi / gap_lo - 1) * 100, 2) if gap_lo > 0 else 0.0,
+        "缺口支撑": "守住" if held else "回补",
+        "后续根数": len(later),
+        "回踩最低": round(support_lo, 2),
+        "三根收盘": f"{_c(a):.2f} → {_c(b):.2f} → {_c(c):.2f}",
+    }
+
+
+def _p_liangyang_liangyin(bs, i):
+    """两阳夹两阴：阳-阴-阴-阳。重点观察：调整期间是否缩量。"""
+    if i < 3:
+        return None
+    a, b, c, d = bs[i - 3], bs[i - 2], bs[i - 1], bs[i]
+    if not (_yang(a) and _yin(b) and _yin(c) and _yang(d)):
+        return None
+    if _c(d) <= _c(a):                     # 末阳收复并创组合新高
+        return None
+    if min(_l(b), _l(c)) < _o(a) - _body(a) * 0.5:   # 调整不深破首阳实体
+        return None
+    va = _v(a)
+    if va <= 0:
+        return None
+    avg_adj = (_v(b) + _v(c)) / 2.0
+    ratio = avg_adj / va
+    shrunk = ratio <= 0.85
+    verdict = (f"调整期{'缩量' if shrunk else '未缩量'}"
+               f"（两阴均量/首阳量 {ratio:.2f}"
+               f"{'，浮筹清洗充分' if shrunk else '，抛压仍存需警惕'}）")
+    return {
+        "重点观察": verdict,
+        "调整缩量": "是" if shrunk else "否",
+        "两阴均量/首阳量": round(ratio, 2),
+        "首阳量": round(va, 0),
+        "两阴均量": round(avg_adj, 0),
+        "末阳量/首阳量": round(_v(d) / va, 2),
+        "四根收盘": f"{_c(a):.2f} → {_c(b):.2f} → {_c(c):.2f} → {_c(d):.2f}",
+    }
+
+
+def _p_diedie_duofangpao(bs, i):
+    """叠叠多方炮：阳-阴-阳-阴-阳（5 根，两组叠加）或 7 根（三组）。
+
+    重点观察：每次回调低点是否抬高。优先匹配更长的叠加结构。
+    """
+    for n_yang in (4, 3):               # 4 阳=7 根 / 3 阳=5 根
+        n_bars = 2 * n_yang - 1
+        if i + 1 < n_bars:
+            continue
+        w = bs[i - n_bars + 1: i + 1]
+        yang, yin = w[0::2], w[1::2]
+        if not all(_yang(x) for x in yang) or not all(_yin(x) for x in yin):
+            continue
+        closes = [_c(x) for x in yang]
+        if not all(closes[k] > closes[k - 1] + _EPS
+                   for k in range(1, len(closes))):   # 上攻收盘逐级抬高
+            continue
+        lows = [_l(x) for x in yin]
+        rising = all(lows[k] > lows[k - 1] + _EPS
+                     for k in range(1, len(lows)))
+        seq = " → ".join(f"{x:.2f}" for x in lows)
+        verdict = (f"每次回调低点{'逐级抬高' if rising else '未逐级抬高'}"
+                   f"（{seq}）"
+                   f"{'，上攻节奏健康' if rising else '，动能有衰减风险'}")
+        return {
+            "重点观察": verdict,
+            "回调低点抬高": "是" if rising else "否",
+            "回调低点序列": seq,
+            "叠加组数": len(yin),
+            "上攻收盘": " → ".join(f"{x:.2f}" for x in closes),
+            "区间涨幅%": round((closes[-1] / closes[0] - 1) * 100, 2)
+                        if closes[0] > 0 else 0.0,
+        }
+    return None
+
+
+def _p_duofangpao_pending(bs, i):
+    """多方炮蓄势(待确认)：一阳后连续两天缩量震荡小阴小阳。
+
+    仅在**最新一根**报出（这是「当下待确认」状态，历史无需刷屏）；
+    重点观察：下周一能否放量阳线确认，以及失守条件。方向为中性。
+    """
+    if i != len(bs) - 1 or i < 4:
+        return None
+    a, b, c = bs[i - 2], bs[i - 1], bs[i]
+    if not _yang(a):
+        return None
+    ref_body = _avg_body(bs, 10, i - 3)   # 首阳之前 10 根的平均实体
+    if _body(a) < max(ref_body, _EPS) * 1.3:      # 首阳须有力度
+        return None
+    vr = _vol_ratio(bs, i - 2, 5)
+    if vr < 1.2:                                  # 首阳放量启动
+        return None
+    if max(_body(b), _body(c)) > _body(a) * 0.5:  # 后两天小阴小阳
+        return None
+    if max(_v(b), _v(c)) > _v(a) * 0.85:          # 连续两天缩量
+        return None
+    guard = _o(a) + _body(a) * 0.3                # 首阳实体下 1/3 上沿
+    if min(_c(b), _c(c)) < guard:
+        return None
+    if min(_l(b), _l(c)) < _l(a) - _amp(a) * 0.1:  # 不破首阳低点
+        return None
+    trigger = max(_h(a), _h(b), _h(c))
+    verdict = (f"下周一若放量阳线收盘站上 {trigger:.2f} 则确认多方炮；"
+               f"跌破 {_o(a):.2f}（首阳实体下沿）则蓄势失败")
+    return {
+        "重点观察": verdict,
+        "状态": "待确认",
+        "确认位": round(trigger, 2),
+        "失守位": round(_o(a), 2),
+        "首阳量比(前5日)": round(vr, 2),
+        "两日缩量比": round(((_v(b) + _v(c)) / 2) / max(_v(a), _EPS), 2),
+        "两日实体/首阳": round(
+            ((_body(b) + _body(c)) / 2) / max(_body(a), _EPS), 2),
+        "三根收盘": f"{_c(a):.2f} → {_c(b):.2f} → {_c(c):.2f}",
+        "首阳日期": _date(a),
+    }
+
+
 _DETECTORS: Dict[str, Callable] = {
     "duofangpao": _p_duofangpao,
     "xianrenzhilu": _p_xianrenzhilu,
@@ -350,6 +539,11 @@ _DETECTORS: Dict[str, Callable] = {
     "shejizhixing": _p_shejizhixing,
     "kanzhangtunmo": _p_kanzhangtunmo,
     "kandietunmo": _p_kandietunmo,
+    # W83：多方炮三种重点变体 + 蓄势待确认态
+    "gap_duofangpao": _p_gap_duofangpao,
+    "liangyang_liangyin": _p_liangyang_liangyin,
+    "diedie_duofangpao": _p_diedie_duofangpao,
+    "duofangpao_pending": _p_duofangpao_pending,
 }
 
 
@@ -390,6 +584,30 @@ def format_summary(hits: Sequence[Dict[str, Any]], limit: int = 3) -> str:
     return "、".join(parts)
 
 
+def format_focus(hits: Sequence[Dict[str, Any]], limit: int = 3) -> str:
+    """W83：把命中里的「重点观察」结论聚合成一段文本（供报告列）。
+
+    - 只取带「重点观察」键的形态（W82 的 10 个基础形态没有该键，自动跳过）；
+    - 按 code 去重（同一形态连续命中只留最近一次），按日期降序已在 hits 中；
+    - 无命中返回 '—'，与 W82 的 summary 口径一致，报告层无需判空特例。
+    """
+    if not hits:
+        return "—"
+    seen, parts = set(), []
+    for h in hits:
+        code = h.get("code")
+        if code in seen:
+            continue
+        focus = (h.get("detail") or {}).get("重点观察")
+        if not focus:
+            continue
+        seen.add(code)
+        parts.append(f"{h.get('name', '?')}：{focus}")
+        if len(parts) >= max(1, int(limit)):
+            break
+    return "；".join(parts) or "—"
+
+
 def detect_combo_patterns(bars, *, period: str = "daily",
                           enabled: Optional[Sequence[str]] = None,
                           lookback: int = 60,
@@ -409,7 +627,8 @@ def detect_combo_patterns(bars, *, period: str = "daily",
     lb = max(5, int(lookback or 60))
     per = max(1, int(max_hits_per_pattern or 2))
     empty = {"period": period, "lookback": lb, "n_bars": len(bs),
-             "enabled": codes, "n_hits": 0, "hits": [], "summary": "—"}
+             "enabled": codes, "n_hits": 0, "hits": [], "summary": "—",
+             "focus": "—"}
     if not bs or not codes:
         return empty
 
@@ -447,8 +666,9 @@ def detect_combo_patterns(bars, *, period: str = "daily",
     hits.sort(key=lambda h: (h.get("date") or ""), reverse=True)
     return {"period": period, "lookback": lb, "n_bars": len(bs),
             "enabled": codes, "n_hits": len(hits), "hits": hits,
-            "summary": format_summary(hits)}
+            "summary": format_summary(hits), "focus": format_focus(hits)}
 
 
-__all__ = ["PATTERN_SPECS", "PATTERN_CODES", "resolve_enabled",
-           "format_summary", "detect_combo_patterns"]
+__all__ = ["PATTERN_SPECS", "PATTERN_CODES", "PATTERN_GROUPS",
+           "resolve_enabled", "format_summary", "format_focus",
+           "detect_combo_patterns"]

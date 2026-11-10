@@ -64,6 +64,8 @@ SUMMARY_COLS = [
     ("candle_daily", "日K形态"),
     ("candle_weekly", "周K形态"),
     ("candle_direction", "形态方向"),
+    # W83：多方炮变体的「重点观察」量化结论（缺口支撑/缩量/低点抬高/待确认）
+    ("candle_focus", "形态重点观察"),
 ]
 
 # 年线过滤系统各条件（与 basic_filter._basic_filter_checks 键一一对应，
@@ -157,6 +159,7 @@ def _flat(d: Dict[str, Any]) -> Dict[str, Any]:
         "candle_daily": _rf.candlestick_daily_text(d),
         "candle_weekly": _rf.candlestick_weekly_text(d),
         "candle_direction": _rf.candlestick_direction_text(d),
+        "candle_focus": _rf.candlestick_focus_text(d),
     })
     # 个股详情补充列（W14：原个股详情 sheet 内容并入汇总页）
     row.update(_detail_flat(d))
@@ -272,6 +275,7 @@ def _detail_flat(d: Dict[str, Any]) -> Dict[str, Any]:
     ])
 
     # W82：典型组合形态明细（按周期分区，逐条铺列，便于对账）
+    # W83：每条命中后追加其「重点观察」量化结论，便于逐票核对验证点
     _cs = d.get("candlestick") or {}
     if _cs:
         for _period, _label in (("daily", "日K形态"), ("weekly", "周K形态")):
@@ -283,6 +287,14 @@ def _detail_flat(d: Dict[str, Any]) -> Dict[str, Any]:
                  f"·{h.get('direction', '-')})")
                 for i, h in enumerate(_hits)
             ] or [(f"{_prefix}命中1", "—")])
+            _focus_rows = [
+                (f"{_prefix}观察{i + 1}·{h.get('name', '-')}",
+                 (h.get('detail') or {}).get('重点观察', '—'))
+                for i, h in enumerate(_hits)
+                if (h.get('detail') or {}).get('重点观察')
+            ]
+            if _focus_rows:
+                sec_rows(f"{_label}·重点观察", _focus_rows)
 
     sec_rows("财务", [
         ("PE", fin.get("PE")),

@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 
 def _empty_period(period: str, reason: str) -> Dict[str, Any]:
     return {"period": period, "lookback": 0, "n_bars": 0, "enabled": [],
-            "n_hits": 0, "hits": [], "summary": "—", "reason": reason}
+            "n_hits": 0, "hits": [], "summary": "—", "focus": "—",
+            "reason": reason}
 
 
 def analyze_candlestick(daily_bars=None, weekly_bars=None,
@@ -56,6 +57,8 @@ def analyze_candlestick(daily_bars=None, weekly_bars=None,
         },
         "daily": {}, "weekly": {},
         "summary_daily": "—", "summary_weekly": "—",
+        # W83：多方炮变体的「重点观察」量化结论（日/周各自独立）
+        "focus_daily": "—", "focus_weekly": "—", "focus": "—",
         "direction": "—", "n_hits": 0,
     }
     if not base["enabled"]:
@@ -82,6 +85,11 @@ def analyze_candlestick(daily_bars=None, weekly_bars=None,
     base["weekly"] = _one(weekly_bars, "weekly", bool(opts.get("weekly", True)))
     base["summary_daily"] = base["daily"].get("summary") or "—"
     base["summary_weekly"] = base["weekly"].get("summary") or "—"
+    base["focus_daily"] = base["daily"].get("focus") or "—"
+    base["focus_weekly"] = base["weekly"].get("focus") or "—"
+    # 汇总列优先日 K；日 K 无观察结论时回退周 K（与 direction 同口径）
+    base["focus"] = (base["focus_daily"] if base["focus_daily"] != "—"
+                     else base["focus_weekly"])
     base["n_hits"] = int(base["daily"].get("n_hits", 0)) + \
         int(base["weekly"].get("n_hits", 0))
     # 最近方向：优先日 K 最新命中，其次周 K 最新命中（仅供报表一列速览）

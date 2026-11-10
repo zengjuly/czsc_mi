@@ -93,3 +93,39 @@ def candlestick_hits(d: Dict[str, Any], period: str,
     """某周期命中明细列表（Web 个股页用；最多 limit 条）。"""
     hits = candlestick_part(d, period).get("hits") or []
     return [h for h in hits if isinstance(h, dict)][:max(0, int(limit))]
+
+
+def candlestick_focus_text(d: Dict[str, Any], period: str = "all") -> str:
+    """W83：多方炮变体的「重点观察」量化结论（只读 payload，不重算）。
+
+    :param period: ``all``（默认，日 K 优先）/ ``daily`` / ``weekly``。
+    旧任务无 ``focus*`` 字段时回退到 hits 里现算一次（仍只读 payload，
+    不取数、不改评分），保证历史结果不报错、只是显示 '—'。
+    """
+    cs = d.get("candlestick") or {}
+    if not cs:
+        return "—"
+    if period == "daily":
+        key, part_key = "focus_daily", "daily"
+    elif period == "weekly":
+        key, part_key = "focus_weekly", "weekly"
+    else:
+        key, part_key = "focus", "daily"
+    val = cs.get(key)
+    if val and val != "—":
+        return str(val)
+    # 兼容旧 payload：从 hits 明细里提取「重点观察」，按 code 去重
+    hits = candlestick_part(d, part_key).get("hits") or []
+    seen, parts = set(), []
+    for h in hits:
+        if not isinstance(h, dict):
+            continue
+        code = h.get("code")
+        focus = (h.get("detail") or {}).get("重点观察")
+        if not focus or code in seen:
+            continue
+        seen.add(code)
+        parts.append(f"{h.get('name', '?')}：{focus}")
+        if len(parts) >= 3:
+            break
+    return "；".join(parts) or "—"

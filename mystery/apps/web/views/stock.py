@@ -176,9 +176,15 @@ def render_stock(d: dict):
                             f"- {_icon} **{_h.get('name', '-')}**"
                             f"（{_h.get('date', '-')}）· {_dir}")
                         _det = _h.get('detail') or {}
-                        if _det:
+                        # W83：重点观察结论单独高亮，其余量化明细仍按 kv 展示
+                        _focus = _det.get('重点观察')
+                        if _focus:
+                            st.markdown(f"　**重点观察**：{_focus}")
+                        _rest = {k: v for k, v in _det.items()
+                                 if k != '重点观察'}
+                        if _rest:
                             st.caption(" · ".join(
-                                f"{k}={v}" for k, v in _det.items()))
+                                f"{k}={v}" for k, v in _rest.items()))
 
     fin = d.get('financial', {}) or {}
     if fin:

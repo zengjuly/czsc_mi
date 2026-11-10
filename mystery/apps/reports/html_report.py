@@ -181,6 +181,8 @@ def _stock_card(d: Dict[str, Any]) -> str:
         ("日K形态", _esc(_rf.candlestick_daily_text(d))),
         ("周K形态", _esc(_rf.candlestick_weekly_text(d))),
         ("形态方向", _esc(_rf.candlestick_direction_text(d))),
+        # W83：多方炮重点观察结论汇总（日 K 优先，见下方独立区块）
+        ("形态重点观察", _esc(_rf.candlestick_focus_text(d))),
         ("POC", _fmt(vap.get("POC"))),
         ("PE", _fmt(fin.get("PE"))),
         ("PB", _fmt(fin.get("PB"))),
@@ -203,6 +205,24 @@ def _stock_card(d: Dict[str, Any]) -> str:
         f'<div class="metric"><div class="label">{k}</div>'
         f'<div class="value">{v}</div></div>' for k, v in metrics
     )
+
+    # W83：多方炮变体「重点观察」独立区块（日 K / 周 K 分开，长文本完整展示）
+    _fd = _rf.candlestick_focus_text(d, "daily")
+    _fw = _rf.candlestick_focus_text(d, "weekly")
+    _fl: List[str] = []
+    if _fd != "—":
+        _fl.append(f"<b>日 K</b>　{_esc(_fd)}")
+    if _fw != "—" and _fw != _fd:
+        _fl.append(f"<b>周 K</b>　{_esc(_fw)}")
+    focus_html = ""
+    if _fl:
+        focus_html = (
+            '<div style="margin:8px 0;padding:8px 12px;'
+            'border-left:3px solid #c0392b;background:rgba(192,57,43,.06);'
+            'font-size:13px;line-height:1.75">'
+            '<div style="font-weight:600;margin-bottom:4px">'
+            '多方炮重点观察（验证点量化结论，仅展示不进评分）</div>'
+            + "<br>".join(_fl) + "</div>")
 
     reasons: List[str] = []
     for line in (main_wave.get("判定依据") or [])[:4]:
@@ -251,6 +271,7 @@ def _stock_card(d: Dict[str, Any]) -> str:
     {_badge(d.get('score'))}
   </div>
   <div class="metrics">{metric_html}</div>
+  {focus_html}
   {chan_html}
   <details class="detail"><summary>判定依据（{len(reasons)} 条）</summary><ul>{reason_html}</ul></details>
 </div>"""

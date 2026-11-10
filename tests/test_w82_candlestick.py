@@ -53,8 +53,9 @@ def _clean(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------- core
-def test_registry_has_10_typical_patterns():
-    assert len(cp.PATTERN_CODES) == 10
+def test_registry_has_typical_patterns():
+    # W82 基础 10 个 + W83 多方炮重点变体 4 个；用 >= 避免后续扩展再次挂测试
+    assert len(cp.PATTERN_CODES) >= 14
     assert cp.PATTERN_SPECS["duofangpao"]["name"] == "多方炮"
     assert cp.PATTERN_SPECS["xianrenzhilu"]["name"] == "仙人指路"  # 用户点名
     for c, s in cp.PATTERN_SPECS.items():

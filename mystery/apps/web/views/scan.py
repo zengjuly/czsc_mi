@@ -8,6 +8,8 @@ from .components import *
 from .stock import _add_watchlist_widget
 # W69：三浪主升组合摘要（与 CLI / 日报同一口径）；绝对导入避免悬空全局名。
 from mystery.services.wave3_scan import wave3_summary_line
+# W83：形态「重点观察」结论只读 payload（与 Excel/HTML 报告同一口径）
+from mystery.apps.reports import result_fields as _rf
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +183,8 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
                        or '—'),
             '周K形态': ((row.get('candlestick') or {}).get('summary_weekly')
                        or '—'),
+            # W83：多方炮变体的重点观察量化结论（旧 job 显示 '—'）
+            '形态重点观察': _rf.candlestick_focus_text(row),
             '详情': f"?stock={row['symbol']}&nav_key={nav_key}&nav_idx={idx}{at_qs}",
         }
         # W16：年线系统 7 项具体条件 + 主升浪 8 项具体指标（只展示不改判）

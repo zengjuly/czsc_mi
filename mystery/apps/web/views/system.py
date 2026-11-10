@@ -14,7 +14,9 @@ from mystery.core.resonance import resolve_resonance_options
 # W76：三浪扫描参数覆盖层（与共振面板同一套「覆盖层文件 + 一键还原」机制）。
 from mystery.services import runtime_settings as rts
 # W82：典型 K 线组合形态网页配置（勾选形态 / 窗口 / 日周开关）。
-from mystery.core.candlestick_patterns import PATTERN_SPECS, PATTERN_CODES
+# W83：PATTERN_GROUPS 供「多方炮重点变体」快捷勾选与分组标注。
+from mystery.core.candlestick_patterns import (
+    PATTERN_SPECS, PATTERN_CODES, PATTERN_GROUPS)
 
 
 def _int_or(v, default: int) -> int:
@@ -63,6 +65,13 @@ def render_candlestick_config():
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
     with st.form("candlestick_config_form"):
+        st.caption(
+            "W83 多方炮重点变体（勾选后结论见报告「形态重点观察」列）："
+            "跳空多方炮—观察突破缺口是否得到支撑；"
+            "两阳夹两阴—观察调整期间是否缩量；"
+            "叠叠多方炮—观察每次回调低点是否抬高；"
+            "多方炮蓄势(待确认)—观察下周一能否放量阳线确认。"
+        )
         on = st.selectbox(
             "形态分析总开关", ["1", "0"],
             index=0 if eff.get("MYSTERY_CANDLE_ENABLED", "1") != "0" else 1,
@@ -85,12 +94,20 @@ def render_candlestick_config():
         picked = st.multiselect(
             "启用哪些形态（可多选，全选=全部）", list(PATTERN_CODES),
             default=list(norm["patterns"]),
-            format_func=lambda c: (f"{PATTERN_SPECS[c]['name']}"
-                                   f"（{PATTERN_SPECS[c]['direction']}）"
-                                   f" — {PATTERN_SPECS[c]['desc']}"),
+            format_func=lambda c: (
+                f"[{PATTERN_SPECS[c].get('group', '基础形态')}] "
+                f"{PATTERN_SPECS[c]['name']}"
+                f"（{PATTERN_SPECS[c]['direction']}）"
+                f" — {PATTERN_SPECS[c]['desc']}"),
             key="w82_patterns",
             help="只勾选的形态会参与日K/周K检测；形态定义见 core/candlestick_patterns.py")
+        focus_only = st.checkbox(
+            "仅启用多方炮 3 种重点变体 + 蓄势待确认（提交时覆盖上方多选）",
+            value=False, key="w83_focus_only",
+            help="快捷口径：只跑用户点名的四种多方炮形态，便于专注验证缺口支撑/缩量/低点抬高")
         if st.form_submit_button("保存配置（下次分析热生效）", type="primary"):
+            if focus_only:
+                picked = list(PATTERN_GROUPS["多方炮变体"])
             rts.save_candle_override({
                 "MYSTERY_CANDLE_ENABLED": on,
                 "MYSTERY_CANDLE_DAILY": "1" if daily else "0",
@@ -105,7 +122,9 @@ def render_candlestick_config():
     if st.button("🔄 一键还原默认值", key="w82_restore",
                  help="清除网页自定义：全部形态 / 日+周 K / 回溯 60 根"):
         rts.clear_candle_override()
-        st.success("已还原到生产默认（全部 10 个形态、日K+周K、回溯 60 根）。")
+        st.success(
+            f"已还原到生产默认（全部 {len(PATTERN_CODES)} 个形态、"
+            "日K+周K、回溯 60 根）。")
         st.rerun()
 
 
