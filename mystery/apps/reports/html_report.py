@@ -55,6 +55,10 @@ th { background: #f0f2f9; }
 .signal-tag.warn { background: #ffebee; color: #c62828; }
 footer { color: #aaa; font-size: .8em; text-align: center; margin-top: 20px; }
 .qa { color: #667; font-size: .85em; background: #f4f5fb; border-radius: 6px; padding: 6px 10px; }
+.idx-table { margin-top: 10px; }
+.idx-table th { background: #eef1fb; }
+.up { color: #2e7d32; font-weight: 600; }
+.down { color: #c62828; font-weight: 600; }
 </style>
 """
 
@@ -278,10 +282,12 @@ def _stock_card(d: Dict[str, Any]) -> str:
 
 
 def write_html(results: List[Dict[str, Any]], path: str,
-               qa_line: Optional[str] = None) -> str:
+               qa_line: Optional[str] = None,
+               major_indexes: Optional[List[Dict[str, Any]]] = None) -> str:
     """汇总 HTML（按分降序，每只一张卡片）。返回写入路径。
 
     qa_line：W26b 换手覆盖率 QA，展示在头部统计行（只读观测）。
+    major_indexes：W84 各大指数研判列表，非空时在个股卡片前渲染指数区块。
     """
     import os
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -297,6 +303,8 @@ def write_html(results: List[Dict[str, Any]], path: str,
     from mystery.services.wave3_scan import wave3_summary_line
     w3_line = wave3_summary_line(ordered)
     w3_html = f'<p class="qa">{_esc(w3_line)}</p>' if w3_line else ""
+    # W84：各大指数区块（只读展示，位于个股卡片之前）
+    idx_html = _index_block(major_indexes) if major_indexes else ""
     doc = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><title>每日股票分析报告</title>{_CSS}</head>
@@ -304,10 +312,40 @@ def write_html(results: List[Dict[str, Any]], path: str,
 <div class="header"><h1>📈 每日股票分析报告</h1>
 <p>{len(ordered)} 只 · 真三振 {n_true} 只 · 生成于 {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
 {qa_html}{w3_html}</div>
-{cards}
+{idx_html}{cards}
 <footer>Mistery 趋势交易分析 · czsc_mi · 分数来自 mystery.services.analyze.analyze_one_stock</footer>
 </div></body></html>"""
     with open(path, "w", encoding="utf-8") as f:
         f.write(doc)
     logger.info("✅ HTML 报告生成完成: %s（%d 只）", path, len(ordered))
     return path
+
+
+def _index_block(indexes: List[Dict[str, Any]]) -> str:
+    """W84：各大指数研判区块 HTML（只读展示）。"""
+    rows = ""
+    for d in indexes:
+        above = d.get("above_year")
+        dist = d.get("year_dist_pct")
+        ma = d.get("ma_aligned")
+        year_cls = "up" if above else "down"
+        year_txt = "站上年线" if above else "跌破年线"
+        if dist is not None:
+            year_txt += f"({dist:+.1f}%)"
+        ma_txt = "多头排列" if ma else ("非多头" if ma is not None else "未知")
+        rows += (
+            f"<tr><td>{_esc(d.get('name', ''))}</td>"
+            f"<td>{_esc(str(d.get('code', '')))}</td>"
+            f"<td>{d.get('close')}</td>"
+            f"<td>{d.get('chg_20d')}</td>"
+            f"<td class='{year_cls}'>{year_txt}</td>"
+            f"<td>{ma_txt}</td>"
+            f"<td>{_esc(d.get('candle_daily') or '—')}</td>"
+            f"<td>{_esc(d.get('candle_weekly') or '—')}</td></tr>"
+        )
+    return f"""<div class="card">
+<h3>📊 各大指数研判（{len(indexes)}）</h3>
+<table class="idx-table">
+<thead><tr><th>指数</th><th>代码</th><th>最新</th><th>20日%</th>
+<th>年线位置</th><th>MA排列</th><th>日K形态</th><th>周K形态</th></tr></thead>
+<tbody>{rows}</tbody></table></div>"""

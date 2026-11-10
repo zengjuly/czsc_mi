@@ -138,8 +138,17 @@ def _cmd_daily(args: argparse.Namespace) -> int:
             market_env_summary(svc.market))
     except Exception:  # noqa: BLE001
         pass
-    write_excel(results, xlsx, qa_line=qa_line or None)
-    write_html(results, html, qa_line=qa_line or None)
+    # W84：各大指数研判（只读展示；会话级缓存，每日一次取数）
+    major_indexes = None
+    try:
+        from ..services.index_analysis import analyze_major_indexes
+        major_indexes = analyze_major_indexes(svc.market)
+    except Exception:  # noqa: BLE001 指数分析失败不影响个股报告
+        pass
+    write_excel(results, xlsx, qa_line=qa_line or None,
+                major_indexes=major_indexes)
+    write_html(results, html, qa_line=qa_line or None,
+               major_indexes=major_indexes)
     print(f"共 {len(results)} 只（失败 {failed}）")
     print(xlsx)
     print(html)
@@ -177,8 +186,14 @@ def _write_scan_report(results, args) -> None:
             market_env_summary(AnalysisService(args.cfg).market))
     except Exception:  # noqa: BLE001
         pass
-    write_excel(results, xlsx, qa_line=qa_line or None)
-    write_html(results, html, qa_line=qa_line or None)
+    # W84：全量后台扫描结果已含各大指数条目（is_index=True），抽离为独立区块，
+    # 个股表只传股票结果，避免指数条目进入个股卡片/排序。
+    major_indexes = [r for r in results if r.get("is_index")]
+    stock_results = [r for r in results if not r.get("is_index")]
+    write_excel(stock_results, xlsx, qa_line=qa_line or None,
+                major_indexes=major_indexes or None)
+    write_html(stock_results, html, qa_line=qa_line or None,
+               major_indexes=major_indexes or None)
     print(f"报告已生成: {xlsx}")
     print(f"报告已生成: {html}")
     if qa_line:

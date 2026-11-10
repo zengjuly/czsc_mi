@@ -20,6 +20,21 @@ def _wave3_cell(row: dict, key: str):
     v = w.get(key)
     return '-' if v is None or v == '' else v
 
+
+def _index_cell(row: dict):
+    """W84：指数研判单元格（年线位置 + MA 排列）；非指数行返回 '—'。"""
+    ia = row.get('index_analysis')
+    if not ia:
+        return '—'
+    above = ia.get('above_year')
+    dist = ia.get('year_dist_pct')
+    ma = ia.get('ma_aligned')
+    y = ('站上年线' if above else '跌破年线') if above is not None else '未知'
+    if dist is not None:
+        y += f'({dist:+.1f}%)'
+    m = '多头' if ma else ('非多头' if ma is not None else '未知')
+    return f'{y}·MA{m}'
+
 # 年线系统 7 项具体条件（src 键 → 展示列名）[P2-3：原 app.py 顶层常量，随 _scan_table_data 迁入]
 _YEARLINE_DISP = [
     ('收盘价>MA250', '价>MA250'),
@@ -143,6 +158,8 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
             # W76：用户要求「名称在前，代码在后」（与 Excel 汇总/日报同口径）。
             '名称': row.get('name') or '未知',
             '代码': row['symbol'],
+            # W84：指数行标记「指数」，与个股区分（位于代码之后，不影响 W76 列序）
+            '类型': '指数' if row.get('is_index') else '个股',
             '所属板块': ('·'.join(_wl.boards_of_symbol(row['symbol'], _boards_snap))
                         if _boards_snap else ''),
             '评分': row.get('score'),
@@ -185,6 +202,8 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
                        or '—'),
             # W83：多方炮变体的重点观察量化结论（旧 job 显示 '—'）
             '形态重点观察': _rf.candlestick_focus_text(row),
+            # W84：各大指数研判（仅指数行有值；个股行显示 '—'）
+            '指数研判': _index_cell(row),
             '详情': f"?stock={row['symbol']}&nav_key={nav_key}&nav_idx={idx}{at_qs}",
         }
         # W16：年线系统 7 项具体条件 + 主升浪 8 项具体指标（只展示不改判）

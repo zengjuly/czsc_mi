@@ -748,9 +748,14 @@ def _attach_wave3(results: List[Dict[str, Any]], *,
     """
     if not results:
         return
+    # W84：指数条目（is_index=True）无三浪意义，单独剔除后只给个股附加，避免
+    # 对指数空字段做无意义运算；指数条目仍随 results 落库与展示。
+    stock_results = [r for r in results if not r.get("is_index")]
+    if not stock_results:
+        return
     try:
         from .wave3_scan import attach_wave3_to_results
-        summary = attach_wave3_to_results(results, db=db, client=client,
+        summary = attach_wave3_to_results(stock_results, db=db, client=client,
                                           progress_cb=progress_cb)
         if summary.get("enabled"):
             logger.info(
@@ -760,6 +765,33 @@ def _attach_wave3(results: List[Dict[str, Any]], *,
                 f"×{summary.get('scale_down')}")
     except Exception as e:  # noqa: BLE001 附加策略不得影响既有扫描
         logger.warning(f"[scan] 三浪合并跳过（不影响既有扫描）: {str(e)[:100]}")
+
+
+def _index_result(d: Dict[str, Any]) -> Dict[str, Any]:
+    """W84：指数研判 → 兼容 scan_results 的结果 dict（落库 + Web/报告展示）。
+
+    不含 turn/行业/财务（指数为纯价格），is_index=True 标记，供落库与渲染
+    识别；candlestick 仅填 summary_daily/weekly 两段，复用既有形态列。
+    """
+    return {
+        "is_index": True,
+        "symbol": d.get("code", ""),
+        "name": d.get("name", ""),
+        "trade_date": d.get("date", ""),
+        "score": None,
+        "true_resonance": False,
+        "vap_atr_break": False,
+        "chip_low": False,
+        "price": d.get("close"),
+        "advice": "",
+        "candlestick": {
+            "summary_daily": d.get("candle_daily") or "—",
+            "summary_weekly": d.get("candle_weekly") or "—",
+            "period": "index", "lookback": 0, "n_bars": 0,
+            "enabled": [], "n_hits": 0, "hits": [], "direction": "—",
+        },
+        "index_analysis": d,
+    }
 
 
 def _resume_results(svc: AnalysisService, job_id: int,
@@ -804,6 +836,16 @@ def _persist_or_return(results: List[Dict[str, Any]], failed: int,
     """
     _attach_wave3(results, db=svc.market.db, client=svc.market,
                   progress_cb=progress_cb)
+    # W84：全量/全市场扫描把各大指数并入结果（落库 + 日报独立区块）。
+    # 自选/板块扫描不含指数（用户指定的个股池，混入宽基会污染池语义）。
+    if scan_type in ("market", "full"):
+        try:
+            from .index_analysis import analyze_major_indexes
+            for _d in analyze_major_indexes(svc.market):
+                results.append(_index_result(_d))
+        except Exception as e:  # noqa: BLE001 指数并入失败不影响个股扫描
+            logger.warning(f"[scan] 各大指数并入跳过（不影响既有扫描）: "
+                           f"{str(e)[:100]}")
     if progress_cb is not None:
         try:
             progress_cb(len(results), len(results), "收尾·写入扫描结果")

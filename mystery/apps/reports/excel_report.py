@@ -396,10 +396,13 @@ def excel_bytes(results: List[Dict[str, Any]]) -> bytes:
 
 
 def write_excel(results: List[Dict[str, Any]], path: str,
-                qa_line: Optional[str] = None) -> str:
+                qa_line: Optional[str] = None,
+                major_indexes: Optional[List[Dict[str, Any]]] = None) -> str:
     """单「汇总报告」页（含全部个股详情列 + 年线条件列）。返回写入路径。
 
     qa_line：W26b 换手覆盖率 QA，写入表格下方一行（只读观测，不加列、不改排序）。
+    major_indexes：W84 各大指数研判列表（analyze_major_indexes 产出），
+    非空时追加「各大指数」工作表（只读展示）。
     """
     import os
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -413,8 +416,51 @@ def write_excel(results: List[Dict[str, Any]], path: str,
         qa_line = ((qa_line + "\n") if qa_line else "") + w3_line
     if qa_line:
         _append_qa_row(path, qa_line)
+    # W84：各大指数分析独立工作表（只读展示，不改个股排序/列）。
+    if major_indexes:
+        _append_index_sheet(path, major_indexes)
     logger.info("✅ Excel 报告生成完成: %s（%d 只，单汇总页）", path, len(results))
     return path
+
+
+def _append_index_sheet(path: str, indexes: List[Dict[str, Any]]) -> None:
+    """W84：在报告末尾追加「各大指数」工作表（openpyxl 追加，失败不影响主体）。"""
+    try:
+        from openpyxl import load_workbook
+        from openpyxl.styles import Font
+        wb = load_workbook(path)
+        ws = wb.create_sheet("各大指数")
+        cols = ["指数", "代码", "最新收盘", "涨跌幅5日(%)", "涨跌幅20日(%)",
+                "年线位置", "MA排列", "日K形态", "周K形态"]
+        ws.append(cols)
+        for c in ws[1]:
+            c.font = Font(bold=True)
+        for d in indexes:
+            above = d.get("above_year")
+            dist = d.get("year_dist_pct")
+            year = ("站上年线" if above else "跌破年线") if above is not None \
+                else "未知"
+            if dist is not None:
+                year += f"({dist:+.1f}%)"
+            ma = d.get("ma_aligned")
+            ma_s = "多头排列" if ma else ("非多头" if ma is not None else "未知")
+            ws.append([
+                d.get("name", ""), d.get("code", ""),
+                d.get("close"), d.get("chg_5d"), d.get("chg_20d"),
+                year, ma_s,
+                (d.get("candle_daily") or "—"),
+                (d.get("candle_weekly") or "—"),
+            ])
+        # 列宽自适应（上限 40，日/周形态较长）
+        for col_idx, _ in enumerate(cols, 1):
+            letter = ws.cell(row=1, column=col_idx).column_letter
+            vals = [len(str(cols[col_idx - 1]))] + [
+                len(str(r.value)) for r in ws[ws.max_row]
+                if r.column == col_idx and r.value is not None]
+            ws.column_dimensions[letter].width = min(max(vals or [8]), 40)
+        wb.save(path)
+    except Exception as e:  # noqa: BLE001 指数表失败不阻塞报告
+        logger.warning("Excel 各大指数表写入失败（不影响报告主体）: %s", e)
 
 
 def _append_qa_row(path: str, qa_line: str) -> None:
