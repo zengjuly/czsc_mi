@@ -350,6 +350,25 @@ def _detail_flat(d: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def stock_detail_url(symbol: str, base_url: Optional[str] = None) -> str:
+    """W90：个股详情页 URL（Excel「名称」单元格超链接目标，base 可配置）。
+
+    - ``base_url`` 缺省依次取环境变量 ``MYSTERY_WEB_BASE_URL``、
+      ``http://127.0.0.1:18601/``；部署到公网后用环境变量覆盖即可。
+    - 系统详情页 query 直达只需 ``?stock=<symbol>``（view_stock 读取 stock，
+      无 nav_key 时独立查看），无需 nav_key/at 等会话参数——离线 xlsx 里的
+      时效 token 会过期，改用浏览器已登录会话（cookie）鉴权。
+    - symbol 做 URL 编码（保留 ``.``），base 是否已有 query 智能选 ``?``/``&``。
+    """
+    import os
+    from urllib.parse import quote
+    base = (base_url or os.environ.get("MYSTERY_WEB_BASE_URL")
+            or "http://127.0.0.1:18601/").strip()
+    sym = quote(str(symbol or "").strip(), safe=".")
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}stock={sym}"
+
+
 def _build_buffer(results: List[Dict[str, Any]]) -> "io.BytesIO":
     """生成 Excel 到内存 buffer（单「汇总报告」页，含全部个股详情列）。
 
@@ -384,11 +403,23 @@ def _build_buffer(results: List[Dict[str, Any]]) -> "io.BytesIO":
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="汇总报告", index=False)
         ws = writer.sheets["汇总报告"]
-        # 表头加粗 + 冻结首行，列宽取 表头/值 长度（上限 26，避免明细列无限撑宽）
+        # 表头加粗 + W90 冻结首行与名称列(A)，列宽取 表头/值 长度（上限 26）
         from openpyxl.styles import Font
         for cell in ws[1]:
             cell.font = Font(bold=True)
-        ws.freeze_panes = "A2"
+        ws.freeze_panes = "B2"
+        # W90：名称(A 列)单元格挂个股详情超链接（蓝色下划线）；代码(B 列)仍无
+        # 链接（W14 取消内部 sheet 跳转，既有回归 test_no_code_hyperlink 不变）。
+        for r in range(2, ws.max_row + 1):
+            name_cell = ws.cell(row=r, column=1)
+            sym = ws.cell(row=r, column=2).value
+            if name_cell.value is None or sym is None:
+                continue
+            sym = str(sym).strip()
+            if not sym or sym.lower() == "nan":
+                continue
+            name_cell.hyperlink = stock_detail_url(sym)
+            name_cell.font = Font(color="0563C1", underline="single")
         for col_idx, col in enumerate(df.columns, 1):
             letter = ws.cell(row=1, column=col_idx).column_letter
             max_len = max([len(str(col))] +

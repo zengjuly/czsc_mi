@@ -230,38 +230,90 @@ def _scan_table_data(rows: list, nav_key: str = "") -> list:
         table_data.append(item)
     return table_data
 
+import re as _re
+from urllib.parse import quote as _quote
+
+# W90：名称列详情链接的 display_text 正则。链接形如
+# "?stock=<symbol>&nav_key=<k>&nav_idx=<i>&at=<tok>&_n=<名称>"，用捕获组 1
+# 把股票名回显为链接文字（LinkColumn 的 display_text 支持正则，取首个捕获组）。
+# 仅用于展示，_n 不影响详情页 query 直达（stock.py 只读 stock/nav_key/nav_idx）。
+_NAME_DISPLAY_RE = r"[?&]_n=([^&]+)"
+# 只编码会破坏 URL 结构/正则的字符；中文原样保留，供 display_text 原样回显
+# （若整体 quote 中文，链接文字会变成 %XX 乱码）。
+_NAME_STRUCT_RE = _re.compile(r"[&#?=%\s]")
+
+
+def _name_link_rows(table_data: list) -> list:
+    """W90：把「详情」链接挂到「名称」列，移除独立「详情」列（纯函数）。
+
+    - 「名称」单元格值改为详情 URL，末尾附 ``&_n=<股票名>``；渲染时用
+      ``LinkColumn(display_text=_NAME_DISPLAY_RE)`` 把股票名回显为可点击文字，
+      实现「详情链接加到股票名称上」。
+    - 原「详情」列整体移除（不再单列显示），导航/鉴权参数原样保留在 URL。
+    - 名称里的中文**原样保留**（display_text 正则按原始字符串匹配回显），
+      仅对 ``& # ? = % 空白`` 等结构性字符做 URL 编码，不破坏 query 解析。
+    - 输入 ``table_data`` 不被修改（逐行浅拷贝），既有纯函数口径零改动。
+    """
+    out = []
+    for row in table_data:
+        d = dict(row)
+        url = d.pop('详情', None)
+        if url:
+            name = str(d.get('名称') or '未知')
+            label = _NAME_STRUCT_RE.sub(
+                lambda m: _quote(m.group(0), safe=''), name)
+            d['名称'] = f"{url}&_n={label}"
+        out.append(d)
+    return out
+
+
+def _scan_table_column_config() -> dict:
+    """W90：扫描结果表列配置（纯函数，便于单测，不触发任何 UI）。
+
+    - glide-data-grid 冻结的是「左侧连续前缀列」，名称是第 2 列，故把
+      「序号」一并 ``pinned``，保证名称稳定落在冻结区且保持既有列序。
+    - 「名称」为 ``LinkColumn``：详情 URL 挂在名称上，``display_text`` 正则
+      把股票名回显为可点击文字；``pinned=True`` 为 Streamlit ≥1.40 原生冻结。
+    - 不再配置独立「详情」列（该列已在 ``_name_link_rows`` 中移除）。
+    """
+    return {
+        '序号': st.column_config.Column('序号', pinned=True),
+        '名称': st.column_config.LinkColumn(
+            '名称',
+            pinned=True,
+            help='点击股票名称查看个股分析详情（本列已冻结）',
+            display_text=_NAME_DISPLAY_RE,
+        ),
+    }
+
+
 def _render_scan_table(rows: list, key: str = "scan"):
-    """扫描结果表格（代码可点击进入详情）+ 加入自选。
-    
-    「详情」列为超链接（?stock=<symbol>&nav_key=<nav_key>&nav_idx=<i>）；
-    LinkColumn 默认新标签页打开（全新 session，session_state 不共享），
-    因此导航列表存进程级缓存 _nav_cache_store（cache_resource 跨会话保留），
+    """扫描结果表格（股票名称可点击进入详情，名称列冻结）+ 加入自选。
+
+    W90：「名称」列为超链接（详情 URL 挂在名称上），并用 ``pinned=True``
+    冻结在最左侧（Streamlit ≥1.40 原生列冻结，横向滚动始终可见）；
+    独立「详情」列不再显示。LinkColumn 默认新标签页打开（全新 session，
+    session_state 不共享），因此导航列表存进程级缓存 _nav_cache_store，
     nav_key 为该缓存的随机 key，进入详情页按 nav_key 恢复导航。
     """
     st.caption(f"共 {len(rows)} 只（按分降序）")
     _w3_line = wave3_summary_line(rows)
     st.caption(_w3_line or "三浪主升：本任务未含该策略（重新扫描后自动合并）")
     st.caption(_market_env_line_cached())
-    
+
     # 存当前列表到进程级缓存（跨标签页/会话），供详情页恢复导航
     nav_key = _nav_cache_put(rows)
-    
-    # 构建表格数据
-    table_data = _scan_table_data(rows, nav_key=nav_key)
-    
-    # 显示表格
+
+    # 构建表格数据（纯函数字段不变）→ W90 渲染层把详情链接挂到名称列
+    table_data = _name_link_rows(_scan_table_data(rows, nav_key=nav_key))
+
+    # 显示表格：名称列 = 冻结 + 详情链接（display_text 正则回显股票名）
     df = st.dataframe(
         table_data,
         use_container_width=True,
         hide_index=True,
         key=f"{key}_table",
-        column_config={
-            '详情': st.column_config.LinkColumn(
-                '详情',
-                help='点击查看个股分析详情',
-                display_text='查看 →',
-            ),
-        }
+        column_config=_scan_table_column_config(),
     )
     
     # 为表格下方添加代码输入框，用于跳转详情
