@@ -259,9 +259,17 @@ def test_scan_table_shows_signal_flags():
     assert ("&at=" in data[0]['详情']) == (_load_cred_safe() is not None)
 
 
-def test_bg_store_persists_across_rerun():
+def test_bg_store_persists_across_rerun(monkeypatch, tmp_path):
     """后台任务仓库跨 rerun 持久（st.cache_resource，非模块级 dict）。"""
     m = _app_mod()
+    # W91：隔离 _service 到临时库，避免 _bg_launch 把「测试任务」写进生产台账。
+    # _bg_launch 定义在 components 模块，其 _service 解析到 components 全局，
+    # 故须 patch mystery.apps.web.views.components._service（而非 app._service）。
+    from types import SimpleNamespace
+    import mystery.apps.web.views.components as _comp
+    monkeypatch.setattr(_comp, "_service", lambda: SimpleNamespace(
+        market=SimpleNamespace(
+            db=SimpleNamespace(db_path=str(tmp_path / "smoke_web.db")))))
     _bg_store, _bg_lock, _bg_tasks, _bg_launch = m._bg_store, m._bg_lock, m._bg_tasks, m._bg_launch
     # 第一次"rerun"：启动一个 fake 任务并完成
     s1, l1, t1, launch = _bg_store, _bg_lock, _bg_tasks, _bg_launch

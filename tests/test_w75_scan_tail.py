@@ -37,6 +37,12 @@ def _clean_env(monkeypatch, tmp_path):
                         tmp_path / "scan_wave3_override.json")
     # 取数直接返回 None → items 空、矩阵空，仅验证限流/调度逻辑，秒级完成
     monkeypatch.setattr(ws, "_daily_from_db", lambda db, sym: None)
+    # W91：隔离 _service 到临时库——_bg_launch 新/旧路径都会经
+    # `_service().market.db.db_path` 写 bg_task_log 台账；不隔离会把
+    # 「全部股票 done=10/10 无结果」的测试痕迹写进生产库（曾污染 40+ 行）。
+    monkeypatch.setattr(comp, "_service", lambda: SimpleNamespace(
+        market=SimpleNamespace(
+            db=SimpleNamespace(db_path=str(tmp_path / "w75_web.db")))))
 
 
 def _rows(n, score_base=100.0):
