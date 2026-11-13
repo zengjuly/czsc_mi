@@ -261,15 +261,57 @@ def _print_db_fingerprint() -> None:
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
+    """W88：带 ``--bg-task-id`` 时把进度/终态写 ``bg_task_log`` 台账。
+
+    Web 后台按钮改为拉起独立 CLI 进程，页面只读台账渲染进度；CLI 自己负责
+    心跳与终态，避免 Web 重启后 daemon 线程消失、台账永远停在 running。
+    无该参数时行为与旧版完全一致（直接委托 body）。
+    """
+    tid = getattr(args, "bg_task_id", None)
+    if not tid:
+        return _cmd_scan_body(args)
+    import time
+    from ..services import bg_task_log as _btl
+
+    db_path = _btl.db_path_of(getattr(args, "cfg", None))
+    state = {"ts": 0.0, "done": -1}
+
+    def _progress(done, total, stage="") -> None:
+        # 与 components._bg_launch 同节流：5 秒或每 50 只写一次，短事务不拖慢扫描
+        now = time.time()
+        if now - state["ts"] >= 5.0 or done - state["done"] >= 50:
+            state["ts"], state["done"] = now, done
+            _btl.log_progress(db_path, tid, done, total, stage)
+
+    _btl.log_progress(db_path, tid, 0, 0, "启动·独立扫描进程")
+    holder: list = []
+    nres: list = []
+    try:
+        rc = _cmd_scan_body(args, progress_cb=_progress,
+                            job_holder=holder, result_holder=nres)
+    except BaseException as e:  # noqa: BLE001 台账只记，不改变原有退出行为
+        _btl.log_finish(db_path, tid, "error", error=str(e)[:300])
+        raise
+    _btl.log_finish(db_path, tid, "done",
+                    job_id=(holder[0] if holder else None),
+                    n_results=(nres[0] if nres else 0))
+    return rc
+
+
+def _cmd_scan_body(args: argparse.Namespace, *,
+                   progress_cb=None, job_holder=None,
+                   result_holder=None) -> int:
     """处理 `czsc-mi scan`：全市场/自选/板块扫描并落 scan_jobs/scan_results；W69 起结果合并三浪主升结论并输出组合总风险；可选 --report 生成日报、--signal 过滤；末尾做 suffix_orphans 硬失败检查。"""
     from ..core.scan_signals import filter_by_signal
     from ..services import watchlist as _wl
     from ..services.scan import scan_market
 
     _print_db_fingerprint()
-    # --watchlist 自选扫描默认不设 limit（全自选）；全市场防呆默认 100
+    # --watchlist 自选扫描默认不设 limit（全自选）；--market 全市场不限只数；
+    # 其余全市场防呆默认 100（W88：Web 后台按钮走 --market 才能扫全 5579 只）
     if args.limit is None:
-        args.limit = None if args.watchlist else 100
+        args.limit = None if (args.watchlist
+                             or getattr(args, 'market', False)) else 100
     watchlist = _wl.load_watchlist() if args.watchlist else None
     board = getattr(args, 'board', None)
     if board:
@@ -281,7 +323,11 @@ def _cmd_scan(args: argparse.Namespace) -> int:
                           watchlist=watchlist, board=board,
                           force=getattr(args, 'force', False),
                           auto_sync=not getattr(args, 'no_auto_sync', False),
-                          resume=getattr(args, 'resume', False))
+                          resume=getattr(args, 'resume', False),
+                          progress_cb=progress_cb,
+                          job_holder=job_holder)
+    if result_holder is not None:
+        result_holder.append(len(results))
     if args.report and results:
         _write_scan_report(results, args)
     # W69：组合摘要基于过滤前的完整结果（与日报 / Web 同口径）
@@ -774,6 +820,12 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--resume", action="store_true",
                    help="断点续跑：复用同 scan_type+交易日 的最近 job，"
                         "跳过已完成个股，按 chunk 增量落库（崩溃可二次续跑）")
+    p.add_argument("--market", action="store_true",
+                   help="W88：全市场不限只数（取消 --limit 默认 100 的防呆；"
+                        "Web 后台「扫描全部股票」走此参数）")
+    p.add_argument("--bg-task-id", default=None,
+                   help="W88：Web 后台任务台账 id；传入后 CLI 自行写进度/终态，"
+                        "供页面跨进程渲染（普通命令行无需设置）")
     p.set_defaults(func=_cmd_scan)
 
     p = sub.add_parser("sync", help="行情同步（断点续跑，支持多周期）")

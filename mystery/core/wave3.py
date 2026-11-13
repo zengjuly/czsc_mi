@@ -808,30 +808,40 @@ def evaluate(daily: Any, weekly: Any = None, monthly: Any = None, *,
     return a
 
 
-def evaluate_portfolio(items: List[Dict[str, Any]], *, equity: float,
+def evaluate_portfolio(items: Optional[List[Dict[str, Any]]] = None, *,
+                       equity: float,
                        risk_pct: float = 0.01,
                        returns_by_symbol: Optional[Dict[str, Any]] = None,
                        corr: Any = None, strict: bool = False,
                        lot_size: int = 100,
                        max_position_pct: Optional[float] = None,
                        max_total_risk_pct: float = MAX_PORTFOLIO_RISK_PCT,
-                       high_corr: float = HIGH_CORR) -> Dict[str, Any]:
+                       high_corr: float = HIGH_CORR,
+                       evaluated: Optional[List[Dict[str, Any]]] = None
+                       ) -> Dict[str, Any]:
     """组合层编排：逐票评估 → 筛候选 → 相关性 → 组合总风险 → 等比缩放仓位。
 
     ``items`` 每项为 ``{'symbol','name','daily','weekly','monthly'}``。
     只对 ``verdict == '候选'`` 的标的占用风险预算；``scale_down`` 后按整手
     重算实际仓位与风险额，避免「多只高相关标的各自合规、合计超风险」。
+
+    W88 流式路径：调用方可改传 ``evaluated``（**已逐票 evaluate 过的
+    assessment 列表**）跳过「持有完整 K 线的 items → 逐票重算」这一步，
+    组合层（筛候选 / 相关性 / 风险 / 等比缩放仓位）仍是**同一段代码**，
+    且会对传入的全部 assessment 原地重算 scale_down 后的仓位，因此结论
+    与旧全量路径逐字段一致。内存优化在调用方：K 线用完即释放。
     """
-    evaluated: List[Dict[str, Any]] = []
-    for it in items or []:
-        a = evaluate(it.get("daily"), it.get("weekly"), it.get("monthly"),
-                     equity=equity, risk_pct=risk_pct,
-                     symbol=str(it.get("symbol") or ""),
-                     name=str(it.get("name") or ""),
-                     params=it.get("params"), strict=strict,
-                     lot_size=lot_size,
-                     max_position_pct=max_position_pct)
-        evaluated.append(a)
+    if evaluated is None:
+        evaluated = []
+        for it in items or []:
+            a = evaluate(it.get("daily"), it.get("weekly"), it.get("monthly"),
+                         equity=equity, risk_pct=risk_pct,
+                         symbol=str(it.get("symbol") or ""),
+                         name=str(it.get("name") or ""),
+                         params=it.get("params"), strict=strict,
+                         lot_size=lot_size,
+                         max_position_pct=max_position_pct)
+            evaluated.append(a)
     candidates = [a for a in evaluated if a["verdict"] == "候选"]
 
     corr_info = corr

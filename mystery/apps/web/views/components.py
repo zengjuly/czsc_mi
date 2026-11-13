@@ -92,13 +92,20 @@ def _bg_tasks() -> dict:
 _BG_STALE_SECONDS = 600.0
 
 
-def _bg_launch(label: str, fn) -> str:
+def _bg_launch(label: str, fn=None, *, scan_kind=None,
+               scan_type: str = "") -> str:
     """启动后台扫描任务。fn(cb, job_holder) -> rows（cb(done,total,stage) 报进度）。
 
     W77：任务启动 / 进度 / 终态同步写入生产库 ``bg_task_log`` 台账。此前记录
     只在内存字典里，服务重启、跨会话、W75 清除卡住任务后全部消失；失败
     （并发锁拒绝、线程被重启打断）更是不留任何痕迹，用户「最近任务」看不到。
     台账写入全部经 bg_task_log 异常硬隔离，绝不影响扫描本身。
+
+    W88：``scan_kind`` 非 None 时改为拉起**独立 CLI 进程**
+    （``scan_launcher.launch`` → ``systemd-run --user`` transient unit），
+    扫描脱离 Web 生命周期：Web 重启 / OOM 不影响它，CLI 用 ``--resume``
+    按 chunk 增量落库，进度/终态由 CLI 自己写台账，页面跨进程可读。
+    ``fn`` 的线程路径保留兼容（小任务 / 回归测试），行为完全不变。
     """
     from mystery.services import bg_task_log as _btl
     tid = uuid.uuid4().hex[:8]
@@ -110,7 +117,29 @@ def _bg_launch(label: str, fn) -> str:
                       "done": 0, "total": 0, "stage": "", "job_id": None,
                       "results": [], "error": "", "created": now,
                       "updated": now, "_refreshed": False}
-    _btl.log_start(db_path, tid, label, created=now)
+    _btl.log_start(db_path, tid, label, created=now, scan_type=scan_type)
+
+    if scan_kind is not None:
+        # W88：独立进程路径，不再在 Web 进程内起 daemon 线程承载全量扫描。
+        from mystery.services import scan_launcher
+        try:
+            info = scan_launcher.launch(db_path, tid, scan_kind)
+            with lock:
+                t = tasks.get(tid)
+                if t:
+                    t["launch"] = info
+            return tid
+        except Exception as e:  # noqa: BLE001 启动失败也要在台账留痕
+            err = f"启动独立扫描进程失败：{str(e)[:180]}"
+            with lock:
+                t = tasks.get(tid)
+                if t:
+                    t["status"] = "error"
+                    t["error"] = err
+                    t["updated"] = time.time()
+            _btl.log_finish(db_path, tid, "error", error=err)
+            logger.warning("[bg] %s", err)
+            return tid
     # 进度写库节流：逐票回调可达数千次，每 5 秒或每 50 只才 UPDATE 一次，
     # 避免短事务拖慢全市场扫描；终态由 log_finish 兜底，不会丢最后一次。
     _last_log = {"ts": 0.0, "done": -1}
@@ -158,53 +187,70 @@ def _bg_launch(label: str, fn) -> str:
     threading.Thread(target=_run, daemon=True).start()
     return tid
 
+def _ts_of(s, fallback: float) -> float:
+    """台账 ISO 时间串 → epoch 秒；解析失败回退（不阻断页面）。"""
+    try:
+        return datetime.fromisoformat(str(s)).timestamp()
+    except Exception:
+        return fallback
+
+
 @st.fragment(run_every=2.0)
 def _bg_running_fragment():
     """运行中后台任务进度（每 2 秒自动刷新）。
 
-    W75：区分「逐票扫描」「收尾阶段」「疑似失联」三种态；失联态提供清除按钮，
-    避免 W69 三浪收尾卡顿 / 进程重启残留导致进度条永远停在 100%。
-    W77：检测到内存任务刚进入终态时触发一次全页刷新，让同页「最近扫描
-    任务与结果」下拉立即出现新 job（此前 fragment 只刷进度条，完成态与
-    下拉列表都不更新，用户以为记录没生成）。
+    W75：区分「逐票扫描」「收尾阶段」「疑似失联」三种态；失联态提供清除按钮。
+    W77：终态出现时触发一次全页刷新，让「最近扫描任务与结果」下拉立即出现
+    新 job。
+    W88：**进度改读生产库 ``bg_task_log`` 台账**——独立 CLI 进程把心跳写到
+    库里，Web 进程的内存字典没有它的进度；只读台账才能跨进程 / 跨会话可见，
+    Web 重启后任务仍在跑也能继续显示，不再假装「没有任务」。
     """
     from mystery.services import bg_task_log as _btl
+    db_path = _service().market.db.db_path
     now = time.time()
-    with _bg_lock():
-        rt = sorted([t for t in _bg_tasks().values() if t["status"] == "running"],
-                    key=lambda t: t["created"], reverse=True)
-    for t in rt:
-        pct = (t["done"] / t["total"]) if t["total"] else 0.0
-        stage = t.get("stage") or ""
-        idle = now - (t.get("updated") or t["created"])
+    logs = _btl.recent(db_path, limit=20)
+    running = [r for r in logs if r.get("status") == "running"]
+    for r in running:
+        done = int(r.get("done") or 0)
+        total = int(r.get("total") or 0)
+        pct = (done / total) if total else 0.0
+        stage = r.get("stage") or ""
+        tid = r.get("id")
+        idle = now - _ts_of(r.get("updated_at") or r.get("created_at"), now)
         if idle > _BG_STALE_SECONDS:
-            st.warning(f"⚠️ {t['label']} 已 {int(idle)} 秒无进度更新，疑似失联/卡住。"
-                       f"可清除后重试（大池收尾已自动限流，正常扫描约 2 分钟）。")
-            if st.button("清除该卡住的任务", key=f"bg_clear_{t['id']}"):
+            st.warning(f"⚠️ {r['label']} 已 {int(idle)} 秒无进度更新，疑似失联/卡住。"
+                       f"可清除后重试（独立进程扫描不随 Web 重启中断）。")
+            if st.button("清除该卡住的任务", key=f"bg_clear_{tid}"):
                 with _bg_lock():
-                    tk = _bg_tasks().pop(t["id"], None)
+                    tk = _bg_tasks().pop(tid, None)
                     if tk is not None:
                         tk["status"] = "cleared"
-                _btl.log_finish(_service().market.db.db_path, t["id"],
-                                "cleared", error="页面手动清除（疑似失联）")
+                _btl.log_finish(db_path, tid, "cleared",
+                                error="页面手动清除（疑似失联）")
                 st.rerun()
             continue
-        if stage:
-            # 收尾阶段：显示阶段文字 + 独立刻度，不再用「100% 运行中」误导
-            st.progress(min(1.0, pct),
-                        text=f"⏳ {t['label']} · {stage} {t['done']}/{t['total']}（自动刷新）")
-        else:
-            st.progress(min(1.0, pct),
-                        text=f"⏳ {t['label']} 运行中 {t['done']}/{t['total']}（自动刷新）")
+        text = (f"⏳ {r['label']} · {stage} {done}/{total}（自动刷新）"
+                if stage else
+                f"⏳ {r['label']} 运行中 {done}/{total}（自动刷新）")
+        st.progress(min(1.0, pct), text=text)
 
-    # W77：终态出现时只刷新一次全页（打标记防 fragment 2s 循环 rerun）。
+    # W77/W88：终态出现时只刷新一次全页（打标记防 fragment 2s 循环 rerun）。
+    # 内存态覆盖旧的 fn 线程路径；台账态覆盖 W88 独立 CLI 进程。
     with _bg_lock():
-        fresh = [t["id"] for t in _bg_tasks().values()
-                 if t["status"] in ("done", "error", "cleared")
-                 and not t.get("_refreshed")]
-        for tid in fresh:
+        fresh_mem = [t["id"] for t in _bg_tasks().values()
+                     if t["status"] in ("done", "error", "cleared")
+                     and not t.get("_refreshed")]
+        for tid in fresh_mem:
             _bg_tasks()[tid]["_refreshed"] = True
-    if fresh:
+    seen = st.session_state.setdefault("_bg_seen_terminal", set())
+    fresh_log = []
+    for r in logs:
+        if (r.get("status") in ("done", "error", "interrupted", "cleared")
+                and r.get("id") not in seen):
+            seen.add(r["id"])
+            fresh_log.append(r["id"])
+    if fresh_mem or fresh_log:
         st.rerun()
 
 def _recent_jobs(limit: int = 50) -> list:
@@ -311,19 +357,25 @@ def _render_bg_tasks():
     with _bg_lock():
         tasks = sorted(_bg_tasks().values(), key=lambda t: t["created"],
                        reverse=True)
-    # 内存态：运行中进度（fragment 自动刷新）+ 完成/失败提示 + 查看结果。
-    # 台账历史为空且内存也为空时才显示「暂无后台任务」。
-    if tasks:
-        _bg_running_fragment()
-        for t in tasks:
-            if t["status"] == "done":
-                st.success(f"✅ {t['label']} 完成：{len(t['results'])} 只"
-                           f"（job #{t['job_id']}）")
-                if st.button(f"查看结果（{t['label']}）", key=f"bg_view_{t['id']}"):
-                    st.session_state['bg_view_id'] = t['id']
-                    st.rerun()
-            elif t["status"] == "error":
-                st.error(f"❌ {t['label']} 失败：{t['error'][:120]}")
+    # W88：fragment 无条件渲染——进度来自台账，独立 CLI 进程不写内存字典，
+    # 页面刷新 / Web 重启后仍能看到仍在跑的扫描。
+    _bg_running_fragment()
+    for t in tasks:
+        if t["status"] == "done":
+            st.success(f"✅ {t['label']} 完成：{len(t['results'])} 只"
+                       f"（job #{t['job_id']}）")
+            if st.button(f"查看结果（{t['label']}）", key=f"bg_view_{t['id']}"):
+                st.session_state['bg_view_id'] = t['id']
+                st.rerun()
+        elif t["status"] == "error":
+            st.error(f"❌ {t['label']} 失败：{t['error'][:120]}")
+    # W88：独立进程完成后内存里没有 results，指引到下方按 job_id 查看落库结果。
+    latest_done = next((r for r in logs
+                        if r.get("status") == "done" and r.get("job_id")), None)
+    if latest_done:
+        st.caption(f"最近完成：{latest_done.get('label') or '-'} · "
+                   f"job #{latest_done['job_id']}（在下方「最近扫描任务与结果」"
+                   f"选择该 job 查看全量落库结果）")
     view_id = st.session_state.get('bg_view_id')
     if view_id:
         with _bg_lock():

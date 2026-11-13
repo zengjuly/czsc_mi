@@ -300,6 +300,12 @@ def attach_wave3_to_results(results: List[Dict[str, Any]],
     阶段不更新进度心跳，页面表现为「一直卡在最后」。自动限流把超大池
     收尾压到秒级，core 零改动、不触碰评分/信号语义。
 
+    W88：改为**流式逐票评估**——每只票取数/评估后立即释放完整日周月 K，
+    只保留精简 assessment，再由 ``evaluate_portfolio(evaluated=...)`` 统一
+    做组合层。因此 ``MAX=0`` 强制全量 5579 只也不再爆内存，且组合层同一段
+    代码、逐字段口径不变；自动限流从此只是「想省时间」的可选项，不再是
+    避免 OOM 的必需手段。
+
     :return: 组合摘要 dict（关闭 / 无结果 / 异常时 ``enabled=False``）。
     """
     off: Dict[str, Any] = {"enabled": False, "scanned": 0, "candidates": 0}
@@ -328,7 +334,10 @@ def attach_wave3_to_results(results: List[Dict[str, Any]],
     else:
         trigger = _env_int("MYSTERY_SCAN_WAVE3_AUTO_TRIGGER", 500)
         auto_max = _env_int("MYSTERY_SCAN_WAVE3_AUTO_MAX", 200)
-        if len(results) > trigger and auto_max > 0:
+        # W88：auto_max >= 池大小时「取前 N 只」等于全量，不应标成限流。
+        # 线上曾把 AUTO_TRIGGER/AUTO_MAX 都设成 5600 而池只有 5580，
+        # 旧判断虽未限流却误报 auto_limited=True（UI 显示「仅评估前 5600 只」）。
+        if len(results) > trigger and 0 < auto_max < len(results):
             max_n = auto_max
             auto_limited = True
             cap_reason = "auto"
@@ -352,11 +361,17 @@ def attach_wave3_to_results(results: List[Dict[str, Any]],
         import warnings
         _client = client or MarketDataClient(cfg)
         _db = db or _client.db
-        items: List[Dict[str, Any]] = []
-        returns_by_symbol: Dict[str, Any] = {}
+        # W88 流式逐票评估：任意时刻只在内存保留「一只票」的日/周/月 K，
+        # 评完立即释放大对象，只留下 KB 级 assessment；收益序列只为候选保留。
+        # 此前把 5579 只完整 K 线全堆进 items 再一次性交给 evaluate_portfolio，
+        # 峰值内存数 GB，是 11-10 / 11-11 / 11-12 三次全量扫描卡死在
+        # 「收尾·三浪主升评估」的决定性原因。组合层仍走同一个函数，口径零变化。
+        assessments: List[Dict[str, Any]] = []
+        cand_returns: Dict[str, Any] = {}
         row_by_sym: Dict[str, Dict[str, Any]] = {}
         status: Dict[str, str] = {}
         n_picked = len(picked)
+        n_loaded = 0
         for k, i in enumerate(picked):
             # W75：收尾阶段逐票上报，使页面进度条不再停在 100% 空转。
             # 上报的是「收尾」独立刻度（不与逐票扫描的 total 混用）。
@@ -372,6 +387,8 @@ def attach_wave3_to_results(results: List[Dict[str, Any]],
             except Exception:
                 sym = raw
             row_by_sym[sym] = d
+            daily = daily_rec = weekly = weekly_rec = None
+            monthly = monthly_rec = assessment = None
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
@@ -385,22 +402,45 @@ def attach_wave3_to_results(results: List[Dict[str, Any]],
                     continue
                 weekly = _client.resample_bars(daily, "1w")
                 monthly = _client.resample_bars(daily, "1M")
-            except Exception as e:  # 单票取数失败不中断整轮
+                weekly_rec = _records(weekly)
+                monthly_rec = _records(monthly)
+                assessment = wave3.evaluate(
+                    daily_rec, weekly_rec, monthly_rec,
+                    equity=eq, risk_pct=rp, symbol=sym,
+                    name=str(d.get("name") or ""), strict=strict)
+                # 完整 assessment 保留（约 KB 级/票，5579 只合计百 MB 内），
+                # 交给组合层统一重算 scale_down 后的仓位，保证逐字段同口径。
+                assessments.append(assessment)
+                n_loaded += 1
+                if assessment["verdict"] == "候选":
+                    # 收益序列只为候选保留（相关性矩阵只统计候选），非候选的
+                    # 数千个日期 dict 不再白白堆在内存里。
+                    cand_returns[sym] = _returns(daily_rec)
+            except Exception as e:  # 单票取数/评估失败不中断整轮
                 status[sym] = str(e)[:80]
                 continue
-            items.append({
-                "symbol": sym, "name": str(d.get("name") or ""),
-                "daily": daily_rec, "weekly": _records(weekly),
-                "monthly": _records(monthly),
-            })
-            returns_by_symbol[sym] = _returns(daily_rec)
+            finally:
+                # 显式断开大对象引用：CPython 引用计数立即释放本票 K 线，
+                # 峰值内存不再随股票池线性增长（5579×~1MB → 单票 ~1MB）。
+                daily = daily_rec = weekly = weekly_rec = None
+                monthly = monthly_rec = assessment = None
 
+        # 组合层只记日志，不再额外发一次 progress_cb：W75 既有契约是
+        # 「收尾逐票回调恰好 picked 次、stage 恒为三浪评估」，新增阶段回调会
+        # 打破该契约（也让 600 只自动限流用例的 200 次断言失败）。流式逐票
+        # 评估本身已持续上报心跳，不会 600s 静默，无需额外阶段上报。
+        logger.info(f"[wave3] W88 流式收尾：{n_loaded}/{n_picked} 只已评估，"
+                    f"候选 {len(cand_returns)} 只进入组合风险合成（K 线逐票释放）")
+        # 组合层传入已评估的 assessment 列表（不含 K 线大对象），仍走同一个
+        # evaluate_portfolio：筛候选 / 相关性 / 风险 / 等比缩放逐字段同口径，
+        # 且被注入异常时（W69 全局降级回归）仍走同一个异常边界、行为一致。
         res = wave3.evaluate_portfolio(
-            items, equity=eq, risk_pct=rp,
-            returns_by_symbol=returns_by_symbol, strict=strict)
+            evaluated=assessments,
+            equity=eq, risk_pct=rp, returns_by_symbol=cand_returns,
+            strict=strict)
         summary = _wave3_portfolio_summary(res)
         summary.update({"enabled": True, "strict": strict,
-                        "requested": len(picked), "loaded": len(items),
+                        "requested": len(picked), "loaded": n_loaded,
                         "failed": len(status),
                         # W75：限流可观测——UI/日报/日志能看出本轮是自动限流
                         "auto_limited": auto_limited, "cap_reason": cap_reason,
@@ -412,7 +452,8 @@ def attach_wave3_to_results(results: List[Dict[str, Any]],
                 f"按分降序前 {max_n} 只（其余标未评估），避免收尾卡顿；"
                 f"设 MYSTERY_SCAN_WAVE3_MAX=0 可强制全量")
 
-        # 全部算完再统一赋值：中途异常不会污染部分行
+        # 全部算完再统一赋值：中途异常不会污染部分行。evaluate_portfolio
+        # 已对所有 assessment 原地重算 scale_down 后的仓位（含非候选置零）。
         compact_by_sym = {a["symbol"]: _wave3_compact(a)
                           for a in res.get("results", [])}
         assigns: List[tuple] = []

@@ -76,8 +76,8 @@ _MAINWAVE_DISP = [
 
 def view_scan():
     st.header("全市场扫描")
-    st.caption("后台扫描不阻塞页面：任务在后台线程执行，结果自动落库（scan_jobs），"
-               "可随时回到本页/系统状态查看。")
+    st.caption("后台扫描在独立进程中执行（脱离 Web 生命周期，刷新/重启页面都不会中断），"
+               "结果按 chunk 增量落库（scan_jobs），实时进度见下方后台任务台账。")
     c1, c2, c3 = st.columns(3)
     with c1:
         limit = st.number_input("前台快速扫描只数", 1, 5000, 100)
@@ -99,20 +99,17 @@ def view_scan():
     st.subheader("后台扫描任务")
     b1, b2 = st.columns(2)
     if b1.button("🚀 后台扫描全部股票", type="primary", use_container_width=True):
-        _bg_launch("全部股票",
-                   lambda cb, holder: scan_market(include_detail=True,
-                                                  progress_cb=cb,
-                                                  job_holder=holder))
+        # W88：不再在 Web 进程内起 daemon 线程；拉起独立 CLI（--market
+        # --resume），全 5579 只逐票增量落库，三浪全量评估也不占 Web 内存。
+        _bg_launch("全部股票", scan_kind="market", scan_type="market")
         st.rerun()
     if b2.button("🚀 后台扫描全部自选股", use_container_width=True):
         wl = _wl.load_watchlist()
         if not wl:
             st.warning("自选股为空，先到「自选股」页添加")
         else:
-            _bg_launch(f"全部自选股({len(wl)})",
-                       lambda cb, holder, _wl=wl: scan_market(
-                           watchlist=_wl, include_detail=True,
-                           progress_cb=cb, job_holder=holder))
+            _bg_launch(f"全部自选股({len(wl)})", scan_kind="watchlist",
+                       scan_type="watchlist")
             st.rerun()
     _render_bg_tasks()
 
