@@ -621,6 +621,29 @@ def _scan_market_impl(limit: Optional[int] = None,
         if note:
             logger.info(f"[scan] {note}")
 
+    # W89：全市场大池改走「阶段化流式流水线」——大盘→板块→个股，每 10 只
+    # 一批 INSERT OR REPLACE 落盘（幂等、可续跑），批对象随即释放；组合层用
+    # KB 级 assessment 合成后 json_set 回填，全程不读回 payload。
+    # 小池 / 自选 / 板块 / no_persist / 三浪限流口径一律保持旧路径（零回归）。
+    _w89 = False
+    try:
+        from .streaming_scan import streaming_enabled, run_streaming_scan
+        _w89 = streaming_enabled(scan_type=scan_type, watchlist=watchlist,
+                                 universe=universe, no_persist=no_persist,
+                                 n_codes=len(codes))
+    except ImportError:
+        logger.warning("[scan] W89 流式模块不可用，回退既有扫描路径")
+    except Exception as e:  # noqa: BLE001 仅分流检查容错，异常不吞扫描
+        logger.warning(f"[scan] W89 流式分流检查失败，回退旧路径: {str(e)[:100]}")
+    if _w89:
+        # 执行不再包 try：流水线内部各阶段已硬隔离，若真出现未预期异常应
+        # 直接抛出（CLI 台账记 error），避免静默回退旧路径把 5579 只重扫一遍。
+        return run_streaming_scan(
+            svc=svc, codes=codes, scan_type=scan_type, cfg=cfg,
+            meta=_scan_meta, progress_cb=progress_cb,
+            include_detail=include_detail, min_score=min_score,
+            resume=resume, job_holder=job_holder)
+
     # W15：全市场扫描并行（对齐 daily W11/W13）。实测单只 ~0.9s，5222 只
     # 串行 ~80min；ThreadPool 受 GIL 限制几乎无收益（32 只 29.7s vs 串行 29.3s），
     # 进程池实测 2x（32 只 14.6s）——多进程各自独立 GIL。
