@@ -563,7 +563,10 @@ class AnalysisService:
         # 010.md 6C：混合分路径（结构开+分开关）用新规则口径 ver；分关不变
         mix = chan_enabled() and chan_score_enabled()
         rule = RULE_VER_CHAN if mix else RULE_VER
-        if use_cache and cache_allowed(daily):
+        # W94/D：回放模式不读也不写分析缓存 —— 回放会写入「历史 trade_date」
+        # 的缓存行，虽不覆盖当日结果，但会往生产缓存表塞入回放数据。
+        _asof_mode = bool(getattr(self.market, 'as_of', ''))
+        if use_cache and cache_allowed(daily) and not _asof_mode:
             try:
                 from ..store.cache import AnalysisCache, make_cache_key
                 from ..adapters.czsc_adapter import czsc_version

@@ -661,11 +661,17 @@ def _scan_market_impl(limit: Optional[int] = None,
     # 默认（resume=False）行为完全不变。
     resume_job_id = None
     if resume and not no_persist:
-        try:
-            from ..adapters.calendar import get_latest_trade_date
-            _td = get_latest_trade_date() or ""
-        except Exception:
-            _td = ""
+        # W94/D：回放复用 as_of 作为 resume 交易日键，避免把历史回放
+        # 挂到当日正式 job 上（否则 --resume 会串到今天的台账）。
+        _as_of = getattr(svc.market, "as_of", "") or ""
+        if _as_of:
+            _td = _as_of
+        else:
+            try:
+                from ..adapters.calendar import get_latest_trade_date
+                _td = get_latest_trade_date() or ""
+            except Exception:
+                _td = ""
         resume_job_id, _done = _open_resume_job(
             svc.market.db, scan_type, _td)
         if _done:
@@ -861,7 +867,9 @@ def _persist_or_return(results: List[Dict[str, Any]], failed: int,
                   progress_cb=progress_cb)
     # W84：全量/全市场扫描把各大指数并入结果（落库 + 日报独立区块）。
     # 自选/板块扫描不含指数（用户指定的个股池，混入宽基会污染池语义）。
-    if scan_type in ("market", "full"):
+    # W94/D：历史回放（scan_type='replay'）也并入 —— 指数经同一 as_of
+    # 截断的 MarketDataClient 读取，回放报告能展示「当日」大盘研判。
+    if scan_type in ("market", "full", "replay"):
         try:
             from .index_analysis import analyze_major_indexes
             for _d in analyze_major_indexes(svc.market):

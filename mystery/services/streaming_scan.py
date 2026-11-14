@@ -89,7 +89,10 @@ def streaming_enabled(*, scan_type: str, watchlist, universe,
         return False
     if watchlist or universe is not None:
         return False
-    if scan_type not in ("market", "full"):
+    # W94/D：历史回放（--as-of）用独立 scan_type='replay'，同样必须走
+    # 流式分批落盘，否则全市场 5579 只堆内存有 OOM 风险（用户明确要求
+    # 「无论如何都不应该 OOM」）。replay 台账与 market 互相独立、互不清理。
+    if scan_type not in ("market", "full", "replay"):
         return False
     if n_codes < _env_int(STREAM_MIN_ENV, STREAM_MIN_DEFAULT):
         return False
@@ -554,10 +557,16 @@ class StreamingScan:
 
     def run(self) -> List[Dict[str, Any]]:
         from ..adapters.calendar import get_latest_trade_date
-        try:
-            td = get_latest_trade_date() or ""
-        except Exception:  # noqa: BLE001
-            td = ""
+        # W94/D：回放以 as_of 为 job 的 trade_date（历史截面），不用今天；
+        # 这样台账里能一眼区分「哪一天的回放」，且不占用当日正式 job。
+        _as_of = getattr(self.client, "as_of", "") or ""
+        if _as_of:
+            td = _as_of
+        else:
+            try:
+                td = get_latest_trade_date() or ""
+            except Exception:  # noqa: BLE001
+                td = ""
         if self.resume:
             self.job_id, done = _scan._open_resume_job(
                 self.db, self.scan_type, td)

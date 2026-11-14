@@ -458,7 +458,8 @@ def index_payloads(rows: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]
 
 def excel_bytes(results: List[Dict[str, Any]], *,
                 major_indexes: Optional[List[Dict[str, Any]]] = None,
-                focus_sectors: Optional[List[Dict[str, Any]]] = None) -> bytes:
+                focus_sectors: Optional[List[Dict[str, Any]]] = None,
+                resonance_diag: Optional[Dict[str, Any]] = None) -> bytes:
     """Web 下载用：AnalysisResult 列表 → xlsx bytes（格式同 write_excel）。
 
     W92：新增 ``major_indexes`` / ``focus_sectors`` 两个可选参数，非空时在
@@ -470,9 +471,13 @@ def excel_bytes(results: List[Dict[str, Any]], *,
     汇总表，上百列全空。现在由 Web 视图层把指数行分离、现算板块后传入。
 
     两个参数都为空时行为与 W91 及之前完全一致（零回归，W90 测试直接覆盖）。
+
+    W94/B：``resonance_diag`` 非空时追加「三振诊断」工作表（六门闩逐条
+    + 大盘腿快照 + 口径阶段差），与 CLI 日报 ``write_excel`` 共用同一
+    ``_fill_diag_sheet`` 填充函数，四条链路（Web下载/日报/页面/HTML）同口径。
     """
     buf = _build_buffer(results)
-    if not major_indexes and not focus_sectors:
+    if not major_indexes and not focus_sectors and not resonance_diag:
         return buf.getvalue()
     try:
         from openpyxl import load_workbook
@@ -481,18 +486,21 @@ def excel_bytes(results: List[Dict[str, Any]], *,
             _fill_index_sheet(wb.create_sheet("各大指数"), major_indexes)
         if focus_sectors:
             _fill_sector_sheet(wb.create_sheet("行业板块"), focus_sectors)
+        if resonance_diag:
+            _fill_diag_sheet(wb.create_sheet("三振诊断"), resonance_diag)
         out = io.BytesIO()
         wb.save(out)
         return out.getvalue()
     except Exception as e:  # noqa: BLE001 附加表失败不影响汇总报告主体
-        logger.warning("Web Excel 追加指数/板块表失败（不影响主体）: %s", e)
+        logger.warning("Web Excel 追加指数/板块/诊断表失败（不影响主体）: %s", e)
         return buf.getvalue()
 
 
 def write_excel(results: List[Dict[str, Any]], path: str,
                 qa_line: Optional[str] = None,
                 major_indexes: Optional[List[Dict[str, Any]]] = None,
-                focus_sectors: Optional[List[Dict[str, Any]]] = None) -> str:
+                focus_sectors: Optional[List[Dict[str, Any]]] = None,
+                resonance_diag: Optional[Dict[str, Any]] = None) -> str:
     """单「汇总报告」页（含全部个股详情列 + 年线条件列）。返回写入路径。
 
     qa_line：W26b 换手覆盖率 QA，写入表格下方一行（只读观测，不加列、不改排序）。
@@ -500,6 +508,8 @@ def write_excel(results: List[Dict[str, Any]], path: str,
     非空时追加「各大指数」工作表（只读展示）。
     focus_sectors：W85 关注行业板块研判列表（analyze_focus_sectors 产出），
     非空时追加「行业板块」工作表（板块研判 + 强相关个股，只读展示）。
+    resonance_diag：W94/B「为什么没有三振」六门闩诊断 dict（diagnose 产出），
+    非空时追加「三振诊断」工作表（只读展示，不改评分/信号）。
     """
     import os
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -519,8 +529,50 @@ def write_excel(results: List[Dict[str, Any]], path: str,
     # W85：关注行业板块独立工作表（板块研判 + 强相关个股）。
     if focus_sectors:
         _append_sector_sheet(path, focus_sectors)
+    # W94/B：三振六门闩诊断工作表（与 Web 下载共用填充函数）。
+    if resonance_diag:
+        _append_diag_sheet(path, resonance_diag)
     logger.info("✅ Excel 报告生成完成: %s（%d 只，单汇总页）", path, len(results))
     return path
+
+
+def _fill_diag_sheet(ws, diag: Dict[str, Any]) -> None:
+    """W94/B：把「为什么没有三振」诊断写入既有 worksheet（ws 级，不负责开/存）。
+
+    ``write_excel``（CLI 日报）与 ``excel_bytes``（Web 下载）共用，行列定义
+    来自 ``resonance_diag.diag_sheet_rows()``，保证四条链路口径一致。
+    """
+    from openpyxl.styles import Font, Alignment
+    from mystery.apps.reports.resonance_diag import diag_sheet_rows
+    for row in diag_sheet_rows(diag):
+        ws.append(row if row else [None])
+    # 表头加粗（第 1 行 + 门闩表头行）
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for r in ws.iter_rows():
+        if r and str(r[0].value or "") == "门闩":
+            for c in r:
+                c.font = Font(bold=True)
+            break
+    # 结论 / 口径阶段差 长文本自动换行 + 列宽
+    widths = {"A": 22, "B": 24, "C": 14, "D": 12, "E": 12, "F": 56}
+    for col, w in widths.items():
+        ws.column_dimensions[col].width = w
+    for row in ws.iter_rows():
+        for c in row:
+            if c.value is not None and len(str(c.value)) > 30:
+                c.alignment = Alignment(wrap_text=True, vertical="top")
+
+
+def _append_diag_sheet(path: str, diag: Dict[str, Any]) -> None:
+    """W94/B：落盘版——打开 xlsx 追加「三振诊断」表（失败不影响主体）。"""
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(path)
+        _fill_diag_sheet(wb.create_sheet("三振诊断"), diag)
+        wb.save(path)
+    except Exception as e:  # noqa: BLE001 诊断表失败不阻塞报告主体
+        logger.warning("Excel 三振诊断表写入失败（不影响报告主体）: %s", e)
 
 
 def _fill_index_sheet(ws, indexes: List[Dict[str, Any]]) -> None:

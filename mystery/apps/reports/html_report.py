@@ -306,13 +306,15 @@ def _stock_card(d: Dict[str, Any]) -> str:
 def write_html(results: List[Dict[str, Any]], path: str,
                qa_line: Optional[str] = None,
                major_indexes: Optional[List[Dict[str, Any]]] = None,
-               focus_sectors: Optional[List[Dict[str, Any]]] = None) -> str:
+               focus_sectors: Optional[List[Dict[str, Any]]] = None,
+               resonance_diag: Optional[Dict[str, Any]] = None) -> str:
     """汇总 HTML（按分降序，每只一张卡片）。返回写入路径。
 
     qa_line：W26b 换手覆盖率 QA，展示在头部统计行（只读观测）。
     major_indexes：W84 各大指数研判列表，非空时在个股卡片前渲染指数区块。
     focus_sectors：W85 关注行业板块研判列表，非空时渲染板块研判区块
     （含板块吸筹结论 + 强相关个股），位于指数区块之后、个股卡片之前。
+    resonance_diag：W94/B 六门闩诊断 dict，非空时渲染「为什么没有三振」区块。
     """
     import os
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -332,6 +334,8 @@ def write_html(results: List[Dict[str, Any]], path: str,
     idx_html = _index_block(major_indexes) if major_indexes else ""
     # W85：行业板块区块（板块研判 + 强相关个股）
     sec_html = _sector_block(focus_sectors) if focus_sectors else ""
+    # W94/B：六门闩诊断区块（位于指数/板块之后、个股卡片之前）
+    diag_html = _diag_block(resonance_diag) if resonance_diag else ""
     doc = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><title>每日股票分析报告</title>{_CSS}</head>
@@ -339,13 +343,62 @@ def write_html(results: List[Dict[str, Any]], path: str,
 <div class="header"><h1>📈 每日股票分析报告</h1>
 <p>{len(ordered)} 只 · 真三振 {n_true} 只 · 生成于 {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
 {qa_html}{w3_html}</div>
-{idx_html}{sec_html}{cards}
+{idx_html}{sec_html}{diag_html}{cards}
 <footer>Mistery 趋势交易分析 · czsc_mi · 分数来自 mystery.services.analyze.analyze_one_stock</footer>
 </div></body></html>"""
     with open(path, "w", encoding="utf-8") as f:
         f.write(doc)
     logger.info("✅ HTML 报告生成完成: %s（%d 只）", path, len(ordered))
     return path
+
+
+def _diag_block(diag: Dict[str, Any]) -> str:
+    """W94/B：「为什么没有三振」六门闩诊断区块（只读展示，data 来自 diagnose）。"""
+    try:
+        mleg = diag.get("market_leg") or {}
+        opts = diag.get("options") or {}
+        tag = f"（历史回放 {_esc(diag['as_of'])}）" if diag.get("as_of") else ""
+        rows = ""
+        for g in diag.get("gates", []):
+            ok = "up" if g["failed"] == 0 else "down"
+            rows += (
+                f"<tr><td>{_esc(g['name'])}</td>"
+                f"<td class='up'>{g['passed']}</td>"
+                f"<td class='{ok}'>{g['failed']}</td>"
+                f"<td>{g['unknown']}</td>"
+                f"<td>{g['pass_rate']}%</td>"
+                f"<td>{_esc(g['why'])}</td></tr>")
+        idx_rows = ""
+        for i in diag.get("indexes", []):
+            cls = "up" if i["year"] == "站上年线" else "down"
+            idx_rows += (
+                f"<tr><td>{_esc(i['name'])}</td><td>{_esc(str(i['code']))}</td>"
+                f"<td>{i['close']}</td><td class='{cls}'>{i['year']}"
+                f"{'' if i['year_dist_pct'] is None else format(i['year_dist_pct'], '+.1f') + '%'}</td>"
+                f"<td>{i['ma']}</td></tr>")
+        idx_tbl = (
+            f"<p class='qa'>8 大指数：站上年线 "
+            f"{diag.get('n_index_above')}/{diag.get('n_index_total')} · "
+            f"多头排列 {diag.get('n_index_aligned')}/{diag.get('n_index_total')}</p>"
+            f"<table class='idx-table'><thead><tr><th>指数</th><th>代码</th>"
+            f"<th>最新</th><th>年线位置</th><th>MA排列</th></tr></thead>"
+            f"<tbody>{idx_rows}</tbody></table>") if idx_rows else ""
+        return f"""<div class="card">
+<h3>🔍 为什么没有三振？六门闩诊断 {tag}</h3>
+<p><b>{_esc(diag.get('conclusion') or '')}</b></p>
+<p class="qa">大盘腿口径：{_esc(str(mleg.get('market_mode') or '—'))} ·
+趋势向上={mleg.get('market_up')} · 位置={_esc(str(mleg.get('position') or '—'))} ·
+生效阈值={opts.get('true_threshold')} · 全池最高共振评分={diag.get('score_max')}
+（距阈值还差 {diag.get('gap_to_threshold')} 分） ·
+三腿全过仅被大盘否决 {diag.get('three_legs_but_market')} 只</p>
+{idx_tbl}
+<table class="idx-table"><thead><tr><th>门闩</th><th>通过</th><th>否决</th>
+<th>未知</th><th>通过率</th><th>判据</th></tr></thead>
+<tbody>{rows}</tbody></table>
+<p class="qa">{_esc(diag.get('stage_note') or '')}</p>
+</div>"""
+    except Exception as e:  # noqa: BLE001 诊断区块失败不影响报告主体
+        return f"<div class='card'><p class='qa'>三振诊断区块渲染失败：{_esc(str(e)[:120])}</p></div>"
 
 
 def _index_block(indexes: List[Dict[str, Any]]) -> str:

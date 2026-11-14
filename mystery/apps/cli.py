@@ -155,10 +155,19 @@ def _cmd_daily(args: argparse.Namespace) -> int:
                 sector_summary_line(focus_sectors)
     except Exception:  # noqa: BLE001 板块分析失败不影响个股报告
         pass
+    # W94/B：日报同口径带「为什么没有三振」六门闩诊断。
+    resonance_diag = None
+    try:
+        from ..apps.reports.resonance_diag import diagnose
+        resonance_diag = diagnose(results, indexes=major_indexes or None)
+    except Exception as e:  # noqa: BLE001 诊断表失败不影响日报主体
+        print(f"[W94] 三振诊断跳过（不影响日报）: {str(e)[:100]}")
     write_excel(results, xlsx, qa_line=qa_line or None,
-                major_indexes=major_indexes, focus_sectors=focus_sectors)
+                major_indexes=major_indexes, focus_sectors=focus_sectors,
+                resonance_diag=resonance_diag)
     write_html(results, html, qa_line=qa_line or None,
-               major_indexes=major_indexes, focus_sectors=focus_sectors)
+               major_indexes=major_indexes, focus_sectors=focus_sectors,
+               resonance_diag=resonance_diag)
     print(f"共 {len(results)} 只（失败 {failed}）")
     print(xlsx)
     print(html)
@@ -178,8 +187,15 @@ def _write_scan_report(results, args) -> None:
 
     out = output_dir(args.cfg)
     date_str = datetime.now().strftime("%Y%m%d")
-    xlsx = f"{out}/每日股票分析报告_{date_str}.xlsx"
-    html = f"{out}/每日股票分析报告_{date_str}.html"
+    # W94/D：回放报告独立命名（带 _回放_ + 回放日期），绝不覆盖当日正式日报，
+    # 也不与飞书 xlsx 链接 / git push 的当日文件名冲突。
+    as_of = (getattr(args, "as_of", None) or "").strip()[:10]
+    if as_of:
+        xlsx = f"{out}/每日股票分析报告_回放_{as_of.replace('-', '')}.xlsx"
+        html = f"{out}/每日股票分析报告_回放_{as_of.replace('-', '')}.html"
+    else:
+        xlsx = f"{out}/每日股票分析报告_{date_str}.xlsx"
+        html = f"{out}/每日股票分析报告_{date_str}.html"
     try:
         trade_date = (results[0].get('trade_date') or '')[:10] \
             if results else ''
@@ -226,14 +242,27 @@ def _write_scan_report(results, args) -> None:
                 sector_summary_line(focus_sectors)
     except Exception:  # noqa: BLE001 板块分析失败不影响报告主体
         pass
+    # W94/B：「为什么没有三振」六门闩诊断（只读 results，不取数不改判）。
+    # 回放（--as-of）时在结论里标注历史截面，避免与实时结果混淆。
+    resonance_diag = None
+    try:
+        from ..apps.reports.resonance_diag import diagnose
+        resonance_diag = diagnose(stock_results, indexes=major_indexes or None,
+                                  as_of=getattr(args, "as_of", "") or "")
+    except Exception as e:  # noqa: BLE001 诊断表失败不影响日报主体
+        print(f"[W94] 三振诊断跳过（不影响日报）: {str(e)[:100]}")
     write_excel(stock_results, xlsx, qa_line=qa_line or None,
                 major_indexes=major_indexes or None,
-                focus_sectors=focus_sectors)
+                focus_sectors=focus_sectors,
+                resonance_diag=resonance_diag)
     write_html(stock_results, html, qa_line=qa_line or None,
                major_indexes=major_indexes or None,
-               focus_sectors=focus_sectors)
+               focus_sectors=focus_sectors,
+               resonance_diag=resonance_diag)
     print(f"报告已生成: {xlsx}")
     print(f"报告已生成: {html}")
+    if resonance_diag:
+        print(f"[三振诊断] {resonance_diag.get('conclusion', '')}")
     if qa_line:
         print(f"[换手QA] {qa_line}")
     if (rc := _suffix_orphans_hard_fail()):
@@ -323,6 +352,23 @@ def _cmd_scan_body(args: argparse.Namespace, *,
     from ..services.scan import scan_market
 
     _print_db_fingerprint()
+    # W94/D：历史回放入口。校验日期 → 注入 cfg + env（全链路 MarketDataClient
+    # 生效，含进程池 worker / 报告新建的 service）→ 独立 replay 台账 →
+    # 强制关闭 auto_sync（回放绝不把行情同步到最新，否则未来数据入库）。
+    as_of = (getattr(args, "as_of", None) or "").strip()[:10]
+    if as_of:
+        import re as _re
+        if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", as_of):
+            print("[--as-of] 日期格式应为 YYYY-MM-DD，例如 --as-of 2026-10-23",
+                  file=sys.stderr)
+            return 2
+        cfg = dict(args.cfg or {})
+        cfg["as_of"] = as_of
+        args.cfg = cfg
+        os.environ["MYSTERY_AS_OF"] = as_of
+        print(f"[W94/D] 历史回放 as_of={as_of}：K 线严格截断到该日及之前；"
+              "独立台账 scan_type=replay；报告带 _回放_ 后缀，不覆盖当日正式日报。"
+              "（回放 ≠ 实盘，仅复现历史截面）", file=sys.stderr)
     # --watchlist 自选扫描默认不设 limit（全自选）；--market 全市场不限只数；
     # 其余全市场防呆默认 100（W88：Web 后台按钮走 --market 才能扫全 5579 只）
     if args.limit is None:
@@ -338,8 +384,10 @@ def _cmd_scan_body(args: argparse.Namespace, *,
                           no_persist=args.no_persist,
                           watchlist=watchlist, board=board,
                           force=getattr(args, 'force', False),
-                          auto_sync=not getattr(args, 'no_auto_sync', False),
+                          auto_sync=(False if as_of
+                                     else not getattr(args, 'no_auto_sync', False)),
                           resume=getattr(args, 'resume', False),
+                          scan_type=("replay" if as_of else None),
                           progress_cb=progress_cb,
                           job_holder=job_holder)
     if result_holder is not None:
@@ -842,6 +890,11 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--bg-task-id", default=None,
                    help="W88：Web 后台任务台账 id；传入后 CLI 自行写进度/终态，"
                         "供页面跨进程渲染（普通命令行无需设置）")
+    p.add_argument("--as-of", dest="as_of", default=None, metavar="YYYY-MM-DD",
+                   help="W94/D：历史回放——所有 K 线（个股/指数）严格截断到该日"
+                        "及之前，杜绝未来函数；独立台账 scan_type=replay，"
+                        "报告文件名带 _回放_ 后缀，不覆盖当日正式日报。"
+                        "「回放 ≠ 实盘」，仅用于复现历史截面，如 --as-of 2026-10-23")
     p.set_defaults(func=_cmd_scan)
 
     p = sub.add_parser("sync", help="行情同步（断点续跑，支持多周期）")

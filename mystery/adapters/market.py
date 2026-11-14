@@ -38,6 +38,12 @@ class MarketDataClient:
 
     def __init__(self, cfg: Optional[Dict] = None):
         self.cfg = cfg or {}
+        # W94/D：历史回放截止日（YYYY-MM-DD）。cfg 显式注入优先，env 兜底
+        # （供 systemd-run 独立进程 / Web 未来扩展）。设置后所有 K 线读取
+        # 只看到该日及之前，杜绝未来函数；绝不联网补数、绝不回写缓存。
+        _aof = (self.cfg.get('as_of')
+                or os.environ.get('MYSTERY_AS_OF') or '').strip()
+        self.as_of = _aof[:10] if _aof else ''
         ds = self.cfg.get('data_source') or {}
         self.adjust = _codes.normalize_adjust(ds.get('adjust', 'qfq'))
         self.db = MysteryDB(db_path=self.cfg.get('db_path') or None)
@@ -62,13 +68,31 @@ class MarketDataClient:
         self._index_cache: Dict[str, BarSeries] = {}
         self._index_lock = threading.Lock()
 
+    # ---------------- W94/D：历史回放 as_of 上限 ----------------
+    def _clamp_end(self, end: Optional[str]) -> Optional[str]:
+        """把 K 线读取上界钳到 as_of（回放时），普通模式原样返回。
+
+        ``None``（未指定上界）在回放模式也要被设为 as_of，否则会读到
+        as_of 之后的数据；显式 end 早于 as_of 时保留（尊重调用方切片）。
+        """
+        if not self.as_of:
+            return end
+        if end is None or str(end)[:10] > self.as_of:
+            return self.as_of
+        return end
+
     # ---------------- 主入口 ----------------
     def fetch_bars(self, symbol: str, freq: str = "1d",
                    start: Optional[str] = None,
                    end: Optional[str] = None) -> BarSeries:
-        """统一出口：本地库未过期 → ths_official → tdx_api → tdx_local。"""
+        """统一出口：本地库未过期 → ths_official → tdx_api → tdx_local。
+
+        W94/D：回放模式下把 end 钳到 as_of，并短路在线降级链（见
+        ``_fetch_daily``）——只读本地历史库，绝不联网补数/回写未来数据。
+        """
         internal = _codes.normalize_symbol(symbol)
         freq = _codes.normalize_freq(freq)
+        end = self._clamp_end(end)
         # 周/月：日 K 重采样（一期统一口径，与旧仓 prefer_resample=true 一致）
         if freq != '1d':
             daily = self.fetch_bars(internal, '1d', start, end)
@@ -113,6 +137,20 @@ class MarketDataClient:
             hit = self._empty_cache.get(internal)
             if hit and now - hit < self._EMPTY_TTL:
                 return None, ''
+
+        # W94/D 回放：只用本地历史库（SQLite / DuckDB，后者禁止回写），
+        # 绝不走 ths/tdx 在线降级链 —— 在线源返回的是「到今天」的数据，
+        # 即使 _slice 截断也会经 _cache_online_bars 回写生产库造成污染。
+        if self.as_of:
+            df = self.db.load_kline(db_code, 'daily', start, end)
+            if df is not None and not df.empty:
+                self.fetch_stats['db'] += 1
+                return to_cn_columns(df), 'db'
+            duck = self._fetch_from_duckdb(internal, start, end,
+                                           cache_to_sqlite=False)
+            if duck is not None and not duck.empty:
+                return to_cn_columns(duck), 'db'
+            return None, ''
 
         df = self.db.load_kline(db_code, 'daily', start, end)
         ref = self._freshness_ref(internal) if (df is not None and not df.empty) \
@@ -188,6 +226,9 @@ class MarketDataClient:
         tdx_api 的 日期 列可能是 datetime——统一转 YYYY-MM-DD 字符串再写。
         失败只 debug，不影响本次返回。
         """
+        # W94/D：回放绝不回写生产库（双保险，在线链已短路，这里再兜一层）
+        if self.as_of:
+            return
         self.fetch_stats[source] = self.fetch_stats.get(source, 0) + 1
         try:
             raw = raw.copy()
@@ -257,7 +298,11 @@ class MarketDataClient:
         """新鲜度参照：在线交易日历最新交易日 → MarketDB → .day 文件。
 
         会话级 memo（10s）：全市场扫描逐股调用时只查一次，避免重复日历/探针开销。
+        W94/D：回放模式直接以 as_of 为参照，避免「as_of < 今天」被判过期
+        而误触在线补数（那会引入未来数据并回写生产库）。
         """
+        if self.as_of:
+            return self.as_of
         now = time.time()
         with self._ref_lock:
             if self._ref_ts and now - self._ref_ts < 10 and self._ref_cache:
@@ -279,9 +324,14 @@ class MarketDataClient:
     def fetch_index(self, code: str, freq: str = "1d",
                     start: Optional[str] = None,
                     end: Optional[str] = None) -> BarSeries:
-        """指数：会话级缓存（W12）→ DB 优先（允许 3 天滞后）→ ths → tdx_local。"""
+        """指数：会话级缓存（W12）→ DB 优先（允许 3 天滞后）→ ths → tdx_local。
+
+        W94/D：回放模式把 end 钳到 as_of；因 start/end 非 None 会自然跳过
+        会话级 _index_cache（避免回放结果污染正常模式的共享缓存）。
+        """
         internal = _codes.normalize_symbol(code)
         freq = _codes.normalize_freq(freq)
+        end = self._clamp_end(end)
         # 会话级缓存：daily 逐股分析共用同一指数序列，只走一次降级链。
         # 仅在无 start/end 切片时缓存（切片请求语义不同，不适用共享）。
         if start is None and end is None:
@@ -308,6 +358,14 @@ class MarketDataClient:
         db_code = _codes.db_code_of(internal)
         df = self.db.load_kline(db_code, 'daily', start, end)
         source = 'db'
+        # W94/D 回放：指数同样只读本地库，绝不联网补数/回写（否则取到
+        # 「到今天」的指数，大盘腿会用到未来数据，回放彻底失真）。
+        if self.as_of:
+            if df is not None and not df.empty:
+                return _df_to_series(to_cn_columns(df), internal, freq,
+                                     self.adjust, source)
+            return BarSeries(symbol=internal, freq=freq,
+                             adjust=self.adjust, source='')
         if df is not None and not df.empty:
             db_last = str(df['date'].max())[:10]
             ref = self._freshness_ref(internal)

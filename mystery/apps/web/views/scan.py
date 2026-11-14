@@ -217,8 +217,62 @@ def _render_market_overview(rows: list, key: str = "scan") -> dict:
         st.info("暂无板块研判数据（板块关注配置关闭或 sector_kline 未同步），"
                 "个股结果不受影响。")
 
+    # W94/B：「为什么没有三振」六门闩诊断（只读 payload，不取数不改判）
+    diag = _render_resonance_diag(rows, indexes, key=key)
+
     return {"stock_rows": stock_rows, "indexes": indexes,
-            "sectors": sectors, "index_rows": index_rows}
+            "sectors": sectors, "index_rows": index_rows,
+            "resonance_diag": diag}
+
+
+def _render_resonance_diag(rows: list, indexes: list, key: str = "scan") -> dict:
+    """W94/B：结果表上方「为什么没有三振」六门闩诊断区块。
+
+    纯展示层：``resonance_diag.diagnose()`` 只读 payload 里已落库的
+    ``mystery.resonance`` 六门闩并聚合，不取数、不重算评分、不改判信号。
+    返回 diag dict，供本页 Excel 下载复用（一次聚合、两处展示）。
+    """
+    from mystery.apps.reports.resonance_diag import diagnose
+    try:
+        diag = diagnose(rows, indexes=indexes)
+    except Exception as e:  # noqa: BLE001 诊断区块失败不影响结果表
+        logger.warning("W94 三振诊断失败: %s", str(e)[:120])
+        return {}
+    tag = "（历史回放）" if diag.get("as_of") else ""
+    with st.expander("🔍 为什么没有三振？六门闩诊断 " + tag,
+                     expanded=(diag.get("n_true", 0) == 0)):
+        st.caption(f"本期 {diag.get('n_total', 0)} 只个股 · 真三振 "
+                   f"{diag.get('n_true', 0)} 只 · 与 Excel「三振诊断」/"
+                   "日报 HTML 同口径（只读已落库结果）")
+        st.info(diag.get("conclusion", ""))
+        mleg = diag.get("market_leg") or {}
+        opts = diag.get("options") or {}
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("大盘腿口径", str(mleg.get("market_mode") or "—"))
+        c2.metric("大盘趋势向上", "是" if mleg.get("market_up") else "否")
+        c3.metric("大盘位置", str(mleg.get("position") or "—"))
+        c4.metric("三腿全过·仅卡大盘",
+                  diag.get("three_legs_but_market", 0))
+        if diag.get("indexes"):
+            st.caption(f"8 大指数：站上年线 "
+                       f"{diag.get('n_index_above')}/{diag.get('n_index_total')} · "
+                       f"多头排列 {diag.get('n_index_aligned')}/"
+                       f"{diag.get('n_index_total')}")
+            st.dataframe(diag["indexes"], use_container_width=True,
+                         hide_index=True, key=f"{key}_diag_idx")
+        gv = [{"门闩": g["name"], "通过": g["passed"], "否决": g["failed"],
+               "未知": g["unknown"], "通过率(%)": g["pass_rate"],
+               "判据": g["why"]} for g in diag.get("gates", [])]
+        st.dataframe(gv, use_container_width=True, hide_index=True,
+                     key=f"{key}_diag_gates")
+        st.caption("生效阈值 " + str(opts.get("true_threshold")) +
+                   " · 全池最高共振评分 " + str(diag.get("score_max")) +
+                   " · 距阈值还差 " + str(diag.get("gap_to_threshold")) + " 分")
+        with st.expander("口径阶段差说明：系统测什么 / 人工看什么", expanded=False):
+            st.write(diag.get("stage_note", ""))
+            st.code("czsc-mi scan --as-of 2026-01-14 --market --report",
+                    language="bash")
+    return diag
 
 
 def _wave3_cell(row: dict, key: str):
@@ -607,11 +661,12 @@ def _render_excel_download(rows: list, key: str = "scan", *,
     stock_rows, _ = split_scan_rows(rows)
     indexes = list(market_ctx.get("indexes") or []) or None
     sectors = list(market_ctx.get("sectors") or []) or None
+    diag = market_ctx.get("resonance_diag") or None
     first = stock_rows[0] if stock_rows else {}
     last = stock_rows[-1] if stock_rows else {}
     sig = (f"{len(stock_rows)}:{first.get('symbol', '')}:"
            f"{last.get('symbol', '')}:{first.get('trade_date', '')}:"
-           f"{len(indexes or [])}:{len(sectors or [])}")
+           f"{len(indexes or [])}:{len(sectors or [])}:{bool(diag)}")
     gen_key, data_key = f"{key}_xlsx_gen", f"{key}_xlsx_data_{sig}"
     if st.button(f"📥 下载 Excel 报告（{len(stock_rows)} 只）", key=gen_key):
         with st.spinner(f"补齐 {len(stock_rows)} 只个股详情并生成 Excel..."):
@@ -619,7 +674,8 @@ def _render_excel_download(rows: list, key: str = "scan", *,
             enriched = _enrich_scan_rows(stock_rows)
             try:
                 st.session_state[data_key] = excel_bytes(
-                    enriched, major_indexes=indexes, focus_sectors=sectors)
+                    enriched, major_indexes=indexes, focus_sectors=sectors,
+                    resonance_diag=diag)
             except Exception as e:  # noqa: BLE001
                 st.error(f"生成 Excel 失败: {e}")
                 st.session_state.pop(data_key, None)
@@ -629,8 +685,8 @@ def _render_excel_download(rows: list, key: str = "scan", *,
                            file_name=fname,
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            key=f"{key}_xlsx_dl")
-        st.caption("包含：汇总报告 + 各大指数 + 行业板块 + 每只个股详情"
-                   "（与每日报告同格式）")
+        st.caption("包含：汇总报告 + 各大指数 + 行业板块 + 三振诊断 + "
+                   "每只个股详情（与每日报告同格式）")
 
 def _turn_tags(row: dict) -> dict:
     """W32b：换手分档/风格两列（只读 core.turnover_tag，不重算规则）。
@@ -695,6 +751,8 @@ __all__ = [
     '_sector_cache_key',
     '_market_context',
     '_render_market_overview',
+    # W94/B：为什么没有三振 六门闩诊断
+    '_render_resonance_diag',
     '_turn_tags',
     '_wave3_cell',
     '_sig_flag',
