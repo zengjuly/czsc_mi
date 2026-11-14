@@ -111,6 +111,7 @@ _RESONANCE_ENV_KEYS = (
     ('MYSTERY_RESONANCE_CAPITAL_MIN', 'capital_min_score'),
     ('MYSTERY_RESONANCE_CAPITAL_VR', 'capital_min_volume_ratio'),
     ('MYSTERY_RESONANCE_INDEX_MAX_LAG_DAYS', 'index_max_lag_days'),
+    ('MYSTERY_RESONANCE_HIGH_POSITION_GATE', 'high_position_gate'),  # W95/① hard|soft|off
 )
 
 # W73 生产默认口径（用户拍板：严格大盘腿 + 降阈值）。取值依据见
@@ -121,6 +122,9 @@ _RESONANCE_ENV_KEYS = (
 PRODUCTION_RESONANCE_OPTIONS: Dict[str, Any] = {
     "market_mode": "yearline",
     "true_threshold": 80.0,
+    # W95/①：显式写死 hard（= W71/W72 现状），保证生产默认零回归；
+    # 放宽须显式设 MYSTERY_RESONANCE_HIGH_POSITION_GATE=soft|off 或网页选择。
+    "high_position_gate": "hard",
     # 一键回退到 W71 口径：
     #   MYSTERY_RESONANCE_MARKET_MODE=ma MYSTERY_RESONANCE_TRUE_THRESHOLD=85
 }
@@ -143,6 +147,8 @@ RESONANCE_FIELDS: tuple = (
     ("capital_min_score", "资金活跃门槛(评分≥)", "number", (0.0, 20.0, 1.0)),
     ("capital_min_volume_ratio", "资金活跃门槛(量比≥)", "number", (0.0, 5.0, 0.1)),
     ("index_max_lag_days", "指数滞后降级天数(0=关闭)", "number", (0, 30, 1)),
+    ("high_position_gate", "大盘非高位风控(hard/soft/off)", "select",
+     ("hard", "soft", "off")),
 )
 RESONANCE_FIELDS_DICT: Dict[str, tuple] = {f[0]: f for f in RESONANCE_FIELDS}
 

@@ -610,9 +610,16 @@ def _turnover_qa_line(db, results, trade_date: str) -> str:
     """
     try:
         import math
+        import os
 
         from ..adapters.codes import db_code_of
         from ..services.watchlist import load_watchlist
+
+        # W95/③：--as-of 回放时把 QA 口径对齐历史截面（覆盖率按 as_of 统计），
+        # 并明确标注库内 kline_max/as_of_max 是全量最新值、非回放截面。
+        _as_of = (os.environ.get("MYSTERY_AS_OF") or "")[:10]
+        if _as_of:
+            trade_date = _as_of
 
         def _cov_str(stats) -> str:
             cov = stats.get('coverage')
@@ -652,6 +659,10 @@ def _turnover_qa_line(db, results, trade_date: str) -> str:
         head = (f"db={fp.get('db_path')} kline_max={fp.get('kline_max')}"
                 f" as_of_max={fp.get('as_of_max')}"
                 f" orphan={fp.get('suffix_orphans')}")
+        if _as_of:
+            head += (f"\n  【历史回放 {_as_of}】上述 kline_max/as_of_max 为库内"
+                     "全量最新值，非回放截面；本次覆盖率与行业覆盖均按 "
+                     f"{_as_of} 统计。")
         warns = []
         if fp.get('kline_max') is None:
             warns.append("WARN: 库内无日K——空库/库不对（检查 MYSTERY_DB_PATH）")

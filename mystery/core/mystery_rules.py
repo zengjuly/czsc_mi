@@ -129,7 +129,8 @@ class MysteryLogic:
                                    '真三振阈值': opts['true_threshold'],
                                    '资金门槛分': opts['capital_min_score'],
                                    '资金量比门槛': opts['capital_min_volume_ratio'],
-                                   '指数滞后上限': opts['index_max_lag_days']},
+                                   '指数滞后上限': opts['index_max_lag_days'],
+                                   '高位风控': opts['high_position_gate']},
                       '指数滞后天数': None, '大盘腿降级': False}
             stock_ok = False
             if '均线排列' in data.columns and pd.notna(data.iloc[-1]['均线排列']):
@@ -212,7 +213,8 @@ class MysteryLogic:
             resonance = _res.calculate_resonance_score(
                 individual_result=individual_result, market_result=market_result,
                 industry_result=industry_result, capital_result=capital_result,
-                true_threshold=opts['true_threshold'])
+                true_threshold=opts['true_threshold'],
+                high_position_gate=opts['high_position_gate'])
             result['共振评分'] = resonance.get('score', 0)
             result['共振级别'] = resonance.get('level', '无共振')
             result['共振建议'] = resonance.get('advice', '')
@@ -228,7 +230,11 @@ class MysteryLogic:
             for d in resonance.get('details', []):
                 result['详情'].append(d)
             if result['真三振']:
-                result['详情'].append('✅ 真三振（三级）成立：四维共振+资金活跃+大盘非高位')
+                _hp = opts['high_position_gate']
+                _hp_txt = ('+大盘非高位' if _hp == 'hard'
+                           else f'(高位风控={_hp}，未作否决门闩)')
+                result['详情'].append(
+                    '✅ 真三振（三级）成立：四维共振+资金活跃' + _hp_txt)
             elif result['三级共振']:
                 # W71/P2-1：按评分模块返回的真实未过门闩动态归因，
                 # 不再写死「资金/位置条件不足」（真实原因可能并非这两项）。

@@ -335,16 +335,25 @@ def _related_stocks(db, sector_code: str, sector_ret: pd.Series, *,
 
 def analyze_sector(db, code: str, name: str = "", *,
                     top_n: int = 8, corr_window: int = 60,
-                    results: Optional[List[Dict]] = None) -> Dict[str, Any]:
-    """单个板块研判（只读展示）；任何失败都降级 ``has_data=False``，不抛。"""
+                    results: Optional[List[Dict]] = None,
+                    as_of: str = "") -> Dict[str, Any]:
+    """单个板块研判（只读展示）；任何失败都降级 ``has_data=False``，不抛。
+
+    W95/③：``as_of`` 非空时板块指数 K 线按该日截断（历史回放截面）。
+    """
     c = normalize_sector_code(code)
     if not name:
         try:
             conn = db._connect()
             try:
-                row = conn.execute(
-                    "SELECT sector_name FROM sector_kline WHERE sector_code=? "
-                    "ORDER BY trade_date DESC LIMIT 1", (c,)).fetchone()
+                _sql = ("SELECT sector_name FROM sector_kline "
+                        "WHERE sector_code=? ")
+                _params = [c]
+                if as_of:
+                    _sql += "AND trade_date <= ? "
+                    _params.append(str(as_of)[:10])
+                _sql += "ORDER BY trade_date DESC LIMIT 1"
+                row = conn.execute(_sql, tuple(_params)).fetchone()
                 name = row[0] if row and row[0] else ""
             finally:
                 conn.close()
@@ -360,7 +369,10 @@ def analyze_sector(db, code: str, name: str = "", *,
         "related": [], "has_data": False,
     }
     try:
-        df = db.get_sector_kline(c)
+        # 仅在回放模式才传 end_date：正式扫描走旧签名，保证既有 FakeDB
+        # （只实现 get_sector_kline(code)）与 W85 用例零回归。
+        df = (db.get_sector_kline(c, end_date=as_of) if as_of
+              else db.get_sector_kline(c))
         if df is None or df.empty or "收盘价" not in df.columns:
             return base
         closes = pd.to_numeric(df["收盘价"], errors="coerce").dropna().tolist()
@@ -396,7 +408,8 @@ def analyze_sector(db, code: str, name: str = "", *,
 
 
 def analyze_focus_sectors(db, *, opts: Optional[Dict[str, Any]] = None,
-                          results: Optional[List[Dict]] = None
+                          results: Optional[List[Dict]] = None,
+                          as_of: Optional[str] = None
                           ) -> List[Dict[str, Any]]:
     """全部「关注板块」研判（W85 日报/扫描报告统一入口）。
 
@@ -406,6 +419,11 @@ def analyze_focus_sectors(db, *, opts: Optional[Dict[str, Any]] = None,
     :param results: 当期个股分析结果（用于 auto 板块解析 + 相关个股附结论）。
     """
     try:
+        # W95/③：未显式传 as_of 时从 env 读（CLI 回放已设 MYSTERY_AS_OF），
+        # 正式扫描无该变量 → 空串，行为零变化。
+        import os
+        if as_of is None:
+            as_of = (os.environ.get("MYSTERY_AS_OF") or "")[:10]
         if opts is None:
             from mystery.services import runtime_settings as rts
             opts = rts.sector_options_normalized()
@@ -420,7 +438,7 @@ def analyze_focus_sectors(db, *, opts: Optional[Dict[str, Any]] = None,
         return [analyze_sector(db, c, name_map.get(c, c),
                                top_n=opts.get("top_n", 8),
                                corr_window=opts.get("corr_window", 60),
-                               results=results) for c in codes]
+                               results=results, as_of=as_of or "") for c in codes]
     except Exception as exc:  # noqa: BLE001 配置/取数异常不阻塞日报
         logger.warning("关注板块分析失败: %s", exc)
         return []

@@ -268,6 +268,15 @@ def _render_resonance_diag(rows: list, indexes: list, key: str = "scan") -> dict
         st.caption("生效阈值 " + str(opts.get("true_threshold")) +
                    " · 全池最高共振评分 " + str(diag.get("score_max")) +
                    " · 距阈值还差 " + str(diag.get("gap_to_threshold")) + " 分")
+        cf = diag.get("counterfactual") or {}
+        if cf:
+            st.caption(
+                "W95 反事实对拍（等价推导，非重扫）："
+                f"hard 一票否决 {cf.get('hard_true')} 只 · "
+                f"soft 放宽 {cf.get('soft_true')} 只 · "
+                f"off 放宽 {cf.get('off_true')} 只 · "
+                "生效高位风控 "
+                + str(opts.get("high_position_gate") or "hard"))
         with st.expander("口径阶段差说明：系统测什么 / 人工看什么", expanded=False):
             st.write(diag.get("stage_note", ""))
             st.code("czsc-mi scan --as-of 2026-01-14 --market --report",

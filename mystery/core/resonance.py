@@ -22,6 +22,11 @@ DEFAULT_RESONANCE_OPTIONS: Dict[str, Any] = {
     "capital_min_score": 8.0,          # 资金活跃隐含门槛（score ≥）
     "capital_min_volume_ratio": 1.5,   # 资金活跃隐含门槛（量比 ≥）
     "index_max_lag_days": None,        # None=仅诊断不降级；整数=滞后超过则大盘腿降级 unknown
+    # W95/①：「大盘非高位」门闩三态（默认 hard = W71 现状，零回归）
+    #   hard = 一票否决 + 高位 -15 软惩罚（W71/W72 完全不变）
+    #   soft = 保留 -15 软惩罚，但不再作为 all(gates) 的否决门闩
+    #   off  = 移除 -15 软惩罚，且不再作为否决门闩
+    "high_position_gate": "hard",
 }
 
 
@@ -55,6 +60,9 @@ def resolve_resonance_options(options: Optional[Dict[str, Any]] = None
             out["index_max_lag_days"] = n if n >= 0 else None
         except (TypeError, ValueError):
             out["index_max_lag_days"] = None
+    # W95/①：高位风控三态，非法值保守回退 hard（绝不放宽生产默认）
+    gate = str(out.get("high_position_gate") or "hard").strip().lower()
+    out["high_position_gate"] = gate if gate in ("hard", "soft", "off") else "hard"
     return out
 
 
@@ -361,13 +369,20 @@ def analyze_capital_flow(stock_data: Optional[pd.DataFrame],
 def calculate_resonance_score(individual_result: Dict, market_result: Dict,
                               industry_result: Dict,
                               capital_result: Optional[Dict] = None,
-                              true_threshold: float = 85.0) -> Dict[str, Any]:
+                              true_threshold: float = 85.0,
+                              high_position_gate: str = "hard") -> Dict[str, Any]:
     """四维共振评分 → score/level/advice/is_true_three_strike。
 
     W72/建议7：``true_threshold`` 把硬编码 85 门闩参数化，默认 85.0
     与 W71 逐字段一致（门闩标签仍渲染为「共振评分≥85」）。仅供金标对拍
     评估，生产默认值不变。
+    W95/①：``high_position_gate`` 控制「大盘非高位」门闩，默认 ``hard``
+    与 W71/W72 逐字段一致；soft/off 为显式放宽（仅经 service 层 env/面板
+    注入），core 库外调用方零变化。
     """
+    gate_mode = str(high_position_gate or "hard").strip().lower()
+    if gate_mode not in ("hard", "soft", "off"):
+        gate_mode = "hard"
     try:
         thr = float(true_threshold)
         thr_label = f'共振评分≥{thr:g}'
@@ -399,12 +414,16 @@ def calculate_resonance_score(individual_result: Dict, market_result: Dict,
             score += capital_score
             details.append(f"资金(+{capital_score:.0f}) {capital_result.get('detail', '')}")
         market_position = market_result.get('position', '未知')
-        if market_position == '高位':
+        is_high = market_position == '高位'
+        # W95/①：off 连 -15 软惩罚也去掉；hard/soft 保留（与 W71 一致）。
+        if is_high and gate_mode != 'off':
             score = max(0.0, score - 15)
             details.append('大盘高位惩罚(-15)')
         # W71/P1-2：详情文案与原文风控均要求「大盘非高位」，此前仅靠 -15
         # 软惩罚，资金满分时高位仍可判真三振（score=85 → True），与对外
         # 承诺相反。此处升为硬条件（收紧，不放宽任何触发条件）。
+        # W95/①：soft/off 时该门闩仍保留在 gates 里但恒 True（不作为否决），
+        # 保证 B 诊断面板的六门闩结构与 core 严格一致、统计不漂移。
         # 显式记录每道门闩结果，供上层动态归因，避免「资金/位置条件不足」
         # 这类写死但与真实缺口不符的文案。
         gates = {
@@ -413,7 +432,8 @@ def calculate_resonance_score(individual_result: Dict, market_result: Dict,
             '大盘向上': market_trend == '向上',
             '行业向上': industry_trend == '向上',
             '个股严格腿': stock_ok,
-            '大盘非高位': market_position != '高位',
+            '大盘非高位': (market_position != '高位')
+                          if gate_mode == 'hard' else True,
         }
         is_true = all(gates.values())
         reject_reasons = [k for k, ok in gates.items() if not ok]
@@ -438,11 +458,12 @@ def calculate_resonance_score(individual_result: Dict, market_result: Dict,
                 'industry_top': industry_result.get('top_industries', []),
                 'market_position': market_position, '详情': details,
                 'gates': gates, 'reject_reasons': reject_reasons,
-                'true_threshold': thr}
+                'true_threshold': thr, 'high_position_gate': gate_mode}
     except Exception as e:
         logger.error(f'❌ 计算共振评分异常: {e}')
         return {'总共振评分': 0, '共振级别': '异常', 'score': 0, 'level': '异常',
                 'is_true_three_strike': False, '详情': [f'分析异常: {e}'],
                 'gates': {}, 'reject_reasons': ['评分异常'],
-                'true_threshold': true_threshold}
+                'true_threshold': true_threshold,
+                'high_position_gate': gate_mode}
 

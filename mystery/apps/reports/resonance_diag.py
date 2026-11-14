@@ -55,12 +55,15 @@ def resonance_of(d: Dict[str, Any]) -> Dict[str, Any]:
     return r if isinstance(r, dict) else {}
 
 
-def row_gates(d: Dict[str, Any]) -> Dict[str, Optional[bool]]:
+def row_gates(d: Dict[str, Any], *, force_hard: bool = False
+              ) -> Dict[str, Optional[bool]]:
     """单只 payload → 六门闩 ``{key: True/False/None}``（None=数据缺失未知）。
 
     纯展示推导，字段全部来自已落库的 resonance，不重算评分不改判。
     ``score_ok`` 用 payload 自身记录的阈值（共振口径.真三振阈值），
     与当次扫描生效口径严格一致，不硬编码 85/80/70。
+    W95/①：``force_hard=True`` 时忽略 payload 里的放宽口径，按 hard
+    重推，供「反事实对拍」独立计算硬门闩下的真三振数。
     """
     r = resonance_of(d)
     if not r:
@@ -78,6 +81,18 @@ def row_gates(d: Dict[str, Any]) -> Dict[str, Optional[bool]]:
     except (TypeError, ValueError):
         score = None
     pos = r.get("大盘位置")
+    # W95/①：soft/off 时该门闩在 core 里恒 True，展示层必须同步，
+    # 否则 B 面板会把「已放宽」误报成「被高位否决」。
+    _gate = ("hard" if force_hard else
+             str((kj.get("高位风控") if isinstance(kj, dict) else None)
+                 or "hard").strip().lower())
+    relaxed = _gate in ("soft", "off")
+    if relaxed:
+        nh = True
+    elif pos is None:
+        nh = None
+    else:
+        nh = pos != "高位"
 
     def _b(v):
         # 缺失字段保持 None（unknown），不把 None 当 False
@@ -91,7 +106,7 @@ def row_gates(d: Dict[str, Any]) -> Dict[str, Optional[bool]]:
         "market_up": _b(r.get("大盘趋势")),
         "industry_up": _b(r.get("行业趋势")),
         "stock_strict": _b(r.get("个股严格腿")),
-        "market_not_high": (pos != "高位") if pos is not None else None,
+        "market_not_high": nh,
     }
 
 
@@ -117,6 +132,8 @@ def effective_options(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "capital_min_score": _f("资金门槛分"),
                 "capital_min_volume_ratio": _f("资金量比门槛"),
                 "index_max_lag_days": _f("指数滞后上限"),
+                # W95/①：旧 job payload 无此字段 → 回退 hard（历史均为硬门闩）
+                "high_position_gate": kj.get("高位风控") or "hard",
             }
     return {}
 
@@ -193,17 +210,58 @@ def diagnose(rows: List[Dict[str, Any]], *,
         if sc is not None and (score_max is None or sc > score_max):
             score_max = sc
 
+    opts = effective_options(stocks)
+    mleg = market_leg_snapshot(stocks)
+    # W95/①：本次若已放宽高位风控，门闩列要标出来，避免「通过」被误读
+    relaxed = str(opts.get("high_position_gate") or "hard").lower() in ("soft", "off")
+
     gates_view = []
     for key, label, why in GATES:
+        is_relaxed = bool(relaxed and key == "market_not_high")
         gates_view.append({
-            "key": key, "name": label, "why": why,
+            "key": key, "name": label,
+            "why": why + ("（W95：本次已放宽，不作为否决门闩）"
+                          if is_relaxed else ""),
+            "relaxed": is_relaxed,
             "passed": passed[key], "failed": failed[key],
             "unknown": unknown[key],
             "pass_rate": (round(passed[key] / n * 100, 1) if n else 0.0),
         })
 
-    opts = effective_options(stocks)
-    mleg = market_leg_snapshot(stocks)
+    # W95/①：反事实对拍 —— 从已落库的六门闩 payload 等价推导「若放宽
+    # 高位风控」会多出多少真三振，无需重扫全市场。
+    # hard 与 soft 的评分一致（都含 -15 惩罚），off 去掉惩罚故用
+    # score+15 重算 score_ok（仅对高位票）。
+    cf_hard = 0
+    cf_soft = 0
+    cf_off = 0
+    for d in stocks:
+        g = row_gates(d, force_hard=True)
+        r = resonance_of(d)
+        try:
+            sc = float(r.get("共振评分")) if r.get("共振评分") is not None else None
+            kj = r.get("共振口径") if isinstance(r.get("共振口径"), dict) else {}
+            thr = float(kj.get("真三振阈值"))
+        except (TypeError, ValueError):
+            continue
+        if sc is None:
+            continue
+        base = all(g.get(k) is True for k in GATE_KEYS
+                   if k not in ("market_not_high", "score_ok"))
+        if not base:
+            continue
+        if g.get("market_not_high") is True and g.get("score_ok") is True:
+            cf_hard += 1
+        if g.get("score_ok") is True:
+            cf_soft += 1
+        sc_off = sc + 15 if r.get("大盘位置") == "高位" else sc
+        if sc_off >= thr:
+            cf_off += 1
+    counterfactual = {
+        "hard_true": cf_hard, "soft_true": cf_soft, "off_true": cf_off,
+        "note": ("基于本次落库六门闩 payload 的等价推导，非重新扫描；"
+                 "soft 与 core 判定严格一致，off 按 score+15 重算评分门闩。"),
+    }
 
     # 8 大指数可解释性快照（来自 index_payloads 裸 dict）
     indexes_view = []
@@ -243,6 +301,11 @@ def diagnose(rows: List[Dict[str, Any]], *,
             f"其中个股+行业+资金三腿全过、仅被大盘否决的有 "
             f"{three_legs_but_market} 只。")
 
+    if relaxed:
+        conclusion += (f" 【W95：高位风控已放宽为 "
+                       f"{opts.get('high_position_gate')}，"
+                       "「大盘非高位」不再作为否决门闩】")
+
     stage_note = (
         "系统严格腿测「趋势确认后」：需指数站上年线 MA250 且均线多头顺次排列，"
         "在底部放量启动/反转首日数学上不会满足；人工所说的『三振』是"
@@ -266,6 +329,7 @@ def diagnose(rows: List[Dict[str, Any]], *,
         "conclusion": conclusion,
         "stage_note": stage_note,
         "as_of": as_of,
+        "counterfactual": counterfactual,
     }
 
 
@@ -278,12 +342,21 @@ def diag_sheet_rows(diag: Dict[str, Any]) -> List[List[Any]]:
         ["项目", "值", "说明"],
         ["扫描个股数", diag.get("n_total"), ""],
         ["真三振数", diag.get("n_true"), "六门闩 all() 成立"],
+        ["若放宽为 soft 的真三振数",
+         (diag.get("counterfactual") or {}).get("soft_true"),
+         "等价推导：保留 -15 惩罚，仅把高位门闩移出否决"],
+        ["若放宽为 off 的真三振数",
+         (diag.get("counterfactual") or {}).get("off_true"),
+         "等价推导：去掉 -15 惩罚并重算评分门闩"],
         ["回放日期", diag.get("as_of") or "（实时）", "--as-of 时按历史截面回放"],
         ["大盘腿口径", (diag.get("market_leg") or {}).get("market_mode") or "—",
          "yearline=严格年线腿 / ma=MA20/MA60"],
         ["大盘趋势向上", (diag.get("market_leg") or {}).get("market_up"), ""],
         ["大盘位置", (diag.get("market_leg") or {}).get("position"), "近120日价格分位"],
         ["生效真三振阈值", (diag.get("options") or {}).get("true_threshold"), ""],
+        ["大盘非高位风控",
+         (diag.get("options") or {}).get("high_position_gate") or "hard",
+         "hard=一票否决(默认) / soft=不作否决 / off=去惩罚且不作否决"],
         ["全池最高共振评分", diag.get("score_max"),
          f"距阈值还差 {diag.get('gap_to_threshold')} 分"
          if diag.get("gap_to_threshold") is not None else ""],

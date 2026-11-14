@@ -391,6 +391,15 @@ def render_resonance_config():
             "指数滞后降级天数 N", min_value=0, max_value=30,
             value=int(eff.get("index_max_lag_days") or 3), step=1,
             disabled=not use_lag, key="w74_lag")
+        # W95/①：大盘非高位风控三态（默认 hard，生产信号零变化）
+        _hpg = eff.get("high_position_gate", "hard")
+        hpg = st.selectbox(
+            "大盘非高位风控", ["hard", "soft", "off"],
+            index=["hard", "soft", "off"].index(
+                _hpg if _hpg in ("hard", "soft", "off") else "hard"),
+            help="hard=一票否决+高位-15惩罚（生产默认，零回归）；"
+                 "soft=保留-15惩罚但不作否决门闩；off=去掉惩罚且不作否决门闩",
+            key="w95_high_position_gate")
         if st.form_submit_button("保存配置（立即热生效）", type="primary"):
             opts = {
                 "market_mode": m,
@@ -398,6 +407,7 @@ def render_resonance_config():
                 "capital_min_score": cms,
                 "capital_min_volume_ratio": cvr,
                 "index_max_lag_days": (lag if use_lag else None),
+                "high_position_gate": hpg,
             }
             save_resonance_override(opts)
             st.success("已保存并热生效。下次分析/扫描即用新口径；历史缓存按口径自动失效重建。")

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Dict, Optional
 
 import pandas as pd
@@ -25,6 +26,10 @@ class SectorClient:
     def __init__(self, cfg: Optional[Dict] = None):
         self.cfg = cfg or {}
         self.db = MysteryDB(db_path=self.cfg.get('db_path') or None)
+        # W95/③：回放（--as-of）截断板块指数 K 线，cfg 优先 / env 兜底，
+        # 与 MarketDataClient 的 as_of 注入一致；为空时行为零变化。
+        _a = self.cfg.get('as_of') or os.environ.get('MYSTERY_AS_OF') or ''
+        self.as_of = str(_a)[:10]
         # W优化⑦：板块指数 K 线按 sector_code 记忆化。同一行业被成百上千只
         # 个股共享，全市场扫描若不缓存会重复读库 O(个股数) 次；缓存后降为
         # O(行业数)。生命周期跟随本实例（扫描 worker / 单次分析各一份），
@@ -40,7 +45,10 @@ class SectorClient:
         cache = self._sector_kline_cache
         if code in cache:
             return cache[code]
-        df = self.db.get_sector_kline(sector_code)
+        # 仅在回放模式才传 end_date：正式扫描走旧签名，保证 W85/W优化⑦
+        # 等既有 FakeDB / 自定义 db（只实现 get_sector_kline(code)）零回归。
+        df = (self.db.get_sector_kline(sector_code, end_date=self.as_of)
+              if self.as_of else self.db.get_sector_kline(sector_code))
         cache[code] = df
         return df
 
