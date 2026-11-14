@@ -6,7 +6,7 @@ import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 import pandas as pd
-from ._base import BaseRepoMixin
+from ._base import BaseRepoMixin, unwrap_sqlite
 from ._helpers import *
 
 class SectorRepoMixin(BaseRepoMixin):
@@ -31,7 +31,7 @@ class SectorRepoMixin(BaseRepoMixin):
             with self._lock:
                 conn = self._connect()
                 try:
-                    df = pd.read_sql_query(sql, conn, params=tuple(params))
+                    df = pd.read_sql_query(sql, unwrap_sqlite(conn), params=tuple(params))
                     if df is None or df.empty:
                         return None
                     df = df.rename(columns={'trade_date': '日期', 'open': '开盘价',

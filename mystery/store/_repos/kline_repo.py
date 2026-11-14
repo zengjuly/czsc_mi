@@ -6,7 +6,7 @@ import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 import pandas as pd
-from ._base import BaseRepoMixin
+from ._base import BaseRepoMixin, unwrap_sqlite
 from ._helpers import *
 
 # 单票/多票 upsert 共用同一条 SQL（ON CONFLICT 幂等 upsert）。
@@ -68,7 +68,7 @@ class KlineRepoMixin(BaseRepoMixin):
                         sql += " AND date<=?"
                         params.append(end_date)
                     sql += " ORDER BY date ASC"
-                    df = pd.read_sql_query(sql, conn, params=params)
+                    df = pd.read_sql_query(sql, unwrap_sqlite(conn), params=params)
                     return df
                 finally:
                     conn.close()

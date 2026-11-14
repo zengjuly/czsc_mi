@@ -41,6 +41,25 @@ class _ConnWrapper:
                 pass
 
 
+def unwrap_sqlite(conn):
+    """取出 W61 线程复用代理（_ConnWrapper）底层的原生 sqlite3.Connection。
+
+    pandas >= 2 的 read_sql_query 只把 SQLAlchemy connectable / URI /
+    sqlite3.Connection 视为受支持连接，传入其它 DBAPI2 对象会每次调用
+    抛一条 UserWarning。W61 起 _connect() 返回 _ConnWrapper（属性转发 +
+    close() no-op），于是全市场回放每读一只票的 K 线就刷一条警告，
+    5582 票 + 板块累计数千行，淹没日志。
+
+    _ConnWrapper 只是转发，底层 real 才是真正执行 SQL 的连接；把它交给
+    pandas 不改变任何查询结果、列顺序、dtype 或事务语义，且 pandas 不会
+    关闭外部传入的连接，线程级复用（close() no-op）照常保持。
+    非代理连接（原生 sqlite3.Connection、测试用 FakeDB 等）原样返回，
+    保证零行为变化与向后兼容。
+    """
+    real = getattr(conn, "_real", None)
+    return real if isinstance(real, sqlite3.Connection) else conn
+
+
 class BaseRepoMixin:
     """所有业务 Repo Mixin 的基类：提供 sqlite 短连接（WAL）、库初始化（建表+按序迁移）与线程锁。MysteryDB 通过多重继承聚合各业务 Mixin。"""
     def __init__(self, db_path: Optional[str] = None):
