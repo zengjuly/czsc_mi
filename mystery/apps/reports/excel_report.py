@@ -429,9 +429,64 @@ def _build_buffer(results: List[Dict[str, Any]]) -> "io.BytesIO":
     return buf
 
 
-def excel_bytes(results: List[Dict[str, Any]]) -> bytes:
-    """Web 下载用：AnalysisResult 列表 → xlsx bytes（格式同 write_excel）。"""
-    return _build_buffer(results).getvalue()
+def index_payloads(rows: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """W92：把 ``scan_results`` 的指数结果行解包成 ``analyze_major_indexes`` 裸 dict。
+
+    W84 落库的指数行是 ``_index_result(d)`` 包装形态：研判字段在
+    ``index_analysis`` 子字典里，顶层只有 name/code/score/is_index；而
+    「各大指数」工作表 / HTML 区块期望的是裸 dict（close/above_year/
+    candle_daily/...）。此前 CLI ``_write_scan_report`` 直接把包装行传给
+    ``write_excel``，即便指数行存在，表里也全是空值。Web 视图层同样需要
+    这个转换。已经是裸 dict 的行原样保留，兼容两种来源。
+    """
+    out: List[Dict[str, Any]] = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        ia = r.get("index_analysis")
+        if isinstance(ia, dict) and ia:
+            d = dict(ia)
+            if not d.get("name"):
+                d["name"] = r.get("name") or ""
+            if not d.get("code"):
+                d["code"] = r.get("symbol") or ""
+            out.append(d)
+        elif r.get("close") is not None or r.get("above_year") is not None:
+            out.append(r)
+    return out
+
+
+def excel_bytes(results: List[Dict[str, Any]], *,
+                major_indexes: Optional[List[Dict[str, Any]]] = None,
+                focus_sectors: Optional[List[Dict[str, Any]]] = None) -> bytes:
+    """Web 下载用：AnalysisResult 列表 → xlsx bytes（格式同 write_excel）。
+
+    W92：新增 ``major_indexes`` / ``focus_sectors`` 两个可选参数，非空时在
+    **内存 workbook** 上追加「各大指数」「行业板块」两个工作表，与 CLI 日报
+    ``write_excel`` 完全一致（复用同一套 sheet 填充函数，不落临时文件）。
+
+    之前 Web 下载只调 ``_build_buffer`` 生成单个「汇总报告」，导致用户下载
+    的 Excel 里既没有大盘指数分析、也没有板块分析；指数行还被当成个股混进
+    汇总表，上百列全空。现在由 Web 视图层把指数行分离、现算板块后传入。
+
+    两个参数都为空时行为与 W91 及之前完全一致（零回归，W90 测试直接覆盖）。
+    """
+    buf = _build_buffer(results)
+    if not major_indexes and not focus_sectors:
+        return buf.getvalue()
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(buf)
+        if major_indexes:
+            _fill_index_sheet(wb.create_sheet("各大指数"), major_indexes)
+        if focus_sectors:
+            _fill_sector_sheet(wb.create_sheet("行业板块"), focus_sectors)
+        out = io.BytesIO()
+        wb.save(out)
+        return out.getvalue()
+    except Exception as e:  # noqa: BLE001 附加表失败不影响汇总报告主体
+        logger.warning("Web Excel 追加指数/板块表失败（不影响主体）: %s", e)
+        return buf.getvalue()
 
 
 def write_excel(results: List[Dict[str, Any]], path: str,
@@ -468,105 +523,120 @@ def write_excel(results: List[Dict[str, Any]], path: str,
     return path
 
 
+def _fill_index_sheet(ws, indexes: List[Dict[str, Any]]) -> None:
+    """W84/W92：把各大指数研判写入**既有 worksheet**（不负责打开/保存工作簿）。
+
+    W92 抽出为 ws 级填充函数：``write_excel``（CLI 日报，落盘）与
+    ``excel_bytes``（Web 下载，内存 buffer）共用同一份列定义与口径，避免
+    两条链路长期漂移。``indexes`` 为 ``analyze_major_indexes`` 产出的裸 dict
+    （或由 ``_index_result`` 的 ``index_analysis`` 解包而来）。
+    """
+    from openpyxl.styles import Font
+    cols = ["指数", "代码", "最新收盘", "涨跌幅5日(%)", "涨跌幅20日(%)",
+            "年线位置", "MA排列", "日K形态", "周K形态",
+            "主力吸筹(W86)", "吸筹结论"]
+    ws.append(cols)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for d in indexes:
+        above = d.get("above_year")
+        dist = d.get("year_dist_pct")
+        year = ("站上年线" if above else "跌破年线") if above is not None \
+            else "未知"
+        if dist is not None:
+            year += f"({dist:+.1f}%)"
+        ma = d.get("ma_aligned")
+        ma_s = "多头排列" if ma else ("非多头" if ma is not None else "未知")
+        acc = d.get("accumulation") or {}
+        ws.append([
+            d.get("name", ""), d.get("code", ""),
+            d.get("close"), d.get("chg_5d"), d.get("chg_20d"),
+            year, ma_s,
+            (d.get("candle_daily") or "—"),
+            (d.get("candle_weekly") or "—"),
+            d.get("accumulation_level") or "—",
+            acc.get("conclusion") or "—",
+        ])
+    ws.freeze_panes = "B2" if ws.max_row > 1 else None
+    # 列宽自适应（上限 40，日/周形态较长）
+    for col_idx, _ in enumerate(cols, 1):
+        letter = ws.cell(row=1, column=col_idx).column_letter
+        vals = [len(str(cols[col_idx - 1]))] + [
+            len(str(r.value)) for r in ws[ws.max_row]
+            if r.column == col_idx and r.value is not None]
+        ws.column_dimensions[letter].width = min(max(vals or [8]), 40)
+
+
 def _append_index_sheet(path: str, indexes: List[Dict[str, Any]]) -> None:
     """W84：在报告末尾追加「各大指数」工作表（openpyxl 追加，失败不影响主体）。"""
     try:
         from openpyxl import load_workbook
-        from openpyxl.styles import Font
         wb = load_workbook(path)
-        ws = wb.create_sheet("各大指数")
-        cols = ["指数", "代码", "最新收盘", "涨跌幅5日(%)", "涨跌幅20日(%)",
-                "年线位置", "MA排列", "日K形态", "周K形态",
-                "主力吸筹(W86)", "吸筹结论"]
-        ws.append(cols)
-        for c in ws[1]:
-            c.font = Font(bold=True)
-        for d in indexes:
-            above = d.get("above_year")
-            dist = d.get("year_dist_pct")
-            year = ("站上年线" if above else "跌破年线") if above is not None \
-                else "未知"
-            if dist is not None:
-                year += f"({dist:+.1f}%)"
-            ma = d.get("ma_aligned")
-            ma_s = "多头排列" if ma else ("非多头" if ma is not None else "未知")
-            acc = d.get("accumulation") or {}
-            ws.append([
-                d.get("name", ""), d.get("code", ""),
-                d.get("close"), d.get("chg_5d"), d.get("chg_20d"),
-                year, ma_s,
-                (d.get("candle_daily") or "—"),
-                (d.get("candle_weekly") or "—"),
-                d.get("accumulation_level") or "—",
-                acc.get("conclusion") or "—",
-            ])
-        # 列宽自适应（上限 40，日/周形态较长）
-        for col_idx, _ in enumerate(cols, 1):
-            letter = ws.cell(row=1, column=col_idx).column_letter
-            vals = [len(str(cols[col_idx - 1]))] + [
-                len(str(r.value)) for r in ws[ws.max_row]
-                if r.column == col_idx and r.value is not None]
-            ws.column_dimensions[letter].width = min(max(vals or [8]), 40)
+        _fill_index_sheet(wb.create_sheet("各大指数"), indexes)
         wb.save(path)
     except Exception as e:  # noqa: BLE001 指数表失败不阻塞报告
         logger.warning("Excel 各大指数表写入失败（不影响报告主体）: %s", e)
+
+
+def _fill_sector_sheet(ws, sectors: List[Dict[str, Any]]) -> None:
+    """W85/W92：板块研判区 + 强相关个股区写入既有 worksheet（只读展示）。"""
+    from openpyxl.styles import Font
+    cols = ["板块", "代码", "日期", "最新", "涨跌幅5日(%)", "涨跌幅20日(%)",
+            "年线位置", "MA排列", "板块强度分(0-25)", "强度方向",
+            "日K形态", "周K形态", "主力吸筹(W86)", "强相关个股数"]
+    ws.append(cols)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for d in sectors:
+        above = d.get("above_year")
+        dist = d.get("year_dist_pct")
+        year = ("站上年线" if above else "跌破年线") if above is not None \
+            else "未知"
+        if dist is not None:
+            year += f"({dist:+.1f}%)"
+        ma = d.get("ma_aligned")
+        ma_s = "多头排列" if ma else ("非多头" if ma is not None else "未知")
+        st = d.get("strength_score")
+        ws.append([
+            d.get("name", ""), d.get("code", ""), d.get("date", ""),
+            d.get("close"), d.get("chg_5d"), d.get("chg_20d"),
+            year, ma_s, st,
+            "偏强" if d.get("strength_up") else "偏弱",
+            (d.get("candle_daily") or "—"),
+            (d.get("candle_weekly") or "—"),
+            d.get("accumulation_level") or "—",
+            len(d.get("related") or []),
+        ])
+    # 强相关个股明细区（板块名 / 个股 / 相关系数 / 是否本期分析 / 评分 / 吸筹）
+    ws.append([])
+    hdr = ws.max_row + 1
+    ws.append(["板块", "强相关个股", "代码", "相关系数", "本期已分析",
+               "评分", "操作建议", "主力吸筹(W86)"])
+    for c in ws[hdr]:
+        c.font = Font(bold=True)
+    for d in sectors:
+        for r in (d.get("related") or []):
+            ws.append([
+                d.get("name", ""), r.get("name") or "",
+                r.get("symbol") or "", r.get("corr"),
+                "是" if r.get("analyzed") else "否",
+                r.get("score"), r.get("advice") or "—",
+                r.get("accumulation_level") or "—",
+            ])
+    for col_idx, _ in enumerate(cols, 1):
+        letter = ws.cell(row=1, column=col_idx).column_letter
+        vals = [len(str(cols[col_idx - 1]))] + [
+            len(str(r.value)) for row in ws.iter_rows()
+            for r in row if r.column == col_idx and r.value is not None]
+        ws.column_dimensions[letter].width = min(max(vals or [8]), 42)
 
 
 def _append_sector_sheet(path: str, sectors: List[Dict[str, Any]]) -> None:
     """W85：追加「行业板块」工作表 = 板块研判区 + 强相关个股区（只读展示）。"""
     try:
         from openpyxl import load_workbook
-        from openpyxl.styles import Font
         wb = load_workbook(path)
-        ws = wb.create_sheet("行业板块")
-        cols = ["板块", "代码", "日期", "最新", "涨跌幅5日(%)", "涨跌幅20日(%)",
-                "年线位置", "MA排列", "板块强度分(0-25)", "强度方向",
-                "日K形态", "周K形态", "主力吸筹(W86)", "强相关个股数"]
-        ws.append(cols)
-        for c in ws[1]:
-            c.font = Font(bold=True)
-        for d in sectors:
-            above = d.get("above_year")
-            dist = d.get("year_dist_pct")
-            year = ("站上年线" if above else "跌破年线") if above is not None \
-                else "未知"
-            if dist is not None:
-                year += f"({dist:+.1f}%)"
-            ma = d.get("ma_aligned")
-            ma_s = "多头排列" if ma else ("非多头" if ma is not None else "未知")
-            st = d.get("strength_score")
-            ws.append([
-                d.get("name", ""), d.get("code", ""), d.get("date", ""),
-                d.get("close"), d.get("chg_5d"), d.get("chg_20d"),
-                year, ma_s, st,
-                "偏强" if d.get("strength_up") else "偏弱",
-                (d.get("candle_daily") or "—"),
-                (d.get("candle_weekly") or "—"),
-                d.get("accumulation_level") or "—",
-                len(d.get("related") or []),
-            ])
-        # 强相关个股明细区（板块名 / 个股 / 相关系数 / 是否本期分析 / 评分 / 吸筹）
-        ws.append([])
-        hdr = ws.max_row + 1
-        ws.append(["板块", "强相关个股", "代码", "相关系数", "本期已分析",
-                   "评分", "操作建议", "主力吸筹(W86)"])
-        for c in ws[hdr]:
-            c.font = Font(bold=True)
-        for d in sectors:
-            for r in (d.get("related") or []):
-                ws.append([
-                    d.get("name", ""), r.get("name") or "",
-                    r.get("symbol") or "", r.get("corr"),
-                    "是" if r.get("analyzed") else "否",
-                    r.get("score"), r.get("advice") or "—",
-                    r.get("accumulation_level") or "—",
-                ])
-        for col_idx, _ in enumerate(cols, 1):
-            letter = ws.cell(row=1, column=col_idx).column_letter
-            vals = [len(str(cols[col_idx - 1]))] + [
-                len(str(r.value)) for row in ws.iter_rows()
-                for r in row if r.column == col_idx and r.value is not None]
-            ws.column_dimensions[letter].width = min(max(vals or [8]), 42)
+        _fill_sector_sheet(wb.create_sheet("行业板块"), sectors)
         wb.save(path)
     except Exception as e:  # noqa: BLE001 板块表失败不阻塞报告
         logger.warning("Excel 行业板块表写入失败（不影响报告主体）: %s", e)

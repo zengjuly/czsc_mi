@@ -172,7 +172,7 @@ def _write_scan_report(results, args) -> None:
     供飞书 xlsx 链接与 git push 复用，无需改 feishu_notify / 管线 git 段。
     W26b：附换手覆盖率 QA 行（只读观测，不改排序、不改 2%/低位门）。
     """
-    from ..apps.reports.excel_report import write_excel
+    from ..apps.reports.excel_report import index_payloads, write_excel
     from ..apps.reports.html_report import write_html
     from ..store.db import MysteryDB
 
@@ -198,7 +198,23 @@ def _write_scan_report(results, args) -> None:
         pass
     # W84：全量后台扫描结果已含各大指数条目（is_index=True），抽离为独立区块，
     # 个股表只传股票结果，避免指数条目进入个股卡片/排序。
-    major_indexes = [r for r in results if r.get("is_index")]
+    # W92：指数行是 _index_result(d) 包装形态（研判字段在 index_analysis 子
+    # 字典），必须解包成 analyze_major_indexes 裸 dict，否则「各大指数」工作表
+    # / HTML 区块取不到 close/年线/形态等字段，整张表全是空值。
+    # 自选/板块扫描的 results 不含指数行（W84 只在 market/full 并入），此时
+    # 回退现算，保证日报始终有各大指数区块 —— 生产 11-10~11-13 四份日报只有
+    # 「汇总报告 + 行业板块」却缺「各大指数」，根因就在这里（cron 走
+    # scan --watchlist --report）。
+    major_indexes = index_payloads(
+        [r for r in results if r.get("is_index")])
+    if not major_indexes:
+        try:
+            from ..services.analyze import AnalysisService
+            from ..services.index_analysis import analyze_major_indexes
+            major_indexes = analyze_major_indexes(
+                AnalysisService(args.cfg).market) or []
+        except Exception:  # noqa: BLE001 指数现算失败不阻塞日报主体
+            major_indexes = []
     stock_results = [r for r in results if not r.get("is_index")]
     # W85：关注行业板块研判（真实板块指数 K 线；相关个股附带本期分析结论）
     focus_sectors = None

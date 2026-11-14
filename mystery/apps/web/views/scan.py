@@ -14,6 +14,213 @@ from mystery.apps.reports import result_fields as _rf
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# W92：大盘指数 / 行业板块的完整分析区块（纯展示层）
+#
+# 背景：W84 把 8 大指数以 ``is_index=True`` 并入 ``scan_results``，但它们被
+# 当成个股行塞进 130+ 列的个股大表 —— 除「指数研判 / 主力吸筹」外上百列全
+# 空；名称上的详情链接又指向个股详情页，指数取不到个股 K 线 → 一片空白。
+# W89 阶段② 则把板块研判写进 JSONL 分片、明确不进 ``scan_results``，Web 结果
+# 页从不读分片，于是「没有板块的分析」。
+#
+# 解法：两类对象各自摊开成独立、完整、可读的区块；个股大表只保留个股行；
+# Web 下载的 Excel 同步追加「各大指数」「行业板块」两个工作表。
+# 不取数重算个股评分、不改信号 / 规则 / RULE_VER / 缓存键。
+# ---------------------------------------------------------------------------
+
+def split_scan_rows(rows: list) -> tuple:
+    """W92：把指数行（``is_index=True``）与个股行分离（纯函数，输入不变）。"""
+    stock_rows: list = []
+    index_rows: list = []
+    for r in rows or []:
+        if isinstance(r, dict) and r.get("is_index"):
+            index_rows.append(r)
+        else:
+            stock_rows.append(r)
+    return stock_rows, index_rows
+
+
+def _fmt_market_num(v, suffix: str = "") -> str:
+    """W92：展示层数值格式化（统一 str，避免 pyarrow 数值/字符串混列告警）。"""
+    if v is None:
+        return "—"
+    try:
+        return f"{float(v):.2f}{suffix}"
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def market_index_view(indexes: list) -> list:
+    """W92：各大指数研判 → Web 展示行（完整字段，不再淹没在个股大表里）。"""
+    from mystery.apps.reports.excel_report import index_payloads
+    out = []
+    for d in index_payloads(indexes):
+        above, dist = d.get("above_year"), d.get("year_dist_pct")
+        year = "未知" if above is None else ("站上年线" if above else "跌破年线")
+        if above is not None and dist is not None:
+            try:
+                year += f"({float(dist):+.1f}%)"
+            except (TypeError, ValueError):
+                pass
+        ma = d.get("ma_aligned")
+        ma_s = "未知" if ma is None else ("多头排列" if ma else "非多头")
+        acc = d.get("accumulation") or {}
+        out.append({
+            "指数": str(d.get("name") or "—"),
+            "代码": str(d.get("code") or "—"),
+            "数据日期": str(d.get("date") or "—"),
+            "最新收盘": _fmt_market_num(d.get("close")),
+            "近5日": _fmt_market_num(d.get("chg_5d"), "%"),
+            "近20日": _fmt_market_num(d.get("chg_20d"), "%"),
+            "年线位置": year,
+            "MA排列": ma_s,
+            "日K形态": str(d.get("candle_daily") or "—"),
+            "周K形态": str(d.get("candle_weekly") or "—"),
+            "主力吸筹": str(d.get("accumulation_level") or "—"),
+            "吸筹结论": str(acc.get("conclusion") or "—"),
+        })
+    return out
+
+
+def market_sector_view(sectors: list) -> list:
+    """W92：行业板块研判 → Web 展示行（复用 W87 字段映射，与日报同口径）。"""
+    from .sector_fields import sector_drilldown_view
+    out = []
+    for d in sectors or []:
+        if not isinstance(d, dict):
+            continue
+        v = sector_drilldown_view(d)
+        out.append({
+            "板块": v["name"], "代码": v["code"], "日期": v["date"],
+            "最新": v["close"], "近5日": v["chg_5d"], "近20日": v["chg_20d"],
+            "年线位置": v["year"], "MA排列": v["ma"],
+            "板块强度": v["strength"],
+            "日K形态": v["candle_daily"], "周K形态": v["candle_weekly"],
+            "主力吸筹": v["acc_level"], "吸筹阶段": v["acc_stage"],
+            "强相关个股数": len(d.get("related") or []),
+        })
+    return out
+
+
+def _sector_opts() -> dict:
+    """W92：读取生效的板块配置（异常降级到生产默认，不阻塞页面）。"""
+    try:
+        from mystery.services import runtime_settings as rts
+        return rts.sector_options_normalized()
+    except Exception:  # noqa: BLE001
+        return {"enabled": True, "focus": "auto", "top_n": 8,
+                "corr_window": 60, "auto_max": 8}
+
+
+def _sector_cache_key(opts: dict) -> tuple:
+    """W92：把板块配置拍平成 ``st.cache_data`` 可哈希的 key。
+
+    ``focus`` 手动多选时是 list（不可哈希），编码成 ``list:a,b`` 字符串，
+    缓存内部再还原，保证配置改动能立即让缓存失效。
+    """
+    f = opts.get("focus", "auto")
+    fk = ("list:" + ",".join(str(x) for x in f)) \
+        if isinstance(f, (list, tuple)) else str(f)
+    try:
+        top_n = int(opts.get("top_n", 8))
+        corr = int(opts.get("corr_window", 60))
+        amax = int(opts.get("auto_max", 8))
+    except (TypeError, ValueError):
+        top_n, corr, amax = 8, 60, 8
+    return fk, bool(opts.get("enabled", True)), top_n, corr, amax
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _market_context_cached(trade_date: str, focus_key: str, enabled: bool,
+                           top_n: int, corr_window: int,
+                           auto_max: int) -> dict:
+    """W92：各大指数 + 关注板块研判（只读，10 分钟缓存，异常硬隔离）。
+
+    与日报 ``_cmd_daily`` / W87 板块钻取同一口径：``analyze_major_indexes``
+    + ``analyze_focus_sectors``。参数全部可哈希，避免每次 rerun 重取指数 K
+    线、重算板块 Pearson 相关矩阵。指数/板块失败都不阻塞个股结果展示。
+    """
+    ctx = {"indexes": [], "sectors": []}
+    try:
+        from mystery.services.index_analysis import analyze_major_indexes
+        ctx["indexes"] = analyze_major_indexes(_service().market)
+    except Exception as exc:  # noqa: BLE001 指数失败不阻塞板块与个股
+        logger.warning("W92 各大指数研判失败: %s", str(exc)[:120])
+    if not enabled:
+        return ctx
+    try:
+        from mystery.services.sector_analysis import analyze_focus_sectors
+        focus = (focus_key[5:].split(",") if focus_key.startswith("list:")
+                 else focus_key)
+        opts = {"enabled": True, "focus": focus, "top_n": top_n,
+                "corr_window": corr_window, "auto_max": auto_max}
+        ctx["sectors"] = analyze_focus_sectors(_service().market.db, opts=opts)
+    except Exception as exc:  # noqa: BLE001 板块失败不阻塞个股结果
+        logger.warning("W92 行业板块研判失败: %s", str(exc)[:120])
+    return ctx
+
+
+def _market_context(rows: list) -> dict:
+    """W92：按当前 rows 的交易日 + 生效配置取大盘/板块上下文（命中缓存）。"""
+    td = ""
+    for r in rows or []:
+        if isinstance(r, dict) and r.get("trade_date"):
+            td = str(r["trade_date"])[:10]
+            break
+    return _market_context_cached(td, *_sector_cache_key(_sector_opts()))
+
+
+def _render_market_overview(rows: list, key: str = "scan") -> dict:
+    """W92：结果表上方「各大指数研判」「行业板块研判」两个完整区块。
+
+    返回 ``{'stock_rows', 'indexes', 'sectors', 'index_rows'}``，供结果表
+    与 Excel 下载复用同一份上下文（一次取数、两处展示）。
+    """
+    from mystery.apps.reports.excel_report import index_payloads
+    stock_rows, index_rows = split_scan_rows(rows)
+    ctx = _market_context(rows)
+    # 指数优先用本 job 已落库的快照（与所选任务一致），缓存现算兜底：
+    # 信号过滤后 rows 可能不含指数行，此时仍展示完整的各大指数研判。
+    indexes = index_payloads(index_rows) or list(ctx.get("indexes") or [])
+    sectors = list(ctx.get("sectors") or [])
+
+    st.subheader("📊 各大指数研判")
+    iv = market_index_view(indexes)
+    if iv:
+        st.caption(f"共 {len(iv)} 只宽基指数 · 年线位置 / MA 排列 / 日周 K 形态 / "
+                   "主力吸筹（与 Excel「各大指数」工作表同口径）")
+        st.dataframe(iv, use_container_width=True, hide_index=True,
+                     key=f"{key}_index_view")
+    else:
+        st.info("暂无指数研判数据（指数 K 线未同步），个股结果不受影响。")
+
+    st.subheader("🏭 行业板块研判")
+    sv = market_sector_view(sectors)
+    if sv:
+        o = _sector_opts()
+        st.caption(f"关注 {len(sv)} 个板块 · 真实板块指数 K 线 · "
+                   f"相关窗口 {o.get('corr_window', 60)} 日 / "
+                   f"Top {o.get('top_n', 8)}（与 Excel「行业板块」工作表同口径）")
+        st.dataframe(sv, use_container_width=True, hide_index=True,
+                     key=f"{key}_sector_view")
+        from .sector_fields import related_stock_rows
+        details = []
+        for d in sectors:
+            for r in related_stock_rows(d.get("related"), stock_rows):
+                details.append({"板块": str(d.get("name") or "—"), **r})
+        if details:
+            with st.expander(f"展开 {len(details)} 条板块强相关个股明细",
+                             expanded=False):
+                st.dataframe(details, use_container_width=True,
+                             hide_index=True, key=f"{key}_sector_rel")
+    else:
+        st.info("暂无板块研判数据（板块关注配置关闭或 sector_kline 未同步），"
+                "个股结果不受影响。")
+
+    return {"stock_rows": stock_rows, "indexes": indexes,
+            "sectors": sectors, "index_rows": index_rows}
+
+
 def _wave3_cell(row: dict, key: str):
     """W69：取扫描行内三浪字段；旧 job 缺字段统一显示 '-'。"""
     w = row.get('wave3') or {}
@@ -139,7 +346,10 @@ def view_scan():
     rows = scan_results_of(job_id, signal=sig_map[sig])
     st.caption(f"job #{job_id}（{sig}）共 {len(rows)} 只")
     if rows:
-        _render_scan_table(rows, key="scanjob")
+        # W92：先展示完整的大盘指数 / 行业板块研判，再把纯个股结果交给大表
+        # （指数行不再混进 130+ 列个股表造成「分析内容都是空的」）。
+        ctx = _render_market_overview(rows, key="scanjob")
+        _render_scan_table(ctx["stock_rows"], key="scanjob", market_ctx=ctx)
     else:
         st.info("该任务无满足条件的标的")
 
@@ -147,7 +357,8 @@ def view_scan():
     if rows:
         st.divider()
         st.subheader("前台扫描结果")
-        _render_scan_table(rows, key="scan")
+        ctx = _render_market_overview(rows, key="scan")
+        _render_scan_table(ctx["stock_rows"], key="scan", market_ctx=ctx)
 
 def _scan_table_data(rows: list, nav_key: str = "") -> list:
     """扫描结果表格数据（纯函数，渲染与计算分离）。
@@ -287,8 +498,11 @@ def _scan_table_column_config() -> dict:
     }
 
 
-def _render_scan_table(rows: list, key: str = "scan"):
+def _render_scan_table(rows: list, key: str = "scan", *, market_ctx=None):
     """扫描结果表格（股票名称可点击进入详情，名称列冻结）+ 加入自选。
+
+    W92：``market_ctx`` 由 ``_render_market_overview`` 一次性取数后透传给
+    Excel 下载，避免重复计算指数 / 板块研判；不传时下载按钮自行取缓存。
 
     W90：「名称」列为超链接（详情 URL 挂在名称上），并用 ``pinned=True``
     冻结在最左侧（Streamlit ≥1.40 原生列冻结，横向滚动始终可见）；
@@ -352,7 +566,7 @@ def _render_scan_table(rows: list, key: str = "scan"):
             st.session_state['_jump_to_page'] = '个股分析'
             st.rerun()
     
-    _render_excel_download(rows, key=key)
+    _render_excel_download(rows, key=key, market_ctx=market_ctx)
     _add_watchlist_widget(rows, key=key)
 
 def _enrich_scan_rows(rows: list) -> list:
@@ -372,22 +586,40 @@ def _enrich_scan_rows(rows: list) -> list:
             logger.warning(f"[web] {r.get('symbol')} 补详情失败，保留原行: {str(e)[:80]}")
     return [enriched.get(r['symbol'], r) for r in rows]
 
-def _render_excel_download(rows: list, key: str = "scan"):
-    """扫描结果表下方「下载 Excel 报告」按钮（汇总 + 每只个股详情，同 daily 格式）。
+def _render_excel_download(rows: list, key: str = "scan", *,
+                           market_ctx: dict | None = None):
+    """扫描结果表下方「下载 Excel 报告」按钮（同 daily 格式）。
 
-    首次点击补齐详情（web 扫描落库缺明细）并生成 xlsx bytes 存 session；
-    再次点击直接用已生成文件下载，避免每次 rerun 重算。
-    session key 绑定 rows 签名：切换任务/信号后自动作废旧文件。
+    W92：除「汇总报告 + 每只个股详情」外，追加「各大指数」「行业板块」两个
+    工作表（与 CLI 日报 ``write_excel`` 同款填充函数）。此前 Web 只调
+    ``excel_bytes(enriched)`` 生成单个汇总表，指数行还被当成个股混进汇总表
+    造成上百列空白 —— 现在个股行与指数行分离，指数/板块各自成表。
+
+    首次点击补齐个股详情（web 扫描落库缺明细）并生成 xlsx bytes 存 session；
+    再次点击直接用已生成文件下载。session key 绑定 rows / 上下文签名，
+    切换任务或信号后自动作废旧文件。
     """
     if not rows:
         return
-    sig = f"{len(rows)}:{rows[0].get('symbol')}:{rows[-1].get('symbol')}:{rows[0].get('trade_date', '')}"
+    # 不传上下文时（如共振池页）自行取缓存，保证任何入口的 Excel 都带大盘/板块
+    if market_ctx is None:
+        market_ctx = _market_context(rows)
+    stock_rows, _ = split_scan_rows(rows)
+    indexes = list(market_ctx.get("indexes") or []) or None
+    sectors = list(market_ctx.get("sectors") or []) or None
+    first = stock_rows[0] if stock_rows else {}
+    last = stock_rows[-1] if stock_rows else {}
+    sig = (f"{len(stock_rows)}:{first.get('symbol', '')}:"
+           f"{last.get('symbol', '')}:{first.get('trade_date', '')}:"
+           f"{len(indexes or [])}:{len(sectors or [])}")
     gen_key, data_key = f"{key}_xlsx_gen", f"{key}_xlsx_data_{sig}"
-    if st.button(f"📥 下载 Excel 报告（{len(rows)} 只）", key=gen_key):
-        with st.spinner(f"补齐 {len(rows)} 只个股详情并生成 Excel..."):
-            enriched = _enrich_scan_rows(rows)
+    if st.button(f"📥 下载 Excel 报告（{len(stock_rows)} 只）", key=gen_key):
+        with st.spinner(f"补齐 {len(stock_rows)} 只个股详情并生成 Excel..."):
+            # 只对个股补详情：指数行没有个股 K 线，不做 analyze_one_stock
+            enriched = _enrich_scan_rows(stock_rows)
             try:
-                st.session_state[data_key] = excel_bytes(enriched)
+                st.session_state[data_key] = excel_bytes(
+                    enriched, major_indexes=indexes, focus_sectors=sectors)
             except Exception as e:  # noqa: BLE001
                 st.error(f"生成 Excel 失败: {e}")
                 st.session_state.pop(data_key, None)
@@ -397,7 +629,8 @@ def _render_excel_download(rows: list, key: str = "scan"):
                            file_name=fname,
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            key=f"{key}_xlsx_dl")
-        st.caption("包含：汇总报告 + 每只个股详情（与每日报告同格式）")
+        st.caption("包含：汇总报告 + 各大指数 + 行业板块 + 每只个股详情"
+                   "（与每日报告同格式）")
 
 def _turn_tags(row: dict) -> dict:
     """W32b：换手分档/风格两列（只读 core.turnover_tag，不重算规则）。
@@ -455,6 +688,13 @@ __all__ = [
     '_render_scan_table',
     '_enrich_scan_rows',
     '_render_excel_download',
+    # W92：大盘指数 / 行业板块完整分析区块
+    'split_scan_rows',
+    'market_index_view',
+    'market_sector_view',
+    '_sector_cache_key',
+    '_market_context',
+    '_render_market_overview',
     '_turn_tags',
     '_wave3_cell',
     '_sig_flag',
