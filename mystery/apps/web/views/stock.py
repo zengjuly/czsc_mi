@@ -490,7 +490,7 @@ def _stock_pick_select(label: str = "选择股票（输入名称搜索）",
         return code[:-1], name
     return pick, ""
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=16, show_spinner=False)
 def _plot_cache(symbol: str, freq: str, data_ver: str = ""):
     """缠论图 Figure（plotly 自绘；czsc 已装且数据可用时返回，否则 None）。
 
@@ -508,7 +508,7 @@ def _plot_cache(symbol: str, freq: str, data_ver: str = ""):
         st.warning(f"缠论图生成失败，降级文本展示: {str(e)[:80]}")
         return None
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=4, show_spinner=False)
 def _lightweight_cache(symbol: str, freq: str, data_ver: str = ""):
     """官方 lightweight 校验图 HTML（plot_czsc(c, output='html')）；失败返回 ''。
 

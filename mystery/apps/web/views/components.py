@@ -39,7 +39,7 @@ from mystery.services import watchlist as _wl  # noqa: E402
 def _service():
     return AnalysisService(load_config())
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=600, max_entries=2, show_spinner=False)
 def _market_env_line_cached() -> str:
     """W37 大盘滤网一行摘要（10 分钟缓存；fetch_index 会话缓存双保险）。"""
     from mystery.services.analyze import market_env_line, market_env_summary
@@ -56,7 +56,7 @@ def _fmt(v, nd=2):
     except Exception:
         return str(v)
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=600, max_entries=1, show_spinner=False)
 def _stock_pick_options() -> list:
     """全市场「名称（代码）」选项列表（selectbox 名称搜索用，缓存 10 分钟）。"""
     svc = _service()

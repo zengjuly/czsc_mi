@@ -45,6 +45,9 @@ class SectorClient:
         cache = self._sector_kline_cache
         if code in cache:
             return cache[code]
+        # W96：FIFO 上限，防止跨板块浏览时无限增长（板块 K 线约 1MB/个）
+        if len(cache) >= 48:
+            cache.pop(next(iter(cache)), None)
         # 仅在回放模式才传 end_date：正式扫描走旧签名，保证 W85/W优化⑦
         # 等既有 FakeDB / 自定义 db（只实现 get_sector_kline(code)）零回归。
         df = (self.db.get_sector_kline(sector_code, end_date=self.as_of)

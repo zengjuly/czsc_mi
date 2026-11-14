@@ -484,10 +484,10 @@ def view_system():
         sig_map = {"全部": None, "真三振": "true_resonance", "回踩确认突破": "breakout_confirm",
                "假突破": "false_breakout",
                    "VAP-ATR突破": "vap_atr", "筹码低位": "chip_low"}
-        rows = scan_results_of(job_id, signal=sig_map[sig])
+        rows = scan_results_of(job_id, signal=sig_map[sig], slim=True)
         st.caption(f"job #{job_id}（{sig}）共 {len(rows)} 只")
         if rows:
-            _render_scan_table(rows, key="sysjob")
+            _render_scan_table(rows, key="sysjob", job_id=job_id)
         else:
             st.info("该任务无满足条件的标的")
     else:

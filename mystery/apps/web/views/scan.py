@@ -130,7 +130,7 @@ def _sector_cache_key(opts: dict) -> tuple:
     return fk, bool(opts.get("enabled", True)), top_n, corr, amax
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=600, max_entries=4, show_spinner=False)
 def _market_context_cached(trade_date: str, focus_key: str, enabled: bool,
                            top_n: int, corr_window: int,
                            auto_max: int) -> dict:
@@ -406,13 +406,14 @@ def view_scan():
     sig_map = {"全部": None, "真三振": "true_resonance", "回踩确认突破": "breakout_confirm",
                "假突破": "false_breakout",
                "VAP-ATR突破": "vap_atr", "筹码低位": "chip_low"}
-    rows = scan_results_of(job_id, signal=sig_map[sig])
+    rows = scan_results_of(job_id, signal=sig_map[sig], slim=True)
     st.caption(f"job #{job_id}（{sig}）共 {len(rows)} 只")
     if rows:
         # W92：先展示完整的大盘指数 / 行业板块研判，再把纯个股结果交给大表
         # （指数行不再混进 130+ 列个股表造成「分析内容都是空的」）。
         ctx = _render_market_overview(rows, key="scanjob")
-        _render_scan_table(ctx["stock_rows"], key="scanjob", market_ctx=ctx)
+        _render_scan_table(ctx["stock_rows"], key="scanjob", market_ctx=ctx,
+                           job_id=job_id)
     else:
         st.info("该任务无满足条件的标的")
 
@@ -561,7 +562,8 @@ def _scan_table_column_config() -> dict:
     }
 
 
-def _render_scan_table(rows: list, key: str = "scan", *, market_ctx=None):
+def _render_scan_table(rows: list, key: str = "scan", *, market_ctx=None,
+                       job_id: int | None = None):
     """扫描结果表格（股票名称可点击进入详情，名称列冻结）+ 加入自选。
 
     W92：``market_ctx`` 由 ``_render_market_overview`` 一次性取数后透传给
@@ -629,7 +631,7 @@ def _render_scan_table(rows: list, key: str = "scan", *, market_ctx=None):
             st.session_state['_jump_to_page'] = '个股分析'
             st.rerun()
     
-    _render_excel_download(rows, key=key, market_ctx=market_ctx)
+    _render_excel_download(rows, key=key, market_ctx=market_ctx, job_id=job_id)
     _add_watchlist_widget(rows, key=key)
 
 def _enrich_scan_rows(rows: list) -> list:
@@ -650,7 +652,8 @@ def _enrich_scan_rows(rows: list) -> list:
     return [enriched.get(r['symbol'], r) for r in rows]
 
 def _render_excel_download(rows: list, key: str = "scan", *,
-                           market_ctx: dict | None = None):
+                           market_ctx: dict | None = None,
+                           job_id: int | None = None):
     """扫描结果表下方「下载 Excel 报告」按钮（同 daily 格式）。
 
     W92：除「汇总报告 + 每只个股详情」外，追加「各大指数」「行业板块」两个
@@ -679,6 +682,18 @@ def _render_excel_download(rows: list, key: str = "scan", *,
     gen_key, data_key = f"{key}_xlsx_gen", f"{key}_xlsx_data_{sig}"
     if st.button(f"📥 下载 Excel 报告（{len(stock_rows)} 只）", key=gen_key):
         with st.spinner(f"补齐 {len(stock_rows)} 只个股详情并生成 Excel..."):
+            # W96：列表页为了省内存只加载了瘦身 payload；导出时按 job 回读
+            # 完整明细（一次性、用户主动触发），保证 Excel 与之前逐列一致。
+            if job_id:
+                try:
+                    _full = scan_results_of(int(job_id))
+                    _keep = {r.get("symbol") for r in rows}
+                    _full = [r for r in _full if r.get("symbol") in _keep]
+                    if _full:
+                        stock_rows, _ = split_scan_rows(_full)
+                except Exception as exc:  # noqa: BLE001 回读失败就按瘦身行导出
+                    logger.warning("W96 Excel 回读完整 payload 失败: %s",
+                                   str(exc)[:120])
             # 只对个股补详情：指数行没有个股 K 线，不做 analyze_one_stock
             enriched = _enrich_scan_rows(stock_rows)
             try:

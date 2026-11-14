@@ -973,13 +973,109 @@ def scan_job_meta(job_id: int, cfg: Optional[Dict] = None) -> Dict[str, Any]:
         conn.close()
 
 
+# W96：payload 瘦身白名单。表格/诊断只用到这些键，其余（chan 全量结构、
+# candlestick.hits、mystery.technical 等）解析进来只增内存不参与展示。
+_SLIM_SCALARS = ("symbol", "name", "trade_date", "price", "score", "advice",
+                 "true_resonance", "turnover_20", "price_pos", "chip_low",
+                 "chip_low_unknown", "chip_quiet", "vap_atr_break", "is_index",
+                 "bars_fingerprint", "data_source", "labels", "stage",
+                 "high_120")
+_SLIM_OBJECTS = ("wave3", "wave3_portfolio", "accumulation", "index_analysis")
+_SLIM_MYSTERY = ("signal", "resonance", "checklist8", "stage", "vap_atr",
+                 "main_wave", "platform", "technical")
+_SLIM_CANDLE = ("summary_daily", "summary_weekly", "focus",
+                "focus_daily", "focus_weekly")
+
+# SELECT 列顺序必须与 _compact_row 的消费顺序严格一致
+def _jp(*keys: str) -> str:
+    """构造带引号的 JSON path：_jp("mystery", "signal") → $."mystery"."signal"。"""
+    return "$." + ".".join('"' + k + '"' for k in keys)
+
+
+def _sel(path: str, alias: str) -> str:
+    return "json_extract(payload_json,'" + path + "') AS " + alias
+
+
+_SLIM_SELECT = ", ".join(
+    [_sel("$." + k, k) for k in _SLIM_SCALARS]
+    + [_sel("$." + k, "o_" + k) for k in _SLIM_OBJECTS]
+    + [_sel(_jp("mystery", k), "m_" + k) for k in _SLIM_MYSTERY]
+    + [_sel(_jp("candlestick", k), "c_" + k) for k in _SLIM_CANDLE]
+    + [_sel(_jp("chan", "1d", "divergence"), "chan_1d"),
+       _sel(_jp("chan", "1w", "divergence"), "chan_1w")])
+
+
+def _maybe_json(v: Any) -> Any:
+    """json_extract 对对象/数组返回 JSON 文本，标量原样返回。"""
+    if isinstance(v, str) and v[:1] in "[{":
+        try:
+            return json.loads(v)
+        except Exception:
+            return v
+    return v
+
+
+def _compact_row(t: tuple) -> Dict[str, Any]:
+    """把投影列还原成与完整 payload 同构的瘦身 dict（缺键即缺值）。"""
+    d: Dict[str, Any] = {}
+    i = 0
+    for k in _SLIM_SCALARS:
+        v = t[i]
+        i += 1
+        if v is None:
+            continue
+        d[k] = _maybe_json(v) if k == "labels" else v
+    for k in _SLIM_OBJECTS:
+        v = t[i]
+        i += 1
+        if v:
+            try:
+                d[k] = json.loads(v)
+            except Exception:
+                pass
+    m: Dict[str, Any] = {}
+    for k in _SLIM_MYSTERY:
+        v = t[i]
+        i += 1
+        if v:
+            try:
+                m[k] = json.loads(v)
+            except Exception:
+                pass
+    if m:
+        d["mystery"] = m
+    cs: Dict[str, Any] = {}
+    for k in _SLIM_CANDLE:
+        v = t[i]
+        i += 1
+        if v is not None:
+            cs[k] = v
+    if cs:
+        d["candlestick"] = cs
+    chan: Dict[str, Any] = {}
+    if t[i] is not None:
+        chan["1d"] = {"divergence": t[i]}
+    if t[i + 1] is not None:
+        chan["1w"] = {"divergence": t[i + 1]}
+    if chan:
+        d["chan"] = chan
+    return d
+
+
 def scan_results_of(job_id: int, signal: Optional[str] = None,
-                    cfg: Optional[Dict] = None) -> List[Dict[str, Any]]:
-    """读取某次 job 的结果（signal 过滤 true_resonance/vap_atr/chip_low）。"""
+                    cfg: Optional[Dict] = None,
+                    slim: bool = False) -> List[Dict[str, Any]]:
+    """读取某次 job 的结果（signal 过滤 true_resonance/vap_atr/chip_low）。
+
+    W96：``slim=True`` 时按展示白名单裁剪（内存约降 4~5 倍），字段名与嵌套
+    结构不变，仅供 Web 大表/诊断使用；Excel 导出等需要完整明细的场景保持
+    默认 ``False``。
+    """
     svc = AnalysisService(cfg)
     conn = svc.market.db._connect()
     try:
-        sql = "SELECT payload_json FROM scan_results WHERE job_id=?"
+        sql = ("SELECT " + _SLIM_SELECT if slim
+               else "SELECT payload_json") + " FROM scan_results WHERE job_id=?"
         params: List[Any] = [job_id]
         if signal == "true_resonance":
             sql += " AND true_resonance=1"
@@ -988,6 +1084,8 @@ def scan_results_of(job_id: int, signal: Optional[str] = None,
         elif signal == "chip_low":
             sql += " AND chip_low=1"
         rows = conn.execute(sql, params).fetchall()
+        if slim:
+            return [_compact_row(tuple(r)) for r in rows]
         out = []
         for (payload,) in rows:
             try:

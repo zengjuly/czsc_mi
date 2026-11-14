@@ -1,0 +1,11 @@
+# W96：Streamlit 瘦身配置（此前无 config.toml，全部走默认值）
+[server]
+# 生产代码不热更，关掉 watchdog（省 inotify 句柄与第三方监听线程）
+fileWatcherType = "none"
+# 单条 websocket 消息上限（默认 200MB，大表格序列化会吃缓冲区）
+maxMessageSize = 50
+maxUploadSize = 5
+headless = true
+
+[browser]
+gatherUsageStats = false

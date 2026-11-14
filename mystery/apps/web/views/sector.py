@@ -59,7 +59,7 @@ def view_sector():
         _render_scan_table(rows, key="sector")
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=600, max_entries=8, show_spinner=False)
 def _sector_drilldown_cached(code: str, name: str,
                              top_n: int, corr_window: int) -> dict:
     """W87：板块研判取数（只读）。
@@ -180,7 +180,7 @@ def _sector_change_pct(kline_df, days: int):
     except Exception:
         return None
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=600, max_entries=1, show_spinner=False)
 def _sector_strength_table() -> list:
     """板块强度表：板块名/代码/得分/近5/10/20日涨跌（只读 sector_kline）。"""
     svc = _service()
