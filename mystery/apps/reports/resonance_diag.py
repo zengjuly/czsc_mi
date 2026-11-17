@@ -110,6 +110,36 @@ def row_gates(d: Dict[str, Any], *, force_hard: bool = False
     }
 
 
+
+def only_market_mismatch(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """W99：筛出「只有大盘不匹配」的个股（纯展示过滤，不改判信号）。
+
+    口径（用户拍板「两种都算」）::
+
+        个股严格腿 ✓  且  行业向上 ✓  且  ( 大盘向上 ✗  或  大盘非高位 ✗ )
+
+    - 大盘因素两种否决：趋势向下（market_up=False）、高位一票否决
+      （market_not_high=False，soft/off 放宽时该门闩恒 True，不会误报）。
+    - 严格腿用 ``stock_strict``（与真三振同口径），不用宽松的「个股趋势」。
+    - 三腿/门闩字段缺失（row_gates 返回 None）一律不算匹配，绝不把 unknown
+      伪造成 False 凑数。
+    - 指数行（is_index）直接剔除——本筛选只面向个股。
+
+    判据全部来自 ``row_gates()``，与六门闩诊断、Excel/HTML 同口径。
+    """
+    out: List[Dict[str, Any]] = []
+    for d in (rows or []):
+        if not isinstance(d, dict) or d.get("is_index"):
+            continue
+        g = row_gates(d)
+        stock_ok = g.get("stock_strict") is True
+        industry_ok = g.get("industry_up") is True
+        market_bad = (g.get("market_up") is False
+                      or g.get("market_not_high") is False)
+        if stock_ok and industry_ok and market_bad:
+            out.append(d)
+    return out
+
 def effective_options(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """从 results 里取本次扫描生效的共振口径（任一含 resonance 的行即可）。
 

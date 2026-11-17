@@ -402,12 +402,18 @@ def view_scan():
     _jm = scan_job_meta(job_id)
     if _jm.get("label"):
         st.caption(f"📐 job #{job_id}：{_jm['label']}")
-    sig = st.radio("信号过滤", ["全部", "真三振", "VAP-ATR突破", "筹码低位", "回踩确认突破", "假突破"],
+    sig = st.radio("信号过滤", ["全部", "真三振", "VAP-ATR突破", "筹码低位", "回踩确认突破", "假突破", "仅大盘不匹配"],
                    horizontal=True, key="scan_job_sig")
     sig_map = {"全部": None, "真三振": "true_resonance", "回踩确认突破": "breakout_confirm",
                "假突破": "false_breakout",
-               "VAP-ATR突破": "vap_atr", "筹码低位": "chip_low"}
+               "VAP-ATR突破": "vap_atr", "筹码低位": "chip_low",
+               "仅大盘不匹配": None}  # W99：前端按六门闩筛，不走 DB 列过滤
     rows = scan_results_of(job_id, signal=sig_map[sig], slim=True)
+    if sig == "仅大盘不匹配":
+        # 纯展示层过滤：个股✓ + 行业✓ + (大盘向下 或 高位否决)，
+        # 复用 resonance_diag 权威判据，不改判信号、不动库。
+        from mystery.apps.reports.resonance_diag import only_market_mismatch
+        rows = only_market_mismatch(rows)
     st.caption(f"job #{job_id}（{sig}）共 {len(rows)} 只")
     if rows:
         # W92：先展示完整的大盘指数 / 行业板块研判，再把纯个股结果交给大表
