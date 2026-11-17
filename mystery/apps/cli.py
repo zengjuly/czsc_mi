@@ -174,11 +174,16 @@ def _cmd_daily(args: argparse.Namespace) -> int:
     return 0
 
 
-def _write_scan_report(results, args) -> None:
-    """扫描结果生成 Excel/HTML 日报（W17：定时任务 `scan --watchlist --report` 用）。
+def _write_scan_report(results, args, job_id: int | None = None) -> None:
+    """扫描结果生成 Excel/HTML 报告（扫描完成时同步落盘）。
 
-    文件名与 daily 一致（每日股票分析报告_YYYYMMDD.xlsx/.html），
-    供飞书 xlsx 链接与 git push 复用，无需改 feishu_notify / 管线 git 段。
+    - 不传 job_id（默认，cron / 手动 --report / 回放）：文件名与 daily 一致
+      （每日股票分析报告_YYYYMMDD.xlsx/.html），供飞书链接与 git push 复用；
+      回放用 _回放_ 后缀 —— 均与原行为完全一致（零回归）。
+    - 传 job_id（W98：Web 后台扫描 --report）：用「扫描报告_job{jid}_{date}」独立
+      命名，绝不覆盖 cron 当日正式日报；Web 下载按文件名约定查找，不再等
+      下载时回读完整 payload 现场补齐。
+
     W26b：附换手覆盖率 QA 行（只读观测，不改排序、不改 2%/低位门）。
     """
     from ..apps.reports.excel_report import index_payloads, write_excel
@@ -190,7 +195,11 @@ def _write_scan_report(results, args) -> None:
     # W94/D：回放报告独立命名（带 _回放_ + 回放日期），绝不覆盖当日正式日报，
     # 也不与飞书 xlsx 链接 / git push 的当日文件名冲突。
     as_of = (getattr(args, "as_of", None) or "").strip()[:10]
-    if as_of:
+    if job_id:
+        # W98：Web 后台扫描按 job 独立命名，不碰 cron 当日正式日报文件
+        xlsx = f"{out}/扫描报告_job{job_id}_{date_str}.xlsx"
+        html = f"{out}/扫描报告_job{job_id}_{date_str}.html"
+    elif as_of:
         xlsx = f"{out}/每日股票分析报告_回放_{as_of.replace('-', '')}.xlsx"
         html = f"{out}/每日股票分析报告_回放_{as_of.replace('-', '')}.html"
     else:
@@ -393,7 +402,8 @@ def _cmd_scan_body(args: argparse.Namespace, *,
     if result_holder is not None:
         result_holder.append(len(results))
     if args.report and results:
-        _write_scan_report(results, args)
+        _write_scan_report(results, args,
+                           job_id=(job_holder[0] if job_holder else None))
     # W69：组合摘要基于过滤前的完整结果（与日报 / Web 同口径）
     from ..services.wave3_scan import wave3_summary_line
     _w3_line = wave3_summary_line(results)

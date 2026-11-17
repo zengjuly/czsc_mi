@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import os
 from datetime import datetime
 
 import streamlit as st
@@ -651,6 +652,24 @@ def _enrich_scan_rows(rows: list) -> list:
             logger.warning(f"[web] {r.get('symbol')} 补详情失败，保留原行: {str(e)[:80]}")
     return [enriched.get(r['symbol'], r) for r in rows]
 
+def _report_path_of(job_id: int | None) -> str | None:
+    """W98：按 job_id 找扫描完成时同步落盘的 Excel（约定名 扫描报告_job{jid}_*.xlsx）。
+
+    零 schema 改动：靠文件名约定 + glob，取最新一份（resume 续跑会重写同名文件）。
+    找不到返回 None，下载按钮回退原按需生成逻辑（兼容历史 job / 回放 / 前台扫描）。
+    """
+    if not job_id:
+        return None
+    try:
+        import glob
+        from mystery.config import output_dir
+        hits = glob.glob(os.path.join(
+            output_dir(), f"扫描报告_job{int(job_id)}_*.xlsx"))
+        return max(hits, key=os.path.getmtime) if hits else None
+    except Exception:  # noqa: BLE001 查找失败一律回退现场生成
+        return None
+
+
 def _render_excel_download(rows: list, key: str = "scan", *,
                            market_ctx: dict | None = None,
                            job_id: int | None = None):
@@ -680,6 +699,27 @@ def _render_excel_download(rows: list, key: str = "scan", *,
            f"{last.get('symbol', '')}:{first.get('trade_date', '')}:"
            f"{len(indexes or [])}:{len(sectors or [])}:{bool(diag)}")
     gen_key, data_key = f"{key}_xlsx_gen", f"{key}_xlsx_data_{sig}"
+    # W98：优先读取扫描完成时已同步落盘的 Excel（零补齐、零重算）。文件由
+    # CLI --report 在扫描结束时按 job_id 命名写出；未找到才回退原按需生成。
+    _saved = _report_path_of(job_id) if job_id else None
+    if _saved and os.path.isfile(_saved):
+        try:
+            with open(_saved, "rb") as _f:
+                st.session_state[data_key] = _f.read()
+        except Exception as exc:  # noqa: BLE001 读文件失败回退现场生成
+            logger.warning("W98 读取同步生成的 Excel 失败: %s", str(exc)[:120])
+            _saved = None
+        else:
+            st.caption(f"✅ 报告已随扫描完成同步生成："
+                       f"{os.path.basename(_saved)}（无需现场补齐）")
+
+    if _saved and os.path.isfile(_saved):
+        st.download_button("💾 保存 Excel 报告", data=st.session_state[data_key],
+                           file_name=os.path.basename(_saved),
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           key=f"{key}_xlsx_dl")
+        return
+
     if st.button(f"📥 下载 Excel 报告（{len(stock_rows)} 只）", key=gen_key):
         with st.spinner(f"补齐 {len(stock_rows)} 只个股详情并生成 Excel..."):
             # W96：列表页为了省内存只加载了瘦身 payload；导出时按 job 回读

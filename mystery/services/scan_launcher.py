@@ -58,6 +58,9 @@ def build_scan_argv(scan_kind: str, task_id: str, *,
     argv = [exe or cli_executable(), "scan", "--resume",
             "--bg-task-id", task_id]
     argv.append("--market" if scan_kind == "market" else "--watchlist")
+    # W98：扫描完成即同步落盘 Excel（按 job_id 独立命名），Web 下载直接读文件，
+    # 不再等用户在页面点下载时回读完整 payload 现场补齐。
+    argv.append("--report")
     return argv
 
 
