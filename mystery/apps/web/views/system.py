@@ -367,10 +367,13 @@ def render_resonance_config():
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
     with st.form("resonance_config_form"):
+        _mode_opts = ["ma", "yearline", "volume_break"]
+        _cur_mode = eff.get("market_mode", "volume_break")
         m = st.selectbox(
-            "大盘腿口径", ["ma", "yearline"],
-            index=["ma", "yearline"].index(eff.get("market_mode", "yearline")),
-            help="ma=收盘>MA20/MA60；yearline=站年线且 MA5>MA20>MA60>MA250 多头（更严格）",
+            "大盘腿口径", _mode_opts,
+            index=_mode_opts.index(_cur_mode) if _cur_mode in _mode_opts else 2,
+            help="ma=收盘>MA20/MA60；yearline=站年线且 MA5>MA20>MA60>MA250 多头（更严格）；"
+                 "volume_break(生产默认)=当日上涨+成交量倍增+突破成交量5日均线（量价三条件齐备才向上）",
             key="w74_market_mode")
         thr = st.number_input(
             "真三振评分门闩 (70~100)", min_value=70.0, max_value=100.0,
@@ -400,6 +403,12 @@ def render_resonance_config():
             help="hard=一票否决+高位-15惩罚（生产默认，零回归）；"
                  "soft=保留-15惩罚但不作否决门闩；off=去掉惩罚且不作否决门闩",
             key="w95_high_position_gate")
+        # W100：放量倍增倍数（仅 volume_break 口径消费）
+        vbr = st.number_input(
+            "放量倍增倍数(量增≥N×前5均量)", min_value=1.0, max_value=5.0,
+            value=float(eff.get("volume_boost_ratio", 1.5)), step=0.1,
+            help="volume_break 口径下，当日成交量≥前5日均量×此值才算量倍增；默认1.5，越小越易放行",
+            key="w100_volume_boost_ratio")
         if st.form_submit_button("保存配置（立即热生效）", type="primary"):
             opts = {
                 "market_mode": m,
@@ -408,14 +417,15 @@ def render_resonance_config():
                 "capital_min_volume_ratio": cvr,
                 "index_max_lag_days": (lag if use_lag else None),
                 "high_position_gate": hpg,
+                "volume_boost_ratio": vbr,
             }
             save_resonance_override(opts)
             st.success("已保存并热生效。下次分析/扫描即用新口径；历史缓存按口径自动失效重建。")
             st.rerun()
 
-    if st.button("🔄 一键还原默认值", help="清除网页自定义，恢复生产默认 yearline / 80"):
+    if st.button("🔄 一键还原默认值", help="清除网页自定义，恢复生产默认 volume_break / 80"):
         clear_resonance_override()
-        st.success("已还原到生产默认（yearline / 80）。")
+        st.success("已还原到生产默认（volume_break / 80）。")
         st.rerun()
 
 

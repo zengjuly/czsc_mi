@@ -26,11 +26,11 @@ def override_path(tmp_path, monkeypatch):
 
 
 def test_no_override_equals_production_default(override_path):
-    """未自定义 → effective 等于生产默认 yearline/80。"""
+    """未自定义 → effective 等于生产默认 volume_break/80（W100）。"""
     assert svc.resonance_override_exists() is False
     eff = svc.resonance_options_effective()
     assert eff == svc.resonance_options_default()
-    assert eff["market_mode"] == "yearline"
+    assert eff["market_mode"] == "volume_break"
     assert eff["true_threshold"] == 80.0
 
 
@@ -79,7 +79,7 @@ def test_clear_returns_to_default(override_path):
     assert svc.resonance_override_exists() is False
     eff = svc.resonance_options_effective()
     assert eff == svc.resonance_options_default()
-    assert eff["market_mode"] == "yearline"
+    assert eff["market_mode"] == "volume_break"
     assert eff["true_threshold"] == 80.0
 
 

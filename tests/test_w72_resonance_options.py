@@ -391,7 +391,7 @@ def test_resonance_cache_tag_default_is_nonempty_and_isolated(monkeypatch):
     for k, _ in svc._RESONANCE_ENV_KEYS:
         monkeypatch.delenv(k, raising=False)
     t = svc.resonance_cache_tag()
-    assert t.startswith('|R[') and 'market_mode=yearline' in t
+    assert t.startswith('|R[') and 'market_mode=volume_break' in t
     assert 'true_threshold=80.0' in t
     # 显式回退到 W71 口径 → tag 不同，不会互相污染
     monkeypatch.setenv("MYSTERY_RESONANCE_MARKET_MODE", "ma")

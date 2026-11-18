@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 # 的开关都不改变既有 true_resonance / 综合评分 / RULE_VER。core 零 IO：
 # 具体取值由 service 层从 env 读取后以 options 注入，不在 core 内读环境。
 DEFAULT_RESONANCE_OPTIONS: Dict[str, Any] = {
-    "market_mode": "ma",                # "ma"(MA20/MA60，W71 现状) | "yearline"(严格年线多头)
+    # "ma"(MA20/MA60，W71 现状) | "yearline"(严格年线多头) |
+    # "volume_break"(W100 放量突破：上涨+量倍增+上穿量MA5，生产默认)
+    "market_mode": "ma",
     "true_threshold": 85.0,            # 真三振共振评分门闩
     "capital_min_score": 8.0,          # 资金活跃隐含门槛（score ≥）
     "capital_min_volume_ratio": 1.5,   # 资金活跃隐含门槛（量比 ≥）
@@ -27,6 +29,9 @@ DEFAULT_RESONANCE_OPTIONS: Dict[str, Any] = {
     #   soft = 保留 -15 软惩罚，但不再作为 all(gates) 的否决门闩
     #   off  = 移除 -15 软惩罚，且不再作为否决门闩
     "high_position_gate": "hard",
+    # W100：放量突破口径的成交量倍增门槛（当日量 ≥ 前5日均量 × 此值）。
+    # 仅 volume_break 模式消费；非法值（<1.0/非数值）保守回退 1.5。
+    "volume_boost_ratio": 1.5,
 }
 
 
@@ -34,9 +39,10 @@ def resolve_resonance_options(options: Optional[Dict[str, Any]] = None
                               ) -> Dict[str, Any]:
     """合并默认口径与自定义选项，并对非法值做保守回退（core 零 IO 纯函数）。
 
-    - ``market_mode`` 仅接受 ma/yearline，其余回退 ma；
+    - ``market_mode`` 仅接受 ma/yearline/volume_break，其余回退 ma；
     - 数值项转 float 失败或为负时回退默认；``index_max_lag_days`` 允许
       None（禁用降级）或 ≥0 的整数，非法值回退默认 None。
+    - W100 ``volume_boost_ratio`` 须为 ≥1.0 的有限数，否则回退 1.5。
     """
     out = dict(DEFAULT_RESONANCE_OPTIONS)
     if options:
@@ -44,7 +50,7 @@ def resolve_resonance_options(options: Optional[Dict[str, Any]] = None
             if k in out:
                 out[k] = v
     mode = str(out.get("market_mode") or "ma").strip().lower()
-    out["market_mode"] = mode if mode in ("ma", "yearline") else "ma"
+    out["market_mode"] = mode if mode in ("ma", "yearline", "volume_break") else "ma"
     for key in ("true_threshold", "capital_min_score", "capital_min_volume_ratio"):
         try:
             f = float(out[key])
@@ -63,6 +69,13 @@ def resolve_resonance_options(options: Optional[Dict[str, Any]] = None
     # W95/①：高位风控三态，非法值保守回退 hard（绝不放宽生产默认）
     gate = str(out.get("high_position_gate") or "hard").strip().lower()
     out["high_position_gate"] = gate if gate in ("hard", "soft", "off") else "hard"
+    # W100：放量倍增倍数须为 ≥1.0 的有限数，非法值回退 1.5（绝不放宽门槛）
+    try:
+        vr = float(out["volume_boost_ratio"])
+        out["volume_boost_ratio"] = vr if (np.isfinite(vr) and vr >= 1.0) \
+            else DEFAULT_RESONANCE_OPTIONS["volume_boost_ratio"]
+    except (TypeError, ValueError, KeyError):
+        out["volume_boost_ratio"] = DEFAULT_RESONANCE_OPTIONS["volume_boost_ratio"]
     return out
 
 
@@ -196,6 +209,118 @@ def analyze_market_trend(index_data: pd.DataFrame) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f'❌ 分析市场趋势异常: {e}')
         return {'趋势方向': '异常', '详情': [f'分析异常: {e}']}
+
+
+def analyze_market_trend_volume_break(
+        index_data: pd.DataFrame,
+        volume_boost_ratio: float = 1.5) -> Dict[str, Any]:
+    """放量突破大盘腿（W100，生产默认口径）。
+
+    三条件同时满足才判「向上」：
+
+    1. **涨跌**：当日收盘价 > 前一交易日收盘价（指数库 pctChg 常为 NULL，
+       故用收盘价环比计算，绝不用可能缺失的「涨跌幅」列）；
+    2. **成交量倍增**：当日成交量 ≥ 前 5 日均量 × ``volume_boost_ratio``
+       （默认 1.5，可配置；前 5 日均量 = 不含当日的 5 根均量）；
+    3. **突破成交量 5 日均线**：当日成交量 > 前 5 日均量线（不含当日），
+       即量能向上突破既有 5 日均量基准。
+
+    返回结构与 ``analyze_market_trend`` / ``analyze_market_trend_yearline``
+    对齐，``position`` 仍用近 120 日价格分位，使 W71「大盘非高位」门闩口径
+    完全不变。另附 ``放量突破`` 诊断子字典，逐项记录三信号与量比，便于
+    回放/诊断面板解释「为何向上/不向上」。
+
+    数据不足（<6 根或缺成交量列）→ 趋势「未知」，绝不放行大盘腿。
+    """
+    try:
+        ratio = float(volume_boost_ratio)
+    except (TypeError, ValueError):
+        ratio = 1.5
+    if not (np.isfinite(ratio) and ratio >= 1.0):
+        ratio = 1.5
+    result: Dict[str, Any] = {
+        '趋势方向': '未知', '强度': 0, 'MA20状态': '未知', 'MA60状态': '未知',
+        'position': '未知', '近20日涨幅': None, '详情': [],
+        '大盘口径': '放量突破(涨+量倍增+破量5日均线)',
+        '放量突破': {
+            '上涨': False, '量倍增': False, '突破量MA5': False,
+            '量比': None, '当日成交量': None, '前5日均量': None,
+            '收盘涨跌': None, '门槛倍数': ratio, '三条件齐备': False,
+        },
+    }
+    diag = result['放量突破']
+    try:
+        if index_data is None or index_data.empty or '收盘价' not in index_data.columns:
+            result['详情'].append('放量突破口径：缺少收盘价列')
+            return result
+        closes = pd.to_numeric(index_data['收盘价'], errors='coerce').dropna()
+        if len(closes) < 6:
+            result['详情'].append(
+                f'放量突破口径数据不足（{len(closes)}/6 根），大盘腿 unknown')
+            return result
+        if '成交量' not in index_data.columns:
+            result['详情'].append('放量突破口径：缺少成交量列，大盘腿 unknown')
+            return result
+        vols = pd.to_numeric(index_data['成交量'], errors='coerce').fillna(0.0)
+        close = float(closes.iloc[-1])
+        prev_close = float(closes.iloc[-2])
+        vol_today = float(vols.iloc[-1])
+        vol_ma5_prev = float(vols.iloc[-6:-1].mean())  # 前5日均量（不含当日）
+        pct = (close / prev_close - 1) * 100 if prev_close > 0 else 0.0
+        up = close > prev_close
+        vol_ratio = vol_today / vol_ma5_prev if vol_ma5_prev > 0 else 0.0
+        vol_boost = bool(vol_ma5_prev > 0 and vol_today >= vol_ma5_prev * ratio)
+        vol_break = bool(vol_ma5_prev > 0 and vol_today > vol_ma5_prev)
+        three_ok = bool(up and vol_boost and vol_break)
+        diag.update({
+            '上涨': up, '量倍增': vol_boost, '突破量MA5': vol_break,
+            '量比': round(vol_ratio, 2), '当日成交量': round(vol_today, 2),
+            '前5日均量': round(vol_ma5_prev, 2),
+            '收盘涨跌': round(pct, 2), '门槛倍数': ratio, '三条件齐备': three_ok,
+        })
+        # MA20/MA60 状态与近120日位置：沿用 W71 现状，保证门闩/展示一致
+        df = index_data.copy()
+        if 'MA20' not in df.columns:
+            df['MA20'] = df['收盘价'].rolling(window=20).mean()
+        if 'MA60' not in df.columns:
+            df['MA60'] = df['收盘价'].rolling(window=60).mean()
+        latest = df.iloc[-1]
+        ma20, ma60 = latest.get('MA20'), latest.get('MA60')
+        if pd.notna(ma20):
+            result['MA20状态'] = '上方' if close > float(ma20) else '下方'
+        if pd.notna(ma60):
+            result['MA60状态'] = '上方' if close > float(ma60) else '下方'
+        if three_ok:
+            result['趋势方向'] = '向上'
+        elif result['MA20状态'] == '下方' and result['MA60状态'] == '下方':
+            result['趋势方向'] = '向下'
+        else:
+            result['趋势方向'] = '震荡'
+        if len(closes) >= 20:
+            past = float(closes.iloc[-20])
+            if past > 0:
+                chg = (close / past - 1) * 100
+                result['近20日涨幅'] = round(chg, 2)
+                result['强度'] = min(abs(chg), 100.0)
+        if len(closes) >= 120:
+            high_120 = float(closes.iloc[-120:].max())
+            low_120 = float(closes.iloc[-120:].min())
+            if high_120 > low_120:
+                pos_pct = (close - low_120) / (high_120 - low_120)
+                result['position'] = ('高位' if pos_pct >= 0.85
+                                      else '低位' if pos_pct <= 0.15 else '中位')
+                result['详情'].append(f'近120日位置 {pos_pct:.0%}')
+        result['详情'].extend([
+            f'放量突破：收盘{prev_close:.2f}→{close:.2f}({pct:+.2f}%) 上涨={up}',
+            f'量倍增：当日{vol_today:.0f} vs 前5均量{vol_ma5_prev:.0f} '
+            f'= {vol_ratio:.2f}x ≥{ratio:g}x → {vol_boost}',
+            f'破量5日均线：{vol_break}；三条件齐备={three_ok} → {result["趋势方向"]}',
+        ])
+        return result
+    except Exception as e:
+        logger.error(f'❌ 放量突破大盘腿分析异常: {e}')
+        result['详情'].append(f'分析异常: {e}')
+        return result
 
 def analyze_industry_trend(industry_data: Dict[str, pd.DataFrame], lookback: int = 10) -> Dict[str, Any]:
     """行业趋势（industry_data: {名称: K线df}）。"""

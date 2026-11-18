@@ -130,7 +130,8 @@ class MysteryLogic:
                                    '资金门槛分': opts['capital_min_score'],
                                    '资金量比门槛': opts['capital_min_volume_ratio'],
                                    '指数滞后上限': opts['index_max_lag_days'],
-                                   '高位风控': opts['high_position_gate']},
+                                   '高位风控': opts['high_position_gate'],
+                                   '放量倍增倍数': opts['volume_boost_ratio']},
                       '指数滞后天数': None, '大盘腿降级': False}
             stock_ok = False
             if '均线排列' in data.columns and pd.notna(data.iloc[-1]['均线排列']):
@@ -181,8 +182,12 @@ class MysteryLogic:
             if index_data is not None and (not index_data.empty):
                 # W72/建议5：默认 ma 口径走 W71 原函数；显式 yearline 走严格
                 # 年线多头口径（返回结构对齐，不改 position 门闩语义）。
+                # W100：volume_break 走放量突破（涨+量倍增+破量5日均线）。
                 if opts['market_mode'] == 'yearline':
                     market_result = _res.analyze_market_trend_yearline(index_data)
+                elif opts['market_mode'] == 'volume_break':
+                    market_result = _res.analyze_market_trend_volume_break(
+                        index_data, volume_boost_ratio=opts['volume_boost_ratio'])
                 else:
                     market_result = _res.analyze_market_trend(index_data)
                 # W72/建议5：指数滞后诊断。生产实测指数常滞后个股 1-3 天属正常，
@@ -199,6 +204,12 @@ class MysteryLogic:
                 result['大盘趋势'] = mk_trend == '向上'
                 result['大盘位置'] = market_result.get('position', '未知')
                 result['详情'].append(f"大盘{index_name} {mk_trend}（位置:{result['大盘位置']}）")
+                # W100：放量突破口径把量价三信号诊断并入详情，供回放/面板解释
+                if opts['market_mode'] == 'volume_break' and market_result.get('放量突破'):
+                    result['放量突破'] = market_result['放量突破']
+                    for d in market_result.get('详情', []):
+                        if '放量突破' in d or '量倍增' in d or '破量' in d:
+                            result['详情'].append(d)
             else:
                 result['大盘趋势'] = False
                 result['详情'].append('大盘趋势数据缺失')

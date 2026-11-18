@@ -106,22 +106,26 @@ def pattern_weight_enabled() -> bool:
 #   - core 默认值：离线单测、金标回放、库外调用方的稳定基线，绝不随生产策略漂移；
 #   - service 生产默认：Web / CLI / scan / 日报实际生效口径，可经 env 逐项覆盖。
 _RESONANCE_ENV_KEYS = (
-    ('MYSTERY_RESONANCE_MARKET_MODE', 'market_mode'),          # ma | yearline
+    ('MYSTERY_RESONANCE_MARKET_MODE', 'market_mode'),          # ma | yearline | volume_break
     ('MYSTERY_RESONANCE_TRUE_THRESHOLD', 'true_threshold'),
     ('MYSTERY_RESONANCE_CAPITAL_MIN', 'capital_min_score'),
     ('MYSTERY_RESONANCE_CAPITAL_VR', 'capital_min_volume_ratio'),
     ('MYSTERY_RESONANCE_INDEX_MAX_LAG_DAYS', 'index_max_lag_days'),
     ('MYSTERY_RESONANCE_HIGH_POSITION_GATE', 'high_position_gate'),  # W95/① hard|soft|off
+    ('MYSTERY_RESONANCE_VOLUME_BOOST_RATIO', 'volume_boost_ratio'),  # W100 ≥1.0
 )
 
 # W73 生产默认口径（用户拍板：严格大盘腿 + 降阈值）。取值依据见
 # docs/W73_严格大盘腿与降阈值设为生产默认.md 的生产库金标对拍：
 # yearline = 站年线 MA250 + MA5>MA20>MA60>MA250 多头顺次排列（更保守）；
 # 80 = W72 已对拍过的降档，score 80~84 放行，且 gates 为 all() 不绕过高位硬门闩。
+# W100：按用户拍板，生产默认大盘腿改为 volume_break（放量突破：涨+量倍增+
+# 突破量5日均线），倍增倍数 1.5 可配置；真三振评分门闩/high_position_gate 不变。
 # 只需列出与 core 基线不同的项，其余由 resolve_resonance_options 补齐。
 PRODUCTION_RESONANCE_OPTIONS: Dict[str, Any] = {
-    "market_mode": "yearline",
+    "market_mode": "volume_break",
     "true_threshold": 80.0,
+    "volume_boost_ratio": 1.5,
     # W95/①：显式写死 hard（= W71/W72 现状），保证生产默认零回归；
     # 放宽须显式设 MYSTERY_RESONANCE_HIGH_POSITION_GATE=soft|off 或网页选择。
     "high_position_gate": "hard",
@@ -142,13 +146,14 @@ RESONANCE_OVERRIDE_PATH = resolve_override_path(
 
 # 表单元数据：Web 面板与 CLI 复用，保证字段口径单一来源。
 RESONANCE_FIELDS: tuple = (
-    ("market_mode", "大盘腿口径", "select", ("ma", "yearline")),
+    ("market_mode", "大盘腿口径", "select", ("ma", "yearline", "volume_break")),
     ("true_threshold", "真三振评分门闩", "number", (70.0, 100.0, 1.0)),
     ("capital_min_score", "资金活跃门槛(评分≥)", "number", (0.0, 20.0, 1.0)),
     ("capital_min_volume_ratio", "资金活跃门槛(量比≥)", "number", (0.0, 5.0, 0.1)),
     ("index_max_lag_days", "指数滞后降级天数(0=关闭)", "number", (0, 30, 1)),
     ("high_position_gate", "大盘非高位风控(hard/soft/off)", "select",
      ("hard", "soft", "off")),
+    ("volume_boost_ratio", "放量倍增倍数(量增≥N×前5均量)", "number", (1.0, 5.0, 0.1)),
 )
 RESONANCE_FIELDS_DICT: Dict[str, tuple] = {f[0]: f for f in RESONANCE_FIELDS}
 
@@ -211,7 +216,8 @@ def resonance_options_from_env() -> Dict[str, Any]:
 def resonance_options_effective() -> Dict[str, Any]:
     """W73/W74：实际生效口径 = 生产默认 + 覆盖层文件 + 显式 env（优先级递增）。
 
-    - 未设覆盖层/env → 生产默认（yearline / 80）生效，Web/CLI/scan 全链路统一；
+    - 未设覆盖层/env → 生产默认（volume_break / 80 / 1.5x，W100）生效，
+      Web/CLI/scan 全链路统一；
     - 网页「系统状态」面板保存 → 写入覆盖层文件，下次请求热生效、无需重启；
     - 显式 env（运维应急）最高优先，可覆盖网页设置；
     - 返回稀疏 dict，交由 core.resolve_resonance_options 归一化补齐，core 零 IO。

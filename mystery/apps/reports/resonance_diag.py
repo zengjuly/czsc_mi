@@ -164,6 +164,8 @@ def effective_options(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "index_max_lag_days": _f("指数滞后上限"),
                 # W95/①：旧 job payload 无此字段 → 回退 hard（历史均为硬门闩）
                 "high_position_gate": kj.get("高位风控") or "hard",
+                # W100：旧 job payload 无此字段 → 回退 1.5（历史默认门槛）
+                "volume_boost_ratio": _f("放量倍增倍数", 1.5),
             }
     return {}
 
@@ -314,9 +316,10 @@ def diagnose(rows: List[Dict[str, Any]], *,
            if (thr is not None and score_max is not None) else None)
 
     # 结论（人话，讲清"系统测什么 / 人工看什么"的阶段差）
-    mode = mleg.get("market_mode") or opts.get("market_mode") or "yearline"
-    mode_cn = "严格年线腿(MA250+多头顺次排列)" if mode == "yearline" \
-        else "MA20/MA60 腿"
+    mode = mleg.get("market_mode") or opts.get("market_mode") or "volume_break"
+    mode_cn = ("严格年线腿(MA250+多头顺次排列)" if mode == "yearline"
+               else "放量突破腿(涨+量倍增+破量5日均线)" if mode == "volume_break"
+               else "MA20/MA60 腿")
     tag = f"【历史回放 {as_of}】" if as_of else ""
     if n_true:
         conclusion = (f"{tag}本期 {n} 只个股中真三振 {n_true} 只。"
@@ -380,7 +383,7 @@ def diag_sheet_rows(diag: Dict[str, Any]) -> List[List[Any]]:
          "等价推导：去掉 -15 惩罚并重算评分门闩"],
         ["回放日期", diag.get("as_of") or "（实时）", "--as-of 时按历史截面回放"],
         ["大盘腿口径", (diag.get("market_leg") or {}).get("market_mode") or "—",
-         "yearline=严格年线腿 / ma=MA20/MA60"],
+         "volume_break=放量突破(涨+量倍增+破量5日均线) / yearline=严格年线腿 / ma=MA20/MA60"],
         ["大盘趋势向上", (diag.get("market_leg") or {}).get("market_up"), ""],
         ["大盘位置", (diag.get("market_leg") or {}).get("position"), "近120日价格分位"],
         ["生效真三振阈值", (diag.get("options") or {}).get("true_threshold"), ""],

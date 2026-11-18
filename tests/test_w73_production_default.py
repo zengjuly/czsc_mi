@@ -121,10 +121,11 @@ def _clean_env(monkeypatch):
 
 # ---------------------------------------------------------------- 生产默认常量
 
-def test_production_defaults_are_strict_market_and_80():
-    """生产默认 = 严格大盘腿 yearline + 阈值 80，其余沿用 core 基线。"""
+def test_production_defaults_are_volume_break_and_80():
+    """生产默认 = 放量突破大盘腿 volume_break + 阈值 80 + 倍增 1.5（W100 拍板）。"""
     d = svc.PRODUCTION_RESONANCE_OPTIONS
-    assert d["market_mode"] == "yearline"
+    assert d["market_mode"] == "volume_break"
+    assert d["volume_boost_ratio"] == 1.5
     assert d["true_threshold"] == 80.0
     resolved = res.resolve_resonance_options(d)
     assert resolved["capital_min_score"] == 8.0
@@ -183,7 +184,7 @@ def test_cache_tag_default_is_nonempty_and_stable():
     """默认 tag 恒非空且稳定：重复调用一致，避免无谓 miss。"""
     t = svc.resonance_cache_tag()
     assert t.startswith('|R[')
-    assert 'market_mode=yearline' in t and 'true_threshold=80.0' in t
+    assert 'market_mode=volume_break' in t and 'true_threshold=80.0' in t
     assert svc.resonance_cache_tag() == t
 
 
@@ -219,15 +220,14 @@ def test_run_rules_injects_production_default(monkeypatch):
     s.run_rules(_series(_daily()), None, None, MarketContext(), False)
     assert captured["resonance_options"] == dict(svc.PRODUCTION_RESONANCE_OPTIONS)
     n = res.resolve_resonance_options(captured["resonance_options"])
-    assert n["market_mode"] == "yearline" and n["true_threshold"] == 80.0
+    assert n["market_mode"] == "volume_break" and n["true_threshold"] == 80.0
 
 
-def test_production_options_activate_strict_market_leg():
-    """口径真的生效：同一 160 根指数，ma 判向上，生产默认 yearline 判未知。
+def test_production_options_activate_volume_break_market_leg():
+    """口径真的生效：无成交量列的 160 根指数，volume_break 判 unknown。
 
-    <250 根时严格口径「数据不足 → 未知 → 绝不放行」，与 ma 口径形成
-    明确区分，证明生产默认不是只改了标签而是真正切换了大盘腿实现。
-    生产实测指数 916 根（≥250），不受此限制。
+    放量突破口径在缺成交量列时诚实降级为「未知 → 绝不放行」，与 ma 口径
+    （仅收盘价即可判向上）形成明确区分，证明生产默认真正切换了大盘腿实现。
     """
     logic = MysteryLogic()
     d, idx = _daily(), _index(n=160)
@@ -237,21 +237,28 @@ def test_production_options_activate_strict_market_leg():
     r_ma = logic.three_resonance_analysis(
         d, market_data={"上证指数": idx}, industry_trend=True,
         options={"market_mode": "ma"})
-    assert r_prod["共振口径"]["大盘口径"] == "yearline"
+    assert r_prod["共振口径"]["大盘口径"] == "volume_break"
     assert r_prod["共振口径"]["真三振阈值"] == 80.0
-    assert r_prod["大盘趋势"] is False           # 严格口径数据不足 → 不放行
+    assert r_prod["大盘趋势"] is False           # 缺成交量 → 不放行
     assert r_ma["大盘趋势"] is True              # ma 口径判向上
 
 
-def test_production_options_yearline_up_on_sufficient_bars():
-    """≥250 根且站年线多头排列 → yearline 判向上（生产数据形态）。"""
+def test_production_options_volume_break_up_on_volume_surge():
+    """放量突破三条件齐备（收盘涨+量增1.6x+破5均量）→ 判向上。"""
     logic = MysteryLogic()
+    n = 160
+    dates = pd.bdate_range(end="2026-11-06", periods=n)
+    close = 3000 + np.arange(n, dtype=float)
+    vol = np.full(n, 1e8, dtype=float)
+    vol[-1] = vol[-6:-1].mean() * 1.6
+    idx = pd.DataFrame({'日期': dates.strftime('%Y-%m-%d'),
+                        '收盘价': close, '成交量': vol})
     r = logic.three_resonance_analysis(
-        _daily(), market_data={"上证指数": _index_yearline(n=300, up=True)},
-        industry_trend=True, options=svc.resonance_options_effective())
-    assert r["共振口径"]["大盘口径"] == "yearline"
+        _daily(), market_data={"上证指数": idx}, industry_trend=True,
+        options=svc.resonance_options_effective())
+    assert r["共振口径"]["大盘口径"] == "volume_break"
     assert r["大盘趋势"] is True
-    assert r["大盘位置"] == "高位"               # 单调上行近120日分位=高位
+    assert r["放量突破"]["三条件齐备"] is True
 
 
 def test_run_mystery_production_signal_resonance_same_source():
@@ -261,7 +268,7 @@ def test_run_mystery_production_signal_resonance_same_source():
     bd = run_mystery(_series(_daily()), None, None, ctx, include_detail=False,
                      resonance_options=svc.resonance_options_effective())
     assert bd.signal.get("共振评分") == bd.resonance.get("共振评分")
-    assert bd.resonance["共振口径"]["大盘口径"] == "yearline"
+    assert bd.resonance["共振口径"]["大盘口径"] == "volume_break"
     assert isinstance(combine(bd)[0], (int, float))
 
 
