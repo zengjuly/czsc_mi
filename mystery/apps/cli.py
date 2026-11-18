@@ -820,6 +820,37 @@ def _cmd_refresh_board_names(args: argparse.Namespace) -> int:
     return 0 if r.get("ok") else 1
 
 
+def _cmd_cleanup(args: argparse.Namespace) -> int:
+    """W101：定时清理历史数据（scan_results/陈旧缓存/冗余日K/可选VACUUM）。
+
+    默认 dry-run 只统计不删；--apply 真删。策略可用 env 覆盖：
+      MYSTERY_CLEAN_SCAN_DAYS / MYSTERY_CLEAN_REPLAY_DAYS /
+      MYSTERY_CLEAN_CACHE_DAYS / MYSTERY_CLEAN_KLINE_CAP /
+      MYSTERY_CLEAN_VACUUM_RATIO
+    """
+    from ..services.retention import run_cleanup, format_report
+    from ..store._repos._helpers import _DEFAULT_DB
+
+    db_path = getattr(args, "db", None) or _DEFAULT_DB
+    kw: dict = {
+        "apply": bool(args.apply),
+        "do_vacuum": not args.no_vacuum,
+    }
+    for name in ("scan_days", "replay_days", "cache_days", "kline_cap"):
+        val = getattr(args, name, None)
+        if val is not None:
+            kw[name] = int(val)
+    if getattr(args, "vacuum_ratio", None) is not None:
+        kw["vacuum_ratio"] = float(args.vacuum_ratio)
+
+    result = run_cleanup(db_path, **kw)
+    if getattr(args, "json", False):
+        print(json.dumps(result, ensure_ascii=False, default=str))
+    else:
+        print(format_report(result))
+    return 0 if result.get("ok") else 1
+
+
 def _cmd_audit(args: argparse.Namespace) -> int:
     """只读数据质量审计（不改变任何写入行为）。"""
     from ..store import db as dbmod
@@ -860,7 +891,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[list] = None) -> int:
     # 未设 THS 路径时自动补 sibling Financial-API 默认（须在 load_config 前）
-    """czsc-mi 命令入口：注入默认 THS 环境后构建 argparse 子命令（analyze/daily/scan/wave3/sync/sync-shares/sync-turnover/sector-sync/sector-sync-kline/watchlist/audit），分发到各 _cmd_*；统一映射 NotImplementedError(2)/TaskBusyError(3)/通用异常(1)。"""
+    """czsc-mi 命令入口：注入默认 THS 环境后构建 argparse 子命令（analyze/daily/scan/wave3/sync/sync-shares/sync-turnover/sector-sync/sector-sync-kline/watchlist/audit/cleanup），分发到各 _cmd_*；统一映射 NotImplementedError(2)/TaskBusyError(3)/通用异常(1)。"""
     _ensure_default_ths_env()
     parser = argparse.ArgumentParser(prog="czsc-mi", description="Mistery 趋势交易分析")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1031,6 +1062,25 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--json", action="store_true", help="输出 JSON（便于 CI/管道）")
     p.add_argument("--verbose", action="store_true", help="打印问题样本")
     p.set_defaults(func=_cmd_audit)
+
+    p = sub.add_parser("cleanup", help="W101：定时清理历史数据（默认 dry-run，--apply 真删）")
+    p.add_argument("--apply", action="store_true",
+                   help="真删（默认只统计不删，强烈建议先 dry-run）")
+    p.add_argument("--db", default=None, help="数据库路径（默认 MYSTERY_DB_PATH）")
+    p.add_argument("--scan-days", type=int, default=None,
+                   help="扫描历史保留天数（默认 env MYSTERY_CLEAN_SCAN_DAYS=30）")
+    p.add_argument("--replay-days", type=int, default=None,
+                   help="回放job保留天数（默认 env MYSTERY_CLEAN_REPLAY_DAYS=180）")
+    p.add_argument("--cache-days", type=int, default=None,
+                   help="分析缓存保留天数（默认 env MYSTERY_CLEAN_CACHE_DAYS=30）")
+    p.add_argument("--kline-cap", type=int, default=None,
+                   help="每票日K上限根数（默认 env MYSTERY_CLEAN_KLINE_CAP=2000）")
+    p.add_argument("--no-vacuum", action="store_true",
+                   help="跳过 VACUUM（默认按空闲页阈值触发回收）")
+    p.add_argument("--vacuum-ratio", type=float, default=None,
+                   help="VACUUM 触发空闲页占比阈值（默认 env=0.15）")
+    p.add_argument("--json", action="store_true", help="输出结构化 JSON")
+    p.set_defaults(func=_cmd_cleanup)
 
     args = parser.parse_args(argv)
     args.cfg = load_config()

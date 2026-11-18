@@ -13,6 +13,8 @@
 #   SCAN_LIMIT
 #   RUN_DATA_AUDIT（W81 默认 0：不跑数据质量审计；=1 时 czsc-mi audit 一次，
 #     生产库约 4 分钟，超时 DATA_AUDIT_TIMEOUT 秒可配，失败不阻塞主流程）
+#   RUN_CLEANUP（W101 默认 1：随管线定时清理历史数据；=0 关闭，
+#     超时 CLEANUP_TIMEOUT 秒可配，策略由 MYSTERY_CLEAN_* env 控制，失败不阻塞）
 set -euo pipefail
 # W41：锁死北京时区——脚本用 date '+%F' 给 sync-turnover 传当日日期，
 # 机器 TZ 若是 UTC 会错一天。
@@ -98,6 +100,37 @@ czsc-mi scan --watchlist --report
 if [ "${RUN_MARKET_SCAN:-0}" = "1" ]; then
   echo "[daily_pipeline] 全市场扫描（写 scan_jobs/scan_results）..."
   czsc-mi scan --limit "${SCAN_LIMIT:-100}"
+fi
+
+# W101 定时清理历史数据（默认随管线每日跑，失败不阻塞主流程）。
+# 放在扫描之后：确保只清理"已完成"的旧 job，刚写的 job 在保留期内不会被删。
+# 策略 env：MYSTERY_CLEAN_SCAN_DAYS(30)/REPLAY_DAYS(180)/CACHE_DAYS(30)/
+#           KLINE_CAP(2000)/VACUUM_RATIO(0.15)；均可用 CLI 参数覆盖。
+# VACUUM 仅当空闲页占比超阈值才触发（低峰期、锁库数分钟），日常多为跳过。
+CLEANUP_OK=skip
+if [ "${RUN_CLEANUP:-1}" = "1" ]; then
+  echo "[daily_pipeline] 5.6/5 清理历史数据（过期扫描/陈旧缓存/冗余日K + 阈值VACUUM）..."
+  CLEANUP_LOG="$(dirname "${STATUS_JSON}")/cleanup_$(date '+%F').log"
+  if timeout "${CLEANUP_TIMEOUT:-900}" czsc-mi cleanup --apply > "${CLEANUP_LOG}" 2>&1; then
+    CLEANUP_OK=ok
+    grep -E "扫描历史|陈旧缓存|冗余日K|VACUUM" "${CLEANUP_LOG}" | sed 's/^/[cleanup] /' || true
+  else
+    CLEANUP_OK=fail
+    echo "[daily_pipeline] ⚠️ cleanup 失败/超时（不阻塞主流程），日志: ${CLEANUP_LOG}"
+  fi
+  # 清理在 4.5 步写状态之后才跑完，这里回写 history_cleanup 字段供 Web/飞书观测
+  if [ -f "${STATUS_JSON}" ]; then
+    /home/ai/ai_runner/venv/bin/python - "${STATUS_JSON}" "${CLEANUP_OK}" <<'PYEOF' 2>/dev/null || true
+import json, sys
+p, val = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(p, encoding="utf-8"))
+    d["history_cleanup"] = val
+    json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False)
+except Exception:
+    pass
+PYEOF
+  fi
 fi
 
 echo "[daily_pipeline] ✅ 完成"
