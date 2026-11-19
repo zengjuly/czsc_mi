@@ -6,26 +6,23 @@
 - 只上报「金叉/死叉变更」：与上次状态比对，状态翻转才通知；首次运行
   全部上报当前状态（用户选「首次全部上报」）。
 - 30min K线存独立表（最近20天）；60min 由 30min 聚合，不落盘。
-- 通知走 Hermes 飞速通道（hermes send → 飞书 DM），不依赖 gateway 服务。
+- 通知走统一飞书 webhook（mystery.services.feishu，纯标准库），不依赖 Hermes/gateway。
 """
 from __future__ import annotations
 
 import logging
 import os
-import subprocess
 import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
 from ..adapters import minute_source as ms
 from ..core.macd import macd, summarize
+from ..services.feishu import send_text as _feishu_send
 from ..store._repos.min30_repo import Min30Repo
 
 logger = logging.getLogger(__name__)
 
-_HERMES = os.environ.get("HERMES_BIN", "/home/ai/ai_runner/.local/bin/hermes")
-_HERMES_TARGET = os.environ.get(
-    "MYSTERY_MACD_HERMES_TARGET", "feishu:oc_76e8dd2b391dd080b344157b00de696e")
 _MIN_BARS = 60  # MACD 最少根数（<60 跳过，避免预热不足误报）
 
 
@@ -191,21 +188,8 @@ def format_notification(events: List[Dict], first_run: bool = False,
 
 
 def send_notification(text: str, target: Optional[str] = None) -> bool:
-    """通过 Hermes 飞速通道发送（hermes send，无需 gateway 服务）。"""
-    if not text:
-        return False
-    tgt = target or _HERMES_TARGET
-    try:
-        p = subprocess.run(
-            [_HERMES, "send", "--to", tgt, "--subject", "[CZSC-MI MACD]", text],
-            capture_output=True, text=True, timeout=60)
-        ok = p.returncode == 0
-        logger.info(f"[hermes] send rc={ok} stdout={p.stdout.strip()[:100]} "
-                    f"stderr={p.stderr.strip()[:100]}")
-        return ok
-    except Exception as e:
-        logger.warning(f"[hermes] send 失败: {str(e)[:120]}")
-        return False
+    """通过统一飞书 webhook 发送（不再依赖 Hermes）。target 参数保留兼容旧调用。"""
+    return _feishu_send(text, prefix="[CZSC-MI MACD]\n")
 
 
 def run_once(sync_first: bool = True) -> Dict:
