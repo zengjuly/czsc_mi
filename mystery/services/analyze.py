@@ -349,6 +349,30 @@ def _candlestick_result(daily, weekly) -> Dict[str, Any]:
         return {}
 
 
+def _minute_macd_of(symbol: str) -> Dict[str, Any]:
+    """W103：读该票已缓存的 30/60min MACD 状态（独立表，零拉取成本）。
+
+    个股分析结果仅展示分钟MACD状态，不触发任何分钟数据拉取（避免资源浪费）；
+    分钟数据由独立定时任务（minute-macd run）维护。开关 MYSTERY_STOCK_MACD=1
+    才启用，默认返回空 dict（全市场扫描零开销、零回归）。
+    """
+    import os as _os
+    if str(_os.environ.get("MYSTERY_STOCK_MACD", "0")).strip() not in ("1", "true", "True"):
+        return {}
+    try:
+        from ..store._repos.min30_repo import Min30Repo
+        repo = Min30Repo()
+        out = {}
+        for freq in ("30m", "60m"):
+            st = repo.get_state(symbol, freq)
+            if st:
+                out[freq] = {k: st.get(k) for k in ("state", "dif", "dea", "hist", "ts")}
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"[minute_macd] 读状态跳过({symbol}): {str(exc)[:80]}")
+        return {}
+
+
 def _result_from_payload(data: dict) -> AnalysisResult:
     """analysis_cache payload（AnalysisResult.to_dict 形态）→ AnalysisResult。
 
@@ -383,6 +407,7 @@ def _result_from_payload(data: dict) -> AnalysisResult:
         bars_fingerprint=data.get('bars_fingerprint', ''),
         data_source=data.get('data_source', ''),
         candlestick=data.get('candlestick') or {},
+        macd=data.get('macd') or {},
     )
 
 
@@ -603,6 +628,8 @@ class AnalysisService:
                     # 序列补齐——指纹即缓存键成分，命中意味着指纹一致。
                     res.bars_fingerprint = fp[:8]
                     res.data_source = daily.source
+                    # W103：分钟MACD状态存独立表，缓存命中也实时填充（不影响缓存键）
+                    res.macd = _minute_macd_of(daily.symbol)
                     return res
             except Exception as e:
                 logger.debug(f"[cache] 读缓存失败({symbol}): {str(e)[:80]}")
@@ -661,6 +688,8 @@ class AnalysisService:
             data_source=daily.source,               # W33 诊断展示
             # W82：日 K / 周 K 分别做典型组合形态识别（仅展示，不进评分）
             candlestick=_candlestick_result(daily, weekly),
+            # W103：30/60分钟MACD状态（仅展示，读独立状态表，不触发拉取）
+            macd=_minute_macd_of(internal),
         )
         # ---- 缓存写（W23）----
         if ck is not None:

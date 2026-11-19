@@ -851,6 +851,35 @@ def _cmd_cleanup(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def _cmd_minute_macd(args: argparse.Namespace) -> int:
+    """W103：自选股30min K线同步 + 30/60min MACD金叉死叉监控。
+
+    仅自选股、只分析MACD、只上报金叉死叉变更；通知走 Hermes 飞速通道。
+    """
+    from ..services import minute_macd as mm
+
+    action = getattr(args, "mm_action", "run") or "run"
+    if action == "sync":
+        result = mm.sync_watchlist_min30()
+        print(json.dumps(result, ensure_ascii=False, default=str))
+    elif action == "detect":
+        result = mm.detect_crosses(first_run_all=not getattr(args, "no_first_all", False))
+        # 只输出变更事件（详情不打印，避免刷屏）
+        out = {"first_run": result["first_run"],
+               "event_count": len(result["events"]),
+               "events": result["events"]}
+        if result["events"] and not getattr(args, "no_notify", False):
+            text = mm.format_notification(result["events"], result["first_run"])
+            out["notified"] = mm.send_notification(text)
+        else:
+            out["notified"] = False
+        print(json.dumps(out, ensure_ascii=False, default=str))
+    else:  # run = sync + detect + notify
+        result = mm.run_once(sync_first=not getattr(args, "no_sync", False))
+        print(json.dumps(result, ensure_ascii=False, default=str))
+    return 0
+
+
 def _cmd_audit(args: argparse.Namespace) -> int:
     """只读数据质量审计（不改变任何写入行为）。"""
     from ..store import db as dbmod
@@ -891,7 +920,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[list] = None) -> int:
     # 未设 THS 路径时自动补 sibling Financial-API 默认（须在 load_config 前）
-    """czsc-mi 命令入口：注入默认 THS 环境后构建 argparse 子命令（analyze/daily/scan/wave3/sync/sync-shares/sync-turnover/sector-sync/sector-sync-kline/watchlist/audit/cleanup），分发到各 _cmd_*；统一映射 NotImplementedError(2)/TaskBusyError(3)/通用异常(1)。"""
+    """czsc-mi 命令入口：注入默认 THS 环境后构建 argparse 子命令（analyze/daily/scan/wave3/sync/sync-shares/sync-turnover/sector-sync/sector-sync-kline/watchlist/audit/cleanup/minute-macd），分发到各 _cmd_*；统一映射 NotImplementedError(2)/TaskBusyError(3)/通用异常(1)。"""
     _ensure_default_ths_env()
     parser = argparse.ArgumentParser(prog="czsc-mi", description="Mistery 趋势交易分析")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1081,6 +1110,19 @@ def main(argv: Optional[list] = None) -> int:
                    help="VACUUM 触发空闲页占比阈值（默认 env=0.15）")
     p.add_argument("--json", action="store_true", help="输出结构化 JSON")
     p.set_defaults(func=_cmd_cleanup)
+
+    # W103：自选股分钟K线 + MACD金叉死叉监控
+    p = sub.add_parser("minute-macd", help="W103：自选股30min K线同步 + 30/60min MACD金叉死叉监控（Hermes通知）")
+    msub = p.add_subparsers(dest="mm_action")
+    msub.add_parser("sync", help="同步自选股30min K线（最近20天，增量）")
+    pd = msub.add_parser("detect", help="检测MACD金叉死叉变更并通知")
+    pd.add_argument("--no-first-all", action="store_true",
+                    help="首次运行不全部上报（默认首次全报建基线）")
+    pd.add_argument("--no-notify", action="store_true",
+                    help="只检测不发送通知（调试用）")
+    pr = msub.add_parser("run", help="完整流程：同步+检测+通知（默认动作）")
+    pr.add_argument("--no-sync", action="store_true", help="跳过同步，只检测+通知")
+    p.set_defaults(func=_cmd_minute_macd, mm_action="run")
 
     args = parser.parse_args(argv)
     args.cfg = load_config()

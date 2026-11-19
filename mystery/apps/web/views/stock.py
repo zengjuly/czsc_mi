@@ -186,6 +186,26 @@ def render_stock(d: dict):
                             st.caption(" · ".join(
                                 f"{k}={v}" for k, v in _rest.items()))
 
+    # ---------- W103 30/60分钟 MACD 状态（仅展示，不进分） ----------
+    _macd = d.get('macd') or {}
+    if _macd:
+        with st.expander("30 / 60 分钟 MACD 状态（金叉/死叉监控）", expanded=False):
+            _mc1, _mc2 = st.columns(2)
+            for _mcol, _mfreq, _mlabel in ((_mc1, '30m', '30 分钟'),
+                                            (_mc2, '60m', '60 分钟')):
+                with _mcol:
+                    _ms = _macd.get(_mfreq) or {}
+                    _state = _ms.get('state') or '—'
+                    # 中国习惯：金叉(看多)红、死叉(看空)绿
+                    _mcolor = '🔴' if _state == '金叉' else (
+                        '🟢' if _state == '死叉' else '⚪')
+                    st.markdown(f"**{_mlabel}**：{_mcolor} {_state}")
+                    st.caption(
+                        f"DIF={_ms.get('dif', '—')} · DEA={_ms.get('dea', '—')} · "
+                        f"柱={_ms.get('hist', '—')}")
+                    st.caption(f"更新 {_ms.get('ts', '—')} · 仅展示不进综合分")
+            st.caption("状态由盘中定时任务每30分钟更新；首次运行建立基线，后续仅推送金叉/死叉变更。")
+
     # ---------- W86 主力建仓 / 吸筹研判（四层证据链，仅展示不进分） ----------
     from mystery.apps.reports import result_fields as _rf86
     _acc = _rf86.accumulation_of(d)
