@@ -29,6 +29,7 @@ from mystery.apps.reports.excel_report import excel_bytes  # noqa: E402
 from mystery.config import load_config, output_dir  # noqa: E402
 from mystery.core.scan_signals import classify  # noqa: E402
 from mystery.core.bc_resonance import bc_resonance as _bc_resonance  # noqa: E402
+from mystery.core.pinyin import decorate_option as _decorate_option  # noqa: E402 W104 拼音首字母
 from mystery.services.analyze import (AnalysisService, chan_enabled,  # noqa: E402
                                       chan_score_enabled)
 from mystery.services.scan import (scan_market, latest_scan_job,  # noqa: E402
@@ -58,7 +59,12 @@ def _fmt(v, nd=2):
 
 @st.cache_data(ttl=600, max_entries=1, show_spinner=False)
 def _stock_pick_options() -> list:
-    """全市场「名称（代码）」选项列表（selectbox 名称搜索用，缓存 10 分钟）。"""
+    """全市场选项列表（selectbox 搜索用，缓存 10 分钟）。
+
+    W104：选项文本为「名称（代码） · 首字母」，Streamlit selectbox 大小写
+    不敏感子串过滤 → 输入 ``gzmt`` 命中「贵州茅台」。pypinyin 未安装时
+    自动退化为「名称（代码）」，不影响中文/代码搜索。
+    """
     svc = _service()
     stocks = svc.market.fetch_stock_list()
     seen, out = set(), []
@@ -72,7 +78,7 @@ def _stock_pick_options() -> list:
             norm = normalize_symbol(code)
         except Exception:
             norm = code
-        out.append(f"{name or '未知'}（{norm}）")
+        out.append(_decorate_option(name, norm))
     out.sort()
     return out
 
@@ -529,6 +535,7 @@ __all__ = [
     '_market_env_line_cached',
     '_fmt',
     '_stock_pick_options',
+    '_decorate_option',
     '_bg_store',
     '_bg_lock',
     '_bg_tasks',

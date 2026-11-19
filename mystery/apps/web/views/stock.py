@@ -245,7 +245,8 @@ def _add_watchlist_widget(rows: list, key: str = "wl"):
     """扫描/真三振/板块钻取表下方：选一只加入自选（source=scan）。"""
     if not rows:
         return
-    opts = {f"{r.get('name') or '未知'}（{r['symbol']}）": r['symbol'] for r in rows}
+    # W104：选项带拼音首字母后缀，输入 gzmt 也能命中（_decorate_option 来自 components import *）。
+    opts = {_decorate_option(r.get('name') or '', r['symbol']): r['symbol'] for r in rows}
     pick = st.selectbox("选择加入自选", list(opts.keys()), key=f"{key}_wl_pick")
     if st.button("加入自选", key=f"{key}_wl_add"):
         sym = opts[pick]
@@ -488,6 +489,7 @@ def _stock_pick_select(label: str = "选择股票（输入名称搜索）",
     默认值 default_code 优先匹配选项；匹配不到时附加一条「未知（代码）」候选，
     并把该选项强制写入 session_state[key]（覆盖旧的 selectbox 会话值）。
     """
+    from mystery.core.pinyin import parse_option as _parse_option
     options = _stock_pick_options()
     default_idx = 0
     if default_code:
@@ -497,7 +499,8 @@ def _stock_pick_select(label: str = "选择股票（输入名称搜索）",
             dc = default_code
         matched = None
         for i, o in enumerate(options):
-            if o.endswith(f"（{dc}）"):
+            # W104：带拼音后缀后代码不再位于字符串末尾，改用 parse_option 比对。
+            if _parse_option(o)[0] == dc:
                 matched, default_idx = i, i
                 break
         if matched is None:
@@ -505,10 +508,8 @@ def _stock_pick_select(label: str = "选择股票（输入名称搜索）",
             default_idx = 0
         st.session_state[key] = options[default_idx]
     pick = st.selectbox(label, options, index=default_idx, key=key)
-    if "（" in pick:
-        name, code = pick.rsplit("（", 1)
-        return code[:-1], name
-    return pick, ""
+    code, name = _parse_option(pick)
+    return code, name
 
 @st.cache_data(ttl=3600, max_entries=16, show_spinner=False)
 def _plot_cache(symbol: str, freq: str, data_ver: str = ""):

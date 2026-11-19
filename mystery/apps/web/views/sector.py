@@ -6,6 +6,8 @@ from .components import *
 from .scan import _render_scan_table
 # W87：板块钻取页字段映射（纯函数，零 Streamlit，便于单测）。
 from .sector_fields import related_stock_rows, sector_drilldown_view
+# W104：拼音首字母匹配（板块选择下拉支持 bd → 半导体）
+from mystery.core.pinyin import decorate_option as _decorate_option, parse_option as _parse_option
 
 logger = logging.getLogger(__name__)
 
@@ -14,12 +16,11 @@ def view_sector():
     st.header("板块钻取（真实指数，非成分股抽样）")
     svc = _service()
     meta = svc.market.db.get_sector_meta(active_only=True)
-    names = sorted({f"{m[1]}（{m[0]}）" for m in meta if m[1]})
+    names = sorted({_decorate_option(m[1], m[0]) for m in meta if m[1]})
     pick = st.selectbox("选择板块", names)
     if not pick:
         return
-    s_code = pick.split("（")[-1][:-1]
-    s_name = pick.rsplit("（", 1)[0]
+    s_code, s_name = _parse_option(pick)
     ind = svc.sector.get_sector(s_code)
 
     # W87：板块自身研判（与每日报告「行业板块」区块同口径）
@@ -159,10 +160,10 @@ def view_sector_strength():
     st.dataframe(rows, use_container_width=True, hide_index=True,
                  column_config={"强度分": st.column_config.NumberColumn(
                      format="%.2f")})
-    names = sorted({f"{r['板块']}（{r['代码']}）" for r in rows})
+    names = sorted({_decorate_option(r['板块'], r['代码']) for r in rows})
     pick = st.selectbox("点击板块 → 钻取成分股（走 analyze_one_stock）", names)
     if pick:
-        st.session_state['jump_sector'] = pick.split("（")[-1][:-1]
+        st.session_state['jump_sector'] = _parse_option(pick)[0]
         if st.button("进入板块钻取", type="primary"):
             st.rerun()
 
