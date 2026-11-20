@@ -41,17 +41,21 @@ export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-$STOCK_DIR/Financial-API/python/too
 export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-$STOCK_DIR/Financial-API/data}"
 
 SYNC_DAYS="${SYNC_DAYS:-30}"
-echo "[daily_pipeline] 1/5 同步行情（日线最近 ${SYNC_DAYS} 天，增量）..."
-# W49：sync 写库互斥——已有 sync 在跑（另一 cron/手动/Web 触发）时 CLI
-# 报「已有任务进行中」并以 exit 3 退出；此处给出管线级提示后同样退出，
-# 数据由在跑任务负责，不重复拉库。
-# W115：小内存机（951M）用 365 天全量会 OOM（RSS 626MB 被 kill），
-# 本地库已含历史，日常增量 30 天足够；nice 降低与 Web 服务的内存竞争。
-nice -n 5 czsc-mi sync --period daily --days "${SYNC_DAYS}" || { rc=$?
-  if [ "$rc" -eq 3 ]; then
-    echo "[daily_pipeline] 已有 sync 任务进行中（W49 写库互斥），本管线让路退出"
-  fi
-  exit "$rc"; }
+echo "[daily_pipeline] 1/5 同步行情（日线最近 ${SYNC_DAYS} 天，分批增量）..."
+# W115：小内存机（951M）单次全量 sync 逐股累积到 666MB，叠加常驻 Web 服务
+# 会触发 OOM killer（rc=137），日报中断。改用分批脚本：每批独立进程跑完释放
+# 内存，借助 sync_checkpoint 断点续跑。6 批 × 1000 只 ≈ 9 分钟，零 OOM。
+# 老系统若无 sync_batched.sh，回退到单次 nice 运行。
+if [ -x "${ROOT}/scripts/sync_batched.sh" ]; then
+  SYNC_DAYS="${SYNC_DAYS}" SYNC_BATCH_SIZE="${SYNC_BATCH_SIZE:-1000}" \
+    bash "${ROOT}/scripts/sync_batched.sh" || { rc=$?; exit "$rc"; }
+else
+  nice -n 5 czsc-mi sync --period daily --days "${SYNC_DAYS}" || { rc=$?
+    if [ "$rc" -eq 3 ]; then
+      echo "[daily_pipeline] 已有 sync 任务进行中（W49 写库互斥），本管线让路退出"
+    fi
+    exit "$rc"; }
+fi
 
 # W39 板块指数日K增量（三振行业腿数据源）：fuyao index-historical 归一通道，
 # 每板块从库内断点前扩 15 天幂等 UPSERT；失败不阻塞主流程。
