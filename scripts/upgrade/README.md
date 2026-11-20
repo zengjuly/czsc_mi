@@ -16,7 +16,7 @@
 ## 用法
 
 ```bash
-cd /home/ai/ai_runner/stock/czsc_mi/scripts/upgrade
+cd <你的仓库目录>/scripts/upgrade     # 如 $HOME/stock/czsc_mi/scripts/upgrade
 
 # 单个组件
 bash upgrade_czsc.sh
@@ -51,11 +51,15 @@ bash upgrade_all.sh --only tdx
 
 ## 路径覆盖
 
-所有路径可用环境变量覆盖（便于一键安装脚本复用）：
+所有路径可用环境变量覆盖（便于一键安装脚本复用）。默认值从用户 home 推导
+（`DEP_BASE_DIR` 默认 `$HOME`），无需硬编码：
 
 ```bash
-DEP_BASE_DIR=/home/ai/ai_runner      # 基础目录
-STOCK_DIR=/home/ai/ai_runner/stock   # stock 根目录
-VENV=/home/ai/ai_runner/venv         # Python venv
-CZSC_MI_DIR=...                      # 主项目目录
+DEP_BASE_DIR=$HOME          # 基础目录（默认，可省）
+STOCK_DIR=$HOME/stock       # stock 根目录（默认，可省）
+VENV=$HOME/venv             # Python venv（默认，可省）
+CZSC_MI_DIR=...             # 主项目目录
 ```
+
+> 说明：`_common.sh` 内已用 `${DEP_BASE_DIR:-$HOME}` 等写法自动推导，
+> 上面仅在需要指向非默认位置时显式覆盖即可。
