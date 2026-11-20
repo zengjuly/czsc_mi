@@ -379,11 +379,17 @@ def _sync_sector_kline_impl(cfg: Optional[Dict] = None,
     errors: List[str] = []
     total_steps = len(codes)
     report_progress(db_path, 'sector_kline', 0, total_steps)
-    for i, sc in enumerate(codes):
-        report_progress(db_path, 'sector_kline', i, total_steps, label=sc)
+
+    # W115: 串行 688 板块 × fuyao 在线 1-3s = 15-20 分钟，日报瓶颈。
+    # 改为 ThreadPoolExecutor 并发（默认 8 workers，可用 SECTOR_SYNC_WORKERS 覆盖）。
+    # ThsClient 每次 get_index_daily 起独立 fuyao 子进程，彼此无共享状态，线程安全。
+    import os as _os
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    workers = max(1, min(32, int(_os.environ.get('SECTOR_SYNC_WORKERS', '8'))))
+
+    def _one(sc):
         base = sc if sc.startswith('ths_') else f'ths_{sc.split(".")[0]}'
         fuyao_code = base[4:] + '.TI'
-        # 增量起点：库内最新 - days（重拉一段以覆盖修订）；无库底则拉 days 窗口
         anchor = last_dates.get(base)
         if full_since:
             start = full_since
@@ -399,16 +405,30 @@ def _sync_sector_kline_impl(cfg: Optional[Dict] = None,
             df = ths.get_index_daily(fuyao_code, start=start,
                                      end=today.strftime('%Y-%m-%d'))
             if df is None or df.empty:
+                return ('empty', base, 0, '')
+            n = db.upsert_sector_kline(df, base, sector_name=names.get(base, ''))
+            return ('ok', base, n, '')
+        except Exception as e:
+            return ('err', base, 0, str(e)[:60])
+
+    done_n = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(_one, sc): sc for sc in codes}
+        for fut in as_completed(futs):
+            status, base, n, err = fut.result()
+            done_n += 1
+            if done_n % 20 == 0 or done_n == total_steps:
+                report_progress(db_path, 'sector_kline', done_n, total_steps)
+            if status == 'ok':
+                rows_total += n
+                synced += 1
+            elif status == 'empty':
                 failed += 1
                 errors.append(f"{base}: 空返回")
-                continue
-            n = db.upsert_sector_kline(df, base, sector_name=names.get(base, ''))
-            rows_total += n
-            synced += 1
-        except Exception as e:
-            failed += 1
-            errors.append(f"{base}: {str(e)[:60]}")
-            logger.warning(f"[sync-sector-kline] {base} 失败: {str(e)[:80]}")
+            else:
+                failed += 1
+                errors.append(f"{base}: {err}")
+                logger.warning(f"[sync-sector-kline] {base} 失败: {err}")
     return {'sectors': len(codes), 'synced': synced, 'failed': failed,
             'rows': rows_total, 'max_date': today.strftime('%Y-%m-%d'),
             'errors': errors[:10]}
