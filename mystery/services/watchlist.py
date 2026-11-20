@@ -3,6 +3,7 @@
 自选股存 data/watchlist.json（gitignore，不入库）；个股页/daily/扫描共用。
 新格式（003.md）：对象列表 [{symbol, name, source, source_file, added_at}]。
 source 枚举：tdx_local | manual | scan。旧字符串数组读到后自动升级为 manual。
+W113：条目新增 held(bool) 持仓标记（缺省 False）；导入导出支持 ths/tdx 券商格式。
 """
 from __future__ import annotations
 
@@ -46,7 +47,8 @@ def _today() -> str:
 
 def _default_items() -> List[Dict]:
     return [{"symbol": normalize_symbol(c), "name": "", "source": "manual",
-             "source_file": "", "board": [], "added_at": _today()} for c in _DEFAULT_STOCKS]
+             "source_file": "", "board": [], "added_at": _today(), "held": False}
+            for c in _DEFAULT_STOCKS]
 
 
 def _normalize_item(it: Dict) -> Optional[Dict]:
@@ -64,6 +66,8 @@ def _normalize_item(it: Dict) -> Optional[Dict]:
         "source_file": str(it.get("source_file") or ""),
         "board": it.get("board") if isinstance(it.get("board"), list) else [],
         "added_at": str(it.get("added_at") or ""),
+        # W113：持仓标记。旧数据缺字段默认 False，读时按需升级写回由 set_held 负责。
+        "held": bool(it.get("held", False)),
     }
 
 
@@ -90,7 +94,7 @@ def _load_items() -> List[Dict]:
             except Exception:
                 continue
             items.append({"symbol": sym, "name": "", "source": "manual",
-                          "source_file": "", "added_at": _today()})
+                          "source_file": "", "added_at": _today(), "held": False})
         _write_items(items)
         return items
     items = []
@@ -127,13 +131,14 @@ def save_watchlist(codes: List[str]) -> None:
         except Exception:
             continue
         items.append({"symbol": sym, "name": "", "source": "manual",
-                      "source_file": "", "board": [], "added_at": today})
+                      "source_file": "", "board": [], "added_at": today,
+                      "held": False})
     _write_items(items)
 
 
 def add_to_watchlist(code: str, name: str = "", source: str = "manual",
-                     source_file: str = "") -> List[Dict]:
-    """加入自选（source ∈ tdx_local|manual|scan）；已存在则保留原 source。"""
+                     source_file: str = "", held: bool = False) -> List[Dict]:
+    """加入自选（source ∈ tdx_local|manual|scan）；已存在则保留原 source/held。"""
     items = _load_items()
     try:
         sym = normalize_symbol(str(code))
@@ -143,7 +148,7 @@ def add_to_watchlist(code: str, name: str = "", source: str = "manual",
         items.append({"symbol": sym, "name": name or "",
                       "source": source if source in _SOURCES else "manual",
                       "source_file": source_file or "",
-                      "added_at": _today()})
+                      "added_at": _today(), "held": bool(held)})
         _write_items(items)
     return items
 
@@ -206,7 +211,7 @@ def import_from_tdx(cfg: Optional[Dict] = None,
                 name = ""
         items.append({"symbol": sym, "name": name or "未知", "source": "tdx_local",
                       "source_file": os.path.basename(path),
-                      "added_at": _today()})
+                      "added_at": _today(), "held": False})
         existing.add(sym)
         imported += 1
     if imported:
@@ -338,7 +343,7 @@ def sync_tdx_boards(cfg: Optional[Dict] = None,
         return {"symbol": sym, "name": nm or "未知",
                 "source": "tdx_local", "source_file": "",
                 "board": sym_boards.get(sym, []),
-                "added_at": synced_at}
+                "added_at": synced_at, "held": False}
 
     if force_full:
         # 整体覆盖（旧行为）：tdx 来源条目重建为所选板块并集
@@ -537,14 +542,16 @@ def search_stock(keyword: str, limit: int = 10, cfg: Optional[Dict] = None) -> L
     return out
 
 
-# ---------------- 自选股导入/导出（W112，支持服务器间同步） ----------------
+# ---------------- 自选股导入/导出（W112 + W113） ----------------
 def export_watchlist(fmt: str = "json") -> str:
     """导出自选股为文本。
 
-    fmt=json：完整对象列表（symbol/name/source/source_file/board/added_at），
+    fmt=json：完整对象列表（symbol/name/source/source_file/board/added_at/held），
         与 data/watchlist.json 同构，可直接用于跨服务器同步（无损）。
-    fmt=csv ：列 代码,名称,来源,板块；Excel 可直接打开。
+    fmt=csv ：列 代码,名称,来源,板块,持仓；Excel 可直接打开。
     fmt=txt ：每行一个代码（600519.SH），最简格式。
+    fmt=ths ：同花顺可导入格式（每行「代码 名称」）。
+    fmt=tdx ：通达信可导入格式（每行首位市场标志+6位代码：1沪/0深/2北）。
     """
     items = _load_items()
     fmt = (fmt or "json").lower()
@@ -555,22 +562,39 @@ def export_watchlist(fmt: str = "json") -> str:
         import io
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["代码", "名称", "来源", "来源文件", "板块", "加入日期"])
+        w.writerow(["代码", "名称", "来源", "来源文件", "板块", "持仓", "加入日期"])
         for it in items:
             w.writerow([it["symbol"], it.get("name", ""), it.get("source", ""),
                         it.get("source_file", ""), "|".join(it.get("board", []) or []),
-                        it.get("added_at", "")])
+                        "是" if it.get("held") else "", it.get("added_at", "")])
         return buf.getvalue()
     if fmt in ("txt", "codes"):
         return "\n".join(it["symbol"] for it in items) + ("\n" if items else "")
-    raise ValueError(f"不支持的导出格式: {fmt}（可选 json/csv/txt）")
+    if fmt == "ths":
+        # 同花顺导入：每行「代码 名称」，代码用纯6位（同花顺按交易所述推断）
+        lines = []
+        for it in items:
+            digits = it["symbol"].split(".")[0]
+            nm = (it.get("name") or "").strip()
+            lines.append(f"{digits} {nm}".rstrip())
+        return "\n".join(lines) + ("\n" if lines else "")
+    if fmt == "tdx":
+        # 通达信 zxg.blk：首位 1=沪/0=深/2=北 + 6位代码
+        exch_map = {"SH": "1", "SZ": "0", "BJ": "2"}
+        lines = []
+        for it in items:
+            digits, _, exch = it["symbol"].partition(".")
+            lines.append(exch_map.get(exch.upper(), "1") + digits)
+        return "\n".join(lines) + ("\n" if lines else "")
+    raise ValueError(f"不支持的导出格式: {fmt}（可选 json/csv/txt/ths/tdx）")
 
 
 def import_watchlist(text: str, fmt: str = "auto", mode: str = "merge") -> Dict:
     """从文本导入自选股（去重合并 / 覆盖）。
 
-    :param text: 文件内容（JSON 数组 / CSV / 每行一个代码 / 空白分隔代码）
-    :param fmt: auto|json|csv|txt，auto 自动按首字符判断（[ 或 { → json，含逗号 → csv，否则 txt）
+    :param text: 文件内容（JSON 数组 / CSV / 每行一个代码 / 券商格式）
+    :param fmt: auto|json|csv|txt|ths|tdx。auto 自动识别；ths/tdx 为同花顺/通达信
+        导出格式（券商格式一律按 manual 来源导入，不覆盖已有 held 持仓标记）。
     :param mode: merge（默认，合并不覆盖已有）| replace（整体覆盖）
     :return: {added, skipped, total, mode, fmt, symbols:[新增代码]}
     """
@@ -585,10 +609,12 @@ def import_watchlist(text: str, fmt: str = "auto", mode: str = "merge") -> Dict:
         elif "\n" not in text and "," in text and not text.split(",")[0].strip().replace(".", "").isdigit():
             fmt = "csv"
         else:
-            fmt = "txt"
+            fmt = "txt"  # 券商纯代码文本也走 txt（normalize_symbol 能识别 600519 等）
 
     incoming: List[Dict] = []
-    if fmt == "json":
+    if fmt in ("ths", "tdx"):
+        incoming = _parse_broker_codes(text, fmt)
+    elif fmt == "json":
         raw = json.loads(text)
         if isinstance(raw, dict):
             raw = raw.get("items") or raw.get("watchlist") or []
@@ -606,15 +632,13 @@ def import_watchlist(text: str, fmt: str = "auto", mode: str = "merge") -> Dict:
         import io
         reader = csv.reader(io.StringIO(text))
         rows = list(reader)
-        if not rows:
-            rows = []
         header = [c.strip() for c in rows[0]] if rows else []
-        # 有表头（首格非代码）→ 按列名映射；否则每行首列当代码
         if header and not _looks_like_code(header[0]):
             idx_code = next((i for i, c in enumerate(header) if c in ("代码", "code", "symbol")), 0)
             idx_name = next((i for i, c in enumerate(header) if c in ("名称", "name")), None)
             idx_src = next((i for i, c in enumerate(header) if c in ("来源", "source")), None)
             idx_board = next((i for i, c in enumerate(header) if c in ("板块", "board")), None)
+            idx_held = next((i for i, c in enumerate(header) if c in ("持仓", "held")), None)
             for r in rows[1:]:
                 if not r or not r[idx_code].strip():
                     continue
@@ -622,6 +646,8 @@ def import_watchlist(text: str, fmt: str = "auto", mode: str = "merge") -> Dict:
                      "name": r[idx_name].strip() if idx_name is not None and idx_name < len(r) else "",
                      "source": r[idx_src].strip() if idx_src is not None and idx_src < len(r) else "manual",
                      "board": [b for b in r[idx_board].split("|") if b] if idx_board is not None and idx_board < len(r) else []}
+                if idx_held is not None and idx_held < len(r):
+                    d["held"] = r[idx_held].strip() in ("是", "1", "true", "True", "Y", "y")
                 incoming.append(d)
         else:
             for r in rows:
@@ -650,13 +676,14 @@ def import_watchlist(text: str, fmt: str = "auto", mode: str = "merge") -> Dict:
         norm_in.append({"symbol": sym, "name": str(d.get("name") or ""),
                         "source": src, "source_file": str(d.get("source_file") or ""),
                         "board": d.get("board") if isinstance(d.get("board"), list) else [],
-                        "added_at": str(d.get("added_at") or _today())})
+                        "added_at": str(d.get("added_at") or _today()),
+                        "held": bool(d.get("held", False))})
 
     before = _load_items()
     if mode == "replace":
         final = norm_in
         added_syms = [d["symbol"] for d in norm_in]
-    else:  # merge：已有保留，只加新的
+    else:  # merge：已有保留（含已有 held），只加新的
         have = {it["symbol"] for it in before}
         added_items = [d for d in norm_in if d["symbol"] not in have]
         final = before + added_items
@@ -666,6 +693,128 @@ def import_watchlist(text: str, fmt: str = "auto", mode: str = "merge") -> Dict:
             "skipped": len(seen) - len(added_syms),
             "total": len(final), "mode": mode, "fmt": fmt,
             "symbols": added_syms}
+
+
+# ---------------- W113：持仓股标记 API ----------------
+def set_held(symbol: str, held: bool = True) -> List[Dict]:
+    """标记/取消某只自选为持仓股；不在自选里则自动加入。返回最新条目列表。"""
+    sym = normalize_symbol(str(symbol))
+    items = _load_items()
+    for it in items:
+        if it["symbol"] == sym:
+            it["held"] = bool(held)
+            break
+    else:
+        items.append({"symbol": sym, "name": "", "source": "manual",
+                      "source_file": "", "board": [], "added_at": _today(),
+                      "held": bool(held)})
+    _write_items(items)
+    return items
+
+
+def set_held_many(symbols: List[str], held: bool = True) -> int:
+    """批量标记持仓（用于导入持仓清单）。返回变更只数。"""
+    n = 0
+    targets = set()
+    for c in symbols:
+        try:
+            targets.add(normalize_symbol(str(c)))
+        except Exception:
+            continue
+    items = _load_items()
+    have = {it["symbol"] for it in items}
+    for it in items:
+        if it["symbol"] in targets and it.get("held") != bool(held):
+            it["held"] = bool(held)
+            n += 1
+    for sym in targets - have:
+        items.append({"symbol": sym, "name": "", "source": "manual",
+                      "source_file": "", "board": [], "added_at": _today(),
+                      "held": bool(held)})
+        n += 1
+    if n:
+        _write_items(items)
+    return n
+
+
+def is_held(symbol: str) -> bool:
+    try:
+        sym = normalize_symbol(str(symbol))
+    except Exception:
+        return False
+    return any(it["symbol"] == sym and it.get("held") for it in _load_items())
+
+
+def held_codes() -> List[str]:
+    """返回持仓股代码列表（600519.SH 格式）。"""
+    return [it["symbol"] for it in _load_items() if it.get("held")]
+
+
+def load_held_map() -> Dict[str, bool]:
+    """返回 {code: held}，供通知分组使用（一次读盘）。"""
+    return {it["symbol"]: bool(it.get("held")) for it in _load_items()}
+
+
+# ---------------- W113：券商格式解析（同花顺 / 通达信） ----------------
+def _parse_broker_codes(text: str, fmt: str) -> List[Dict]:
+    """解析同花顺/通达信导出的自选文本 → [{symbol,name,source}]（W113）。
+
+    ths（同花顺）：常见每行「600519」「600519.SH」「sh600519」「贵州茅台 600519」
+        「600519 贵州茅台」，也可能带表头/逗号/BOM。策略：逐 token 用正则抓 6 位
+        代码并交给 normalize_symbol 推断市场，名称取同一行里的中文串。
+    tdx（通达信）：每行首位市场标志 + 6 位（1=沪/0=深/2=北，如 1600519），
+        兼容纯 6 位、带引号、制表符、GBK 解码后的文本。
+    """
+    import re
+    out: List[Dict] = []
+    seen: set = set()
+
+    def add(code: str, name: str = ""):
+        try:
+            sym = normalize_symbol(str(code).strip())
+        except Exception:
+            return
+        if sym in seen:
+            return
+        seen.add(sym)
+        out.append({"symbol": sym, "name": (name or "").strip(), "source": "manual"})
+
+    if fmt == "tdx":
+        for line in text.splitlines():
+            token = line.strip().strip('"').strip("'").strip()
+            if not token:
+                continue
+            # 优先 7 位市场标志格式
+            m7 = re.match(r"^([012])(\d{6})", token)
+            if m7:
+                exch = {"1": "SH", "0": "SZ", "2": "BJ"}[m7.group(1)]
+                add(m7.group(2) + "." + exch)
+                continue
+            # 逐行抓第一个 6 位代码
+            m6 = re.search(r"(\d{6})", token)
+            if m6:
+                add(m6.group(1))
+    else:  # ths
+        for line in text.splitlines():
+            token = line.strip().lstrip("\ufeff").strip()
+            if not token:
+                continue
+            # 抓代码（支持 600519 / 600519.SH / sh600519）
+            m = re.search(r"(?:(sh|sz|bj)[.]?)?(\d{6})(?:[.](SH|SZ|BJ))?", token, re.I)
+            if not m:
+                continue
+            prefix, digits, suffix = m.group(1), m.group(2), m.group(3)
+            code = digits
+            if suffix:
+                code = digits + "." + suffix.upper()
+            elif prefix:
+                code = digits + "." + prefix.upper()
+            # 名称：整行去掉代码 token 与常见分隔符后剩下的中文/字母
+            rest = token.replace(m.group(0), " ")
+            name = re.sub(r"[\s,，\t|]+", " ", rest).strip()
+            name = re.sub(r"^[\d.]+", "", name).strip()
+            add(code, name)
+    return out
 
 
 def _looks_like_code(s: str) -> bool:

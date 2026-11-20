@@ -829,6 +829,25 @@ def _cmd_watchlist_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_watchlist_hold(args: argparse.Namespace) -> int:
+    """处理 `watchlist hold`：标记/取消持仓股（W113）。"""
+    from ..services import watchlist as _wl
+
+    codes = args.codes or []
+    if not codes:
+        print("用法: czsc-mi watchlist hold <代码...> [--off]（--off 取消持仓）",
+              file=sys.stderr)
+        return 1
+    if args.off:
+        n = _wl.set_held_many(codes, held=False)
+        print(f"已取消持仓标记 {n} 只")
+    else:
+        n = _wl.set_held_many(codes, held=True)
+        print(f"已标记持仓 {n} 只")
+    print("当前持仓股: " + (", ".join(_wl.held_codes()) or "（无）"))
+    return 0
+
+
 def _cmd_sync_tdx_boards(args: argparse.Namespace) -> int:
     """处理 `watchlist sync-boards`：同步 tdx_local 自选板块（增量合并/覆盖/dry-run）。"""
     from ..services import watchlist as _wl
@@ -1070,9 +1089,9 @@ def main(argv: Optional[list] = None) -> int:
     wsub = p.add_subparsers(dest="wl_cmd", required=True)
     wp = wsub.add_parser("import-tdx", help="从通达信本地自选 zxg.blk 导入（合并不覆盖）")
     wp.set_defaults(func=_cmd_watchlist_import_tdx)
-    wp = wsub.add_parser("export", help="导出自选股（json/csv/txt，默认 json 完整信息）")
-    wp.add_argument("--format", "-f", default="json", choices=["json", "csv", "txt"],
-                    help="导出格式：json 完整（跨机同步用）/csv 表格/txt 纯代码")
+    wp = wsub.add_parser("export", help="导出自选股（json/csv/txt/ths/tdx，默认 json）")
+    wp.add_argument("--format", "-f", default="json", choices=["json", "csv", "txt", "ths", "tdx"],
+                    help="导出格式：json 完整/csv 表格/txt 纯代码/ths 同花顺/tdx 通达信")
     wp.add_argument("--out", "-o", default=None,
                     help="输出文件；省略则打印到 stdout")
     wp.set_defaults(func=_cmd_watchlist_export)
@@ -1080,11 +1099,15 @@ def main(argv: Optional[list] = None) -> int:
     wp.add_argument("--infile", "-i", default=None,
                     help="输入文件；省略则从 stdin 读取")
     wp.add_argument("--format", "-f", default="auto",
-                    choices=["auto", "json", "csv", "txt"],
-                    help="导入格式：auto 自动识别（默认）")
+                    choices=["auto", "json", "csv", "txt", "ths", "tdx"],
+                    help="导入格式：auto 自动识别（默认）/ths 同花顺/tdx 通达信")
     wp.add_argument("--mode", default="merge", choices=["merge", "replace"],
                     help="merge 合并去重（默认）/replace 整体覆盖")
     wp.set_defaults(func=_cmd_watchlist_import)
+    wp = wsub.add_parser("hold", help="标记/取消持仓股（W113，影响飞书通知分组）")
+    wp.add_argument("codes", nargs="+", help="股票代码（可多个）")
+    wp.add_argument("--off", action="store_true", help="取消持仓标记（默认标记持仓）")
+    wp.set_defaults(func=_cmd_watchlist_hold)
     wp = wsub.add_parser("sync-boards",
                          help="同步 tdx_local 自选板块（默认增量合并；--boards 指定部分，省略则全部）")
     wp.add_argument("--boards", nargs="+", metavar="板块名", default=None,

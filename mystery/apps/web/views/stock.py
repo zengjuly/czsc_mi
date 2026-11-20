@@ -325,22 +325,26 @@ def view_watchlist_subpage():
     st.divider()
     st.subheader("自选股导入 / 导出")
     st.caption("导出 JSON 含名称/来源/板块，可用于服务器间同步；导入自动去重合并。")
-    _exp_fmt = st.radio("导出格式", ["json", "csv", "txt"],
+    _exp_fmt = st.radio("导出格式", ["json", "csv", "txt", "ths", "tdx"],
                         horizontal=True, key="wl_export_fmt")
     _exp_text = _wl.export_watchlist(_exp_fmt)
     _mime = {"json": "application/json", "csv": "text/csv",
-             "txt": "text/plain"}[_exp_fmt]
-    _ext = "json" if _exp_fmt == "json" else _exp_fmt
-    st.download_button(f"⬇ 导出 {len(_wl.load_watchlist())} 只（{_exp_fmt}）",
+             "txt": "text/plain", "ths": "text/plain", "tdx": "text/plain"}[_exp_fmt]
+    _ext = {"json": "json", "ths": "txt", "tdx": "blk"}.get(_exp_fmt, _exp_fmt)
+    _fmt_hint = {"ths": "同花顺", "tdx": "通达信"}.get(_exp_fmt, _exp_fmt)
+    st.download_button(f"⬇ 导出 {len(_wl.load_watchlist())} 只（{_fmt_hint}）",
                        data=_exp_text,
                        file_name=f"watchlist.{_ext}",
                        mime=_mime, key="wl_export_btn")
-    _up = st.file_uploader("⬆ 导入自选股文件（json / csv / txt）",
-                           type=["json", "csv", "txt"], key="wl_import_file")
+    _up = st.file_uploader("⬆ 导入自选股文件（json / csv / txt / ths同花顺 / tdx通达信）",
+                           type=["json", "csv", "txt", "blk", "dat"], key="wl_import_file")
     if _up is not None:
         _mode = st.radio("导入方式", ["合并（去重）", "覆盖（替换全部）"],
                          horizontal=True, key="wl_import_mode")
-        _imp_fmt = _exp_fmt if _up.name.endswith(_exp_fmt) else _up.name.rsplit('.', 1)[-1]
+        _suffix = _up.name.rsplit('.', 1)[-1].lower()
+        _imp_fmt = {"blk": "tdx"}.get(_suffix, _suffix)
+        if _imp_fmt not in ("json", "csv", "txt", "ths", "tdx"):
+            _imp_fmt = "auto"
         if st.button("确认导入", key="wl_import_go", type="primary"):
             try:
                 _r = _wl.import_watchlist(
@@ -406,9 +410,10 @@ def view_watchlist_subpage():
         rows.append({
             "股票名称": name,
             "代码": sym,
+            "持仓": "⭐持仓" if it.get("held") else "—",
             "来源/板块": f"{src} ｜ {'·'.join(blist)}" if blist else src,
         })
-    df_wl = pd.DataFrame(rows, columns=["股票名称", "代码", "来源/板块"])
+    df_wl = pd.DataFrame(rows, columns=["股票名称", "持仓", "代码", "来源/板块"])
     event = st.dataframe(
         df_wl,
         hide_index=True,
@@ -419,6 +424,7 @@ def view_watchlist_subpage():
             # 名称列固定最左 + 固定宽度（Streamlit 原生不支持冻结列，这里
             # 以「名称第一列 + 定宽」保证横向滚动时名称始终可见）
             "股票名称": st.column_config.TextColumn("股票名称", width="medium"),
+            "持仓": st.column_config.TextColumn("持仓", width="small"),
             "代码": st.column_config.TextColumn("代码", width="small"),
             "来源/板块": st.column_config.TextColumn("来源/板块", width="large"),
         },
@@ -432,7 +438,7 @@ def view_watchlist_subpage():
         sel_name = rows[sel_rows[0]]["股票名称"]
         st.caption(f"已选中：**{sel_name}（{sel_sym}）**")
 
-    b1, b2, b3 = st.columns([1, 1, 6])
+    b1, b2, b3, b4 = st.columns([1, 1, 1, 5])
     if b1.button("分析选中", type="primary", disabled=not sel_sym,
                  key="wl_analyze_sel"):
         st.session_state['_pending_symbol'] = sel_sym
@@ -441,8 +447,13 @@ def view_watchlist_subpage():
     if b2.button("删除选中", disabled=not sel_sym, key="wl_del_sel"):
         _wl.remove_from_watchlist(sel_sym)
         st.rerun()
+    _held_now = _wl.is_held(sel_sym) if sel_sym else False
+    if b3.button("☆取消持仓" if _held_now else "⭐标记持仓",
+                 disabled=not sel_sym, key="wl_toggle_held"):
+        _wl.set_held(sel_sym, held=not _held_now)
+        st.rerun()
     if not sel_sym:
-        b3.caption("点击表格行选中股票后，可分析 / 删除。")
+        b4.caption("选中行后可分析 / 删除 / 标记持仓。⭐持仓股通知优先级更高。")
 
 def view_stock():
     st.header("个股分析（输入名称或代码搜索，选中即分析）")
