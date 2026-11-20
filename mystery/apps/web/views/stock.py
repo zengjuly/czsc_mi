@@ -360,24 +360,57 @@ def view_watchlist_subpage():
     # 板块快照一次加载，避免每只重复 IO
     _boards_snap = _wl.load_tdx_boards()
     st.caption(f"共 {len(items)} 只")
+
+    # W108：自选股改为列表（dataframe）展示——首列为股票名称、固定最左，
+    # 行选中后统一「分析 / 删除」，替代原逐行按钮布局。
+    import pandas as pd
+
+    rows = []
     for it in items:
         sym = it['symbol']
         name = it['name'] or '未知'
         blist = _wl.boards_of_symbol(sym, _boards_snap)
         src = _wl.source_label(it['source'], it.get('source_file') or '')
-        if blist:
-            src = f"{src} ｜ {'·'.join(blist)}"
-        c1, c2, c3, c4, c5 = st.columns([1.1, 1.4, 1.8, 0.7, 0.7])
-        c1.markdown(f"`{sym}`")
-        c2.write(name)
-        c3.write(src)
-        if c4.button("分析", key=f"an_{sym}"):
-            st.session_state['_pending_symbol'] = sym
-            st.session_state['subview'] = None
-            st.rerun()
-        if c5.button("删除", key=f"del_{sym}"):
-            _wl.remove_from_watchlist(sym)
-            st.rerun()
+        rows.append({
+            "股票名称": name,
+            "代码": sym,
+            "来源/板块": f"{src} ｜ {'·'.join(blist)}" if blist else src,
+        })
+    df_wl = pd.DataFrame(rows, columns=["股票名称", "代码", "来源/板块"])
+    event = st.dataframe(
+        df_wl,
+        hide_index=True,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        column_config={
+            # 名称列固定最左 + 固定宽度（Streamlit 原生不支持冻结列，这里
+            # 以「名称第一列 + 定宽」保证横向滚动时名称始终可见）
+            "股票名称": st.column_config.TextColumn("股票名称", width="medium"),
+            "代码": st.column_config.TextColumn("代码", width="small"),
+            "来源/板块": st.column_config.TextColumn("来源/板块", width="large"),
+        },
+        key="wl_table")
+    try:
+        sel_rows = list(event.selection.rows or [])
+    except AttributeError:
+        sel_rows = []
+    sel_sym = rows[sel_rows[0]]["代码"] if sel_rows else None
+    if sel_sym:
+        sel_name = rows[sel_rows[0]]["股票名称"]
+        st.caption(f"已选中：**{sel_name}（{sel_sym}）**")
+
+    b1, b2, b3 = st.columns([1, 1, 6])
+    if b1.button("分析选中", type="primary", disabled=not sel_sym,
+                 key="wl_analyze_sel"):
+        st.session_state['_pending_symbol'] = sel_sym
+        st.session_state['subview'] = None
+        st.rerun()
+    if b2.button("删除选中", disabled=not sel_sym, key="wl_del_sel"):
+        _wl.remove_from_watchlist(sel_sym)
+        st.rerun()
+    if not sel_sym:
+        b3.caption("点击表格行选中股票后，可分析 / 删除。")
 
 def view_stock():
     st.header("个股分析（输入名称或代码搜索，选中即分析）")

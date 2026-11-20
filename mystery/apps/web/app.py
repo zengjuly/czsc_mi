@@ -43,6 +43,7 @@ from mystery.apps.web.views.stock import *  # noqa: E402,F403
 from mystery.apps.web.views.scan import *  # noqa: E402,F403
 from mystery.apps.web.views.sector import *  # noqa: E402,F403
 from mystery.apps.web.views.system import *  # noqa: E402,F403
+from mystery.apps.web.views.cron import *  # noqa: E402,F403  # W108：定时任务配置
 from mystery.apps.web.views.components import *  # noqa: E402,F403
 
 def main():
@@ -53,7 +54,7 @@ def main():
         st.stop()
 
     page = st.sidebar.radio("导航", ["个股分析", "自选股", "全市场扫描", "板块钻取",
-                                    "真三振池", "系统状态", "板块强度表"],
+                                    "真三振池", "系统状态", "板块强度表", "定时任务"],
                             key="nav_page",
                             on_change=_clear_subview)
     
@@ -82,6 +83,8 @@ def main():
         view_true_resonance()
     elif page == "系统状态":
         view_system()
+    elif page == "定时任务":
+        view_cron_page()
     elif page == "板块强度表":
         view_sector_strength()
     else:
