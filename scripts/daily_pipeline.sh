@@ -22,8 +22,12 @@ export TZ=Asia/Shanghai
 ROOT="${CZSC_MI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 STOCK_DIR="$(dirname "$ROOT")"
 BASE_DIR="$(dirname "$STOCK_DIR")"
+# venv 位置探测：O1 在 $BASE_DIR/venv，O2 在 $STOCK_DIR/venv；兼容两机布局差异
+VENV_BASE="$BASE_DIR/venv"
+[ ! -x "$VENV_BASE/bin/czsc-mi" ] && [ -x "$STOCK_DIR/venv/bin/czsc-mi" ] && VENV_BASE="$STOCK_DIR/venv"
+
 source "${CZSC_MI_STOCKRC:-$BASE_DIR/.stockrc}"
-source "${VENV:-$BASE_DIR/venv}/bin/activate"
+source "${VENV:-$VENV_BASE}/bin/activate"
 cd "$ROOT"
 
 export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-$STOCK_DIR/data/db/mystery_cache.db}"
@@ -123,7 +127,7 @@ if [ "${RUN_CLEANUP:-1}" = "1" ]; then
   fi
   # 清理在 4.5 步写状态之后才跑完，这里回写 history_cleanup 字段供 Web/飞书观测
   if [ -f "${STATUS_JSON}" ]; then
-    "${VENV:-$BASE_DIR/venv}/bin/python" - "${STATUS_JSON}" "${CLEANUP_OK}" <<'PYEOF' 2>/dev/null || true
+    "${VENV:-$VENV_BASE}/bin/python" - "${STATUS_JSON}" "${CLEANUP_OK}" <<'PYEOF' 2>/dev/null || true
 import json, sys
 p, val = sys.argv[1], sys.argv[2]
 try:

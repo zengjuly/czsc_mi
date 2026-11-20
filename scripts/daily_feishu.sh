@@ -18,6 +18,12 @@ set -uo pipefail
 ROOT="${CZSC_MI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 STOCK_DIR="$(dirname "$ROOT")"
 BASE_DIR="$(dirname "$STOCK_DIR")"
+# venv 位置探测：O1 在 $BASE_DIR/venv，O2 在 $STOCK_DIR/venv；兼容两机布局差异
+VENV_BASE="$BASE_DIR/venv"
+[ ! -x "$VENV_BASE/bin/czsc-mi" ] && [ -x "$STOCK_DIR/venv/bin/czsc-mi" ] && VENV_BASE="$STOCK_DIR/venv"
+# .stockrc 位置探测：O1 在 $BASE_DIR/.stockrc，O2 在 $STOCK_DIR/.stockrc
+if [ ! -f "$BASE_DIR/.stockrc" ] && [ -f "$STOCK_DIR/.stockrc" ]; then CFG_DIR="$STOCK_DIR/.stockrc"; fi
+
 LOG_DIR="${HOME}/.local/state/czsc_mi"
 LOG="${LOG_DIR}/daily.log"
 mkdir -p "${LOG_DIR}"
@@ -30,7 +36,7 @@ if [ -s "${LOG}" ]; then
   fi
 fi
 
-export VENV="${VENV:-$BASE_DIR/venv}"
+export VENV="${VENV:-$VENV_BASE}"
 export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-$STOCK_DIR/data/db/mystery_cache.db}"
 # 两个缠论开关显式声明（W20）：结构展示默认开，混合分默认关（综合分=Mystery 1.22.30）
 export MYSTERY_CHAN_ENABLED="${MYSTERY_CHAN_ENABLED:-1}"
@@ -43,7 +49,7 @@ export MYSTERY_REPORT_DIR="${MYSTERY_REPORT_DIR:-$STOCK_DIR/output}"
 
 {
   echo "===== $(date '+%F %T') 开始 ====="
-  source "${CZSC_MI_STOCKRC:-$BASE_DIR/.stockrc}"
+  source "${CZSC_MI_STOCKRC:-${CFG_DIR:-$BASE_DIR/.stockrc}}"
   cd "${ROOT}"
   bash scripts/daily_pipeline.sh
   rc=$?

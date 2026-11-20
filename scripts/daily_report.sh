@@ -5,8 +5,12 @@ set -uo pipefail
 BASE="${CZSC_MI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 STOCK_DIR="$(dirname "$BASE")"
 BASE_DIR="$(dirname "$STOCK_DIR")"
+# venv 位置探测：O1 在 $BASE_DIR/venv，O2 在 $STOCK_DIR/venv；兼容两机布局差异
+VENV_BASE="$BASE_DIR/venv"
+[ ! -x "$VENV_BASE/bin/czsc-mi" ] && [ -x "$STOCK_DIR/venv/bin/czsc-mi" ] && VENV_BASE="$STOCK_DIR/venv"
+
 source "${CZSC_MI_STOCKRC:-$BASE_DIR/.stockrc}"
-export VENV="${VENV:-$BASE_DIR/venv}"
+export VENV="${VENV:-$VENV_BASE}"
 export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-$STOCK_DIR/data/db/mystery_cache.db}"
 export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-$STOCK_DIR/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
 export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-$STOCK_DIR/Financial-API/data}"

@@ -15,9 +15,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STOCK_DIR="$(dirname "$ROOT")"
 BASE_DIR="$(dirname "$STOCK_DIR")"
+# venv 位置探测：O1 在 $BASE_DIR/venv，O2 在 $STOCK_DIR/venv；兼容两机布局差异
+VENV_BASE="$BASE_DIR/venv"
+[ ! -x "$VENV_BASE/bin/czsc-mi" ] && [ -x "$STOCK_DIR/venv/bin/czsc-mi" ] && VENV_BASE="$STOCK_DIR/venv"
+
 source "${CZSC_MI_BASHRC:-$BASE_DIR/.bashrc}"
 source "${CZSC_MI_STOCKRC:-$BASE_DIR/.stockrc}"
-source "${VENV:-$BASE_DIR/venv}/bin/activate"
+source "${VENV:-$VENV_BASE}/bin/activate"
 # 解释器：默认当前 shell 的 python（venv 激活后即 venv），可用 CZSC_MI_WEB_PY 覆盖
 PY="${CZSC_MI_WEB_PY:-python}"
 PORT="${CZSC_MI_WEB_PORT:-18501}"

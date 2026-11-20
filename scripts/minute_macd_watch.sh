@@ -14,8 +14,14 @@ set -uo pipefail
 BASE="${CZSC_MI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 STOCK_DIR="$(dirname "$BASE")"
 BASE_DIR="$(dirname "$STOCK_DIR")"
-CFG="${CZSC_MI_STOCKRC:-$BASE_DIR/.stockrc}"
-VENV="${CZSC_MI_CLI:-$BASE_DIR/venv/bin/czsc-mi}"
+# venv 位置探测：O1 在 $BASE_DIR/venv，O2 在 $STOCK_DIR/venv；兼容两机布局差异
+VENV_BASE="$BASE_DIR/venv"
+[ ! -x "$VENV_BASE/bin/czsc-mi" ] && [ -x "$STOCK_DIR/venv/bin/czsc-mi" ] && VENV_BASE="$STOCK_DIR/venv"
+# .stockrc 位置探测：O1 在 $BASE_DIR/.stockrc，O2 在 $STOCK_DIR/.stockrc
+if [ ! -f "$BASE_DIR/.stockrc" ] && [ -f "$STOCK_DIR/.stockrc" ]; then CFG_DIR="$STOCK_DIR/.stockrc"; fi
+
+CFG="${CZSC_MI_STOCKRC:-${CFG_DIR:-$BASE_DIR/.stockrc}}"
+VENV="${CZSC_MI_CLI:-$VENV_BASE/bin/czsc-mi}"
 LOG="${CZSC_MI_LOG:-$BASE/logs/minute_macd_watch.log}"
 LOCK="${CZSC_MI_LOCK:-/tmp/czsc_minute_macd.lock}"
 mkdir -p "$(dirname "$LOG")"
