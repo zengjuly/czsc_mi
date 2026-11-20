@@ -82,6 +82,21 @@ sudo bash install_czsc_mi.sh --config install.env
 - **docker 可选**：tdx-api 依赖 docker；未装 docker 时脚本会提示但不中断其它步骤。
 - **失败宽容**：单个步骤失败记录 warn 后继续，最后统一给出后续待办清单。
 
+## tdx 数据环境（W109）
+
+tdx-api 提供通达信在线行情（个股/指数日K、分钟K），czsc_mi 经 `TDX_API_URL`（默认 `http://127.0.0.1:8080/api`）调用。安装脚本步骤 6 按 `TDX_MODE` 自动部署：
+
+| 模式 | 依赖 | 说明 |
+|---|---|---|
+| `auto`（默认） | — | 有 docker 走 `docker`，否则走 `binary` |
+| `binary` | 无 | 预编译 `stock-web` 二进制裸跑 + systemd user 服务 `czsc-mi-tdxapi.service`，小内存机器推荐 |
+| `docker` | docker | `docker compose up -d --build`（含 Go 编译） |
+| `tunnel` | ssh | 不本地部署，`TDX_API_URL` 指向 SSH 隧道转发地址（需自行配 `tdx-tunnel`） |
+
+binary 模式二进制来源 `TDX_BINARY_SRC`（URL 或本机路径）留空时依次尝试：源码仓库缓存 → 本地 docker 镜像导出。
+
+> 注意：tdx-api **首次启动需 2-3 分钟初始化**（连接通达信公共服务器并下载全市场 5.3 万条代码缓存），期间 8080 未监听属正常；之后常驻内存约 120MB。
+
 ## 安装后待办
 
 1. 编辑 `${BASE_DIR}/.stockrc` 填入 `HITHINK_FINANCE_API_KEY` 等凭据。

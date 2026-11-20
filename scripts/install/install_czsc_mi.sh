@@ -39,6 +39,12 @@ CZSC_MI_REPO="${CZSC_MI_REPO:-ssh://git@ssh.github.com:443/zengjuly/czsc_mi.git}
 CZSC_MI_BRANCH="${CZSC_MI_BRANCH:-main}"
 THS_REPO="${THS_REPO:-https://gitee.com/HiThink-Tech/Financial-API.git}"
 TDX_REPO="${TDX_REPO:-https://gh-proxy.org/https://github.com/oficcejo/tdx-api.git}"
+# tdx 数据环境部署模式（W109）：
+#   binary - 预编译 stock-web 二进制裸跑（systemd user 服务，零 docker/Go 依赖，小内存机器推荐）
+#   docker - docker compose 构建镜像运行（需 docker，含 Go 编译）
+#   tunnel - 不本地部署，经 SSH 隧道转发远端 tdx-api（需自行配 tdx-tunnel）
+TDX_MODE="${TDX_MODE:-auto}"   # auto=有 docker 用 docker，否则 binary
+TDX_BINARY_SRC="${TDX_BINARY_SRC:-}"  # binary 模式的二进制来源：本地路径 / http(s) URL / 仓库内相对路径
 HERMES_REPO="${HERMES_REPO:-https://gh-proxy.org/https://github.com/NousResearch/hermes-agent.git/}"
 SKIP_CLONE="${SKIP_CLONE:-0}"   # 1=跳过 clone（源码已就位时）
 
@@ -124,6 +130,7 @@ log "  主项目:     ${CZSC_MI_DIR}"
 log "  venv:       ${VENV}"
 log "  数据库:     ${DB_PATH}"
 log "  Web 端口:   内部 ${WEB_INTERNAL_PORT}（127.0.0.1）/ 公网 $([ "$WEB_PUBLIC" = "1" ] && echo "${WEB_PUBLIC_PORT}（nginx+鉴权）" || echo "未开放")"
+log "  tdx 环境:   ${TDX_MODE}（auto/binary/docker/tunnel）"
 log "  Web 鉴权:   $([ "$WEB_PUBLIC" = "1" ] && echo "用户 ${WEB_AUTH_USER}（密码$([ -n "$WEB_AUTH_PASSWORD" ] && echo 已提供 || echo 将自动生成)）" || echo "不适用")"
 log "  模式:       $([ "$DRY_RUN" = "1" ] && echo 'DRY-RUN 预演' || echo '实际安装')"
 log "  跳过步骤:   ${SKIP_STEPS:-无}"
@@ -229,12 +236,65 @@ if should_skip components; then warn "跳过"; else
   else
     run git clone --depth 1 "$HERMES_REPO" "${BASE_DIR}/.hermes/hermes-agent" || warn "hermes clone 失败"
   fi
-  # 启动 tdx 容器
-  if should_skip docker; then warn "跳过 tdx 容器启动"; 
-  elif [ -f "${STOCK_DIR}/tdx-api/docker-compose.yml" ] && command -v docker >/dev/null 2>&1; then
-    run bash -c "cd '${STOCK_DIR}/tdx-api' && docker compose up -d --build" || warn "tdx 容器启动失败"
-    ok "tdx-api 容器已启动（8080）"
+  # 启动 tdx 数据环境（按 TDX_MODE）
+  if [ "$TDX_MODE" = "auto" ]; then
+    if command -v docker >/dev/null 2>&1 && docker ps >/dev/null 2>&1; then TDX_MODE=docker; else TDX_MODE=binary; fi
   fi
+  case "$TDX_MODE" in
+    docker)
+      if should_skip docker; then warn "跳过 tdx 容器启动"
+      elif [ -f "${STOCK_DIR}/tdx-api/docker-compose.yml" ] && command -v docker >/dev/null 2>&1; then
+        run bash -c "cd '${STOCK_DIR}/tdx-api' && docker compose up -d --build" || warn "tdx 容器启动失败"
+        ok "tdx-api 容器已启动（8080）"
+      fi ;;
+    binary)
+      # 二进制裸跑：来源优先 TDX_BINARY_SRC，其次源码仓库缓存，最后 docker 镜像内导出
+      BIN_DIR="${STOCK_DIR}/tdx-api"
+      mkdir -p "$BIN_DIR"
+      if [ ! -x "${BIN_DIR}/stock-web" ]; then
+        if [ -n "$TDX_BINARY_SRC" ]; then
+          case "$TDX_BINARY_SRC" in
+            http*) run curl -fsSL -o "${BIN_DIR}/stock-web" "$TDX_BINARY_SRC" || warn "二进制下载失败" ;;
+            *)     run cp "$TDX_BINARY_SRC" "${BIN_DIR}/stock-web" || warn "二进制复制失败" ;;
+          esac
+        elif [ -f "${STOCK_DIR}/tdx-api/web/data/stock-web" ]; then
+          run cp "${STOCK_DIR}/tdx-api/web/data/stock-web" "${BIN_DIR}/stock-web"
+        elif command -v docker >/dev/null 2>&1 && docker images --format '{{.Repository}}' 2>/dev/null | grep -qi tdx; then
+          run bash -c "docker create --name tdx-export-tmp tdx-api-stock-web:latest >/dev/null 2>&1 \
+            && docker cp tdx-export-tmp:/app/stock-web '${BIN_DIR}/stock-web' \
+            && docker cp tdx-export-tmp:/app/static '${BIN_DIR}/static' \
+            && docker rm tdx-export-tmp >/dev/null" || warn "从镜像导出二进制失败"
+        else
+          warn "未找到 stock-web 二进制：请设置 TDX_BINARY_SRC（路径/URL），或用 docker 模式构建"
+        fi
+      fi
+      if [ -x "${BIN_DIR}/stock-web" ] && [ "$DRY_RUN" != "1" ]; then
+        chmod +x "${BIN_DIR}/stock-web"
+        SVC_DIR="${HOME}/.config/systemd/user"
+        mkdir -p "$SVC_DIR"
+        cat > "${SVC_DIR}/czsc-mi-tdxapi.service" <<EOF
+[Unit]
+Description=czsc_mi tdx-api (stock-web, 通达信协议在线数据)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${BIN_DIR}
+ExecStart=${BIN_DIR}/stock-web
+Restart=always
+RestartSec=8
+
+[Install]
+WantedBy=default.target
+EOF
+        systemctl --user daemon-reload
+        systemctl --user enable --now czsc-mi-tdxapi.service 2>/dev/null || systemctl --user restart czsc-mi-tdxapi.service
+        ok "czsc-mi-tdxapi.service 已安装（binary 模式，8080）"
+        warn "首次启动需约 2-3 分钟初始化（下载全市场代码库），期间 8080 未监听属正常"
+      fi ;;
+    tunnel) log "  TDX_MODE=tunnel：不本地部署 tdx-api，TDX_API_URL 指向隧道转发地址" ;;
+    *) warn "未知 TDX_MODE=$TDX_MODE（可选 auto/binary/docker/tunnel）" ;;
+  esac
 fi
 
 # ---------------- 7. 环境配置 ----------------

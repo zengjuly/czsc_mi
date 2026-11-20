@@ -3,7 +3,7 @@
 # czsc_mi 全栈服务一键启停（W108）
 # ----------------------------------------------------------------------------
 # 管理本机 czsc_mi 相关的全部服务：
-#   1) systemd user 服务：czsc-mi-web / czsc-mi-search / tdx-tunnel（按存在自动识别）
+#   1) systemd user 服务：czsc-mi-web / czsc-mi-search / czsc-mi-tdxapi / tdx-tunnel（按存在自动识别）
 #   2) tdx-api docker 容器（容器名含 tdx 即管理；无 docker 则跳过）
 #   3) czsc_mi 相关 crontab 条目（stop=注释停用，start=取消注释恢复；
 #      只动 czsc_mi 脚本行，其它任务如 nginx 备份、第三方 cron 一律不碰）
@@ -35,7 +35,9 @@ warn() { log "  ⚠️  $*"; }
 # ---------------- systemd user 服务 ----------------
 # 注意：不用 grep -q（pipefail 下提前退出会吞掉上游 SIGPIPE，整条管道误判失败），
 # 改用不带 -q 的 grep 全量读取；unit 不存在时 systemctl --user status 退出码为 4。
-USER_SERVICES="czsc-mi-web.service czsc-mi-search.service tdx-tunnel.service"
+# 注意：tdx-tunnel.service（ssh -L 转发远端 tdx-api）已被本地 czsc-mi-tdxapi 取代，
+# 不在默认列表——隧道与本地 8080 冲突；如需临时用隧道请手动 systemctl --user。
+USER_SERVICES="czsc-mi-web.service czsc-mi-search.service czsc-mi-tdxapi.service"
 svc_exists() {
   systemctl --user status "$1" >/dev/null 2>&1
   [ $? -ne 4 ]
