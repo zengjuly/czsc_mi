@@ -23,7 +23,9 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-_DEFAULT_DB = "/home/ai/ai_runner/stock/data/db/mystery_cache.db"
+# 从脚本位置推导 stock/data/db（scripts/ 的上级是仓库根，再上级是 stock）
+_STOCK_DIR = Path(__file__).resolve().parents[2]
+_DEFAULT_DB = os.fspath(_STOCK_DIR / "data/db/mystery_cache.db")
 _WEBHOOK_FILE = Path.home() / ".config" / "czsc_mi" / "feishu_webhook"
 
 

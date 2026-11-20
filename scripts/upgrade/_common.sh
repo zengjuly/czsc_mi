@@ -4,7 +4,7 @@
 # 约定：调用方先设置 COMPONENT 名称，再 source 本文件。
 
 # ---------- 路径与环境（均可用环境变量覆盖，便于一键安装脚本复用） ----------
-DEP_BASE_DIR="${DEP_BASE_DIR:-/home/ai/ai_runner}"
+DEP_BASE_DIR="${DEP_BASE_DIR:-$HOME}"
 STOCK_DIR="${STOCK_DIR:-${DEP_BASE_DIR}/stock}"
 VENV="${VENV:-${DEP_BASE_DIR}/venv}"
 CZSC_MI_DIR="${CZSC_MI_DIR:-${STOCK_DIR}/czsc_mi}"

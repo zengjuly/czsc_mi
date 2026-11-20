@@ -11,26 +11,28 @@
 #   CZSC_MI_WEB_PORT / MYSTERY_DB_PATH / MYSTERY_CHAN_ENABLED
 set -euo pipefail
 
-source /home/ai/ai_runner/.bashrc
-source /home/ai/ai_runner/.stockrc
-source /home/ai/ai_runner/venv/bin/activate
-
+# 路径从脚本自身位置推导，可用环境变量覆盖（O1/O2 通用，禁止硬编码绝对路径）
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STOCK_DIR="$(dirname "$ROOT")"
+BASE_DIR="$(dirname "$STOCK_DIR")"
+source "${CZSC_MI_BASHRC:-$BASE_DIR/.bashrc}"
+source "${CZSC_MI_STOCKRC:-$BASE_DIR/.stockrc}"
+source "${VENV:-$BASE_DIR/venv}/bin/activate"
 # 解释器：默认当前 shell 的 python（venv 激活后即 venv），可用 CZSC_MI_WEB_PY 覆盖
 PY="${CZSC_MI_WEB_PY:-python}"
 PORT="${CZSC_MI_WEB_PORT:-18501}"
 PIDFILE="${CZSC_MI_WEB_PIDFILE:-/tmp/czsc_mi_web.pid}"
 LOG="${CZSC_MI_WEB_LOG:-/tmp/czsc_mi_web.log}"
 # HTTPS 证书（streamlit 原生 ssl；证书需匹配访问域名，默认用 zz.zzhappyxiaowu.dpdns.org 证书）
-SSL_CERT="${CZSC_MI_WEB_SSL_CERT:-/home/ai/ai_runner/stock/ssl_fix/nextcloud.crt}"
-SSL_KEY="${CZSC_MI_WEB_SSL_KEY:-/home/ai/ai_runner/stock/ssl_fix/nextcloud.key}"
+SSL_CERT="${CZSC_MI_WEB_SSL_CERT:-$STOCK_DIR/ssl_fix/nextcloud.crt}"
+SSL_KEY="${CZSC_MI_WEB_SSL_KEY:-$STOCK_DIR/ssl_fix/nextcloud.key}"
 
-export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-/home/ai/ai_runner/stock/data/db/mystery_cache.db}"
+export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-$STOCK_DIR/data/db/mystery_cache.db}"
 export MYSTERY_CHAN_ENABLED="${MYSTERY_CHAN_ENABLED:-1}"
 export MYSTERY_CHAN_SCORE="${MYSTERY_CHAN_SCORE:-0}"
 # THS 数据源（同花顺扶摇）——不导出则 web 进程找不到 SDK，板块钻取/扫描全走本地库
-export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
-export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-/home/ai/ai_runner/stock/Financial-API/data}"
+export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-$STOCK_DIR/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
+export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-$STOCK_DIR/Financial-API/data}"
 
 print_urls() {
   local scheme="http"

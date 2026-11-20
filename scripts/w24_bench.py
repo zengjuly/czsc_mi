@@ -5,9 +5,12 @@
 import os
 import sys
 import time
+from pathlib import Path
 
+# 从脚本位置推导 stock/data/db（scripts/ 的上级是仓库根，再上级是 stock）
+_STOCK_DIR = Path(__file__).resolve().parents[2]
 os.environ.setdefault('MYSTERY_DB_PATH',
-                      '/home/ai/ai_runner/stock/data/db/mystery_cache.db')
+                      os.fspath(_STOCK_DIR / 'data/db/mystery_cache.db'))
 os.environ.setdefault('MYSTERY_CHAN_ENABLED', '1')
 
 from mystery.services.analyze import AnalysisService  # noqa: E402

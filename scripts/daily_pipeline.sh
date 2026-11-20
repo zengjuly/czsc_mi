@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # daily_pipeline.sh - 每日一条龙：同步 → 日报（自选）；全市场扫描可选（005.md 分离）
 #
-# 路径全部来自环境变量；本机默认值只写在这里（scripts/ 允许），
-# Python 业务代码禁止硬编码绝对路径。
+# 路径全部从脚本自身位置推导 + 环境变量覆盖；禁止任何本机绝对路径硬编码。
 #
 # 用法:
 #   scripts/daily_pipeline.sh
@@ -19,16 +18,20 @@ set -euo pipefail
 # W41：锁死北京时区——脚本用 date '+%F' 给 sync-turnover 传当日日期，
 # 机器 TZ 若是 UTC 会错一天。
 export TZ=Asia/Shanghai
-source /home/ai/ai_runner/.stockrc
-source "${VENV:-/home/ai/ai_runner/venv}/bin/activate"
-cd "${CZSC_MI_ROOT:-$(dirname "$0")/..}"
+# 路径从脚本自身位置推导，可用环境变量覆盖（O1/O2 通用，禁止硬编码绝对路径）
+ROOT="${CZSC_MI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+STOCK_DIR="$(dirname "$ROOT")"
+BASE_DIR="$(dirname "$STOCK_DIR")"
+source "${CZSC_MI_STOCKRC:-$BASE_DIR/.stockrc}"
+source "${VENV:-$BASE_DIR/venv}/bin/activate"
+cd "$ROOT"
 
-export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-/home/ai/ai_runner/stock/data/db/mystery_cache.db}"
+export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-$STOCK_DIR/data/db/mystery_cache.db}"
 # 两个缠论开关显式声明（W20）：结构展示默认开，混合分默认关（综合分=Mystery 1.22.30）
 export MYSTERY_CHAN_ENABLED="${MYSTERY_CHAN_ENABLED:-1}"
 export MYSTERY_CHAN_SCORE="${MYSTERY_CHAN_SCORE:-0}"
-export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
-export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-/home/ai/ai_runner/stock/Financial-API/data}"
+export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-$STOCK_DIR/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
+export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-$STOCK_DIR/Financial-API/data}"
 
 echo "[daily_pipeline] 1/5 同步行情（日线 365 天）..."
 # W49：sync 写库互斥——已有 sync 在跑（另一 cron/手动/Web 触发）时 CLI
@@ -120,7 +123,7 @@ if [ "${RUN_CLEANUP:-1}" = "1" ]; then
   fi
   # 清理在 4.5 步写状态之后才跑完，这里回写 history_cleanup 字段供 Web/飞书观测
   if [ -f "${STATUS_JSON}" ]; then
-    /home/ai/ai_runner/venv/bin/python - "${STATUS_JSON}" "${CLEANUP_OK}" <<'PYEOF' 2>/dev/null || true
+    "${VENV:-$BASE_DIR/venv}/bin/python" - "${STATUS_JSON}" "${CLEANUP_OK}" <<'PYEOF' 2>/dev/null || true
 import json, sys
 p, val = sys.argv[1], sys.argv[2]
 try:
@@ -136,7 +139,7 @@ fi
 echo "[daily_pipeline] ✅ 完成"
 
 # 报告入 git（xlsx 经 GitHub raw 链接发给用户；失败不阻塞主流程）
-REPORT_GIT_DIR="${MYSTERY_REPORT_DIR:-/home/ai/ai_runner/stock/output}"
+REPORT_GIT_DIR="${MYSTERY_REPORT_DIR:-$STOCK_DIR/output}"
 git -C "${REPORT_GIT_DIR}" add -A 2>/dev/null || true
 git -C "${REPORT_GIT_DIR}" commit -m "daily report $(date +%Y%m%d)" 2>/dev/null || true
 git -C "${REPORT_GIT_DIR}" push origin main 2>/dev/null \

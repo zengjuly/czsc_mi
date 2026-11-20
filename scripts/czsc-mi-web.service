@@ -6,11 +6,11 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=/home/ai/ai_runner/stock/czsc_mi
+WorkingDirectory=%h/stock/czsc_mi
 # 环境变量集中控制原则（2026-09-16）：唯一事实源 ~/.stockrc，本文件禁止再写
 # Environment= 硬编码（曾有分叉：TDX_VIPDOC_DIR 指向不存在路径）。
 # HITHINK key 仍由 config.yaml 注入（env 优先覆盖，.stockrc 里也有 export 兜底）。
-ExecStart=/bin/bash -c 'set -a; source /home/ai/ai_runner/.stockrc; set +a; exec /home/ai/ai_runner/venv/bin/python -m streamlit run mystery/apps/web/app.py --server.port 18501 --server.address :: --server.headless true --server.sslCertFile /home/ai/ai_runner/stock/ssl_fix/nextcloud.crt --server.sslKeyFile /home/ai/ai_runner/stock/ssl_fix/nextcloud.key'
+ExecStart=/bin/bash -c 'set -a; source %h/.stockrc; set +a; exec %h/venv/bin/python -m streamlit run mystery/apps/web/app.py --server.port 18501 --server.address :: --server.headless true --server.sslCertFile %h/stock/ssl_fix/nextcloud.crt --server.sslKeyFile %h/stock/ssl_fix/nextcloud.key'
 Restart=always
 RestartSec=5
 RestartForceExitStatus=75

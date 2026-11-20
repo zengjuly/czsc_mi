@@ -21,9 +21,12 @@ import os
 import sqlite3
 import sys
 import time
+from pathlib import Path
 
+# 从脚本位置推导 stock/data/db（scripts/ 的上级是仓库根，再上级是 stock）
+_STOCK_DIR = Path(__file__).resolve().parents[2]
 DB = os.environ.get('MYSTERY_DB_PATH') or \
-    '/home/ai/ai_runner/stock/data/db/mystery_cache.db'
+    os.fspath(_STOCK_DIR / 'data/db/mystery_cache.db')
 BATCH = 2_000_000
 
 

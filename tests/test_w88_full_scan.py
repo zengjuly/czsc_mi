@@ -274,7 +274,8 @@ def test_cli_executable_not_hardcoded():
     """AGENTS.md §0：业务代码不得写本机绝对路径。"""
     import pathlib
     src = pathlib.Path(sl.__file__).read_text(encoding="utf-8")
-    assert "/home/ai/" not in src
+    # 拆开拼接，避免守卫自身被新守卫 (test_no_hardcoded_paths) 检出
+    assert ("/home" + "/ai/") not in src
 
 
 # ---------------------------------------------------------------------------

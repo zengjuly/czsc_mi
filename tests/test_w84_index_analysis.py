@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-sys.path.insert(0, "/home/ai/ai_runner/stock/czsc_mi")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mystery.core.models import Bar, BarSeries
 from mystery.services import index_analysis as ia

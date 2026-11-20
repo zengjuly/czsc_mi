@@ -223,13 +223,15 @@ def test_event_table_schema_probe(tmp_path):
 def test_real_event_table_guard():
     """对真实 MarketDB（若本机存在）跑同一守护；无库则 skip（CI 友好）。"""
     import os
+    from pathlib import Path
 
     import pytest
 
     from mystery.services.sync_shares import adjustment_event_columns
-    db = os.environ.get('MARKETDB_DB_PATH',
-                        '/home/ai/ai_runner/stock/Financial-API/data/'
-                        'market.duckdb')
+    # 仓库根 = tests 的上级；stock 目录 = 仓库根的上级。Financial-API 与之同级。
+    _stock_dir = Path(__file__).resolve().parents[2]
+    db = os.environ.get('MARKETDB_DB_PATH') or str(
+        _stock_dir / 'Financial-API/data/market.duckdb')
     if not os.path.exists(db):
         pytest.skip('本机无 MarketDB')
     cols = adjustment_event_columns(db)

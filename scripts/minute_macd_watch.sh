@@ -10,11 +10,14 @@
 
 set -uo pipefail
 
-BASE=/home/ai/ai_runner/stock/czsc_mi
-CFG=/home/ai/ai_runner/.stockrc
-VENV=/home/ai/ai_runner/venv/bin/czsc-mi
-LOG=/home/ai/ai_runner/stock/czsc_mi/logs/minute_macd_watch.log
-LOCK=/tmp/czsc_minute_macd.lock
+# 路径从脚本自身位置推导，可用环境变量覆盖（O1/O2 通用，禁止硬编码绝对路径）
+BASE="${CZSC_MI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+STOCK_DIR="$(dirname "$BASE")"
+BASE_DIR="$(dirname "$STOCK_DIR")"
+CFG="${CZSC_MI_STOCKRC:-$BASE_DIR/.stockrc}"
+VENV="${CZSC_MI_CLI:-$BASE_DIR/venv/bin/czsc-mi}"
+LOG="${CZSC_MI_LOG:-$BASE/logs/minute_macd_watch.log}"
+LOCK="${CZSC_MI_LOCK:-/tmp/czsc_minute_macd.lock}"
 mkdir -p "$(dirname "$LOG")"
 
 # 防重入：已有一轮在跑则跳过
@@ -42,7 +45,7 @@ if [ "$DOW" -gt 5 ]; then
 fi
 
 set -a; source "$CFG"; set +a
-export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-/home/ai/ai_runner/stock/data/db/mystery_cache.db}"
+export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-$STOCK_DIR/data/db/mystery_cache.db}"
 
 echo "[$(date '+%F %T')] ===== MACD监控开始 =====" >> "$LOG"
 cd "$BASE" || exit 1

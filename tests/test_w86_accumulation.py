@@ -1,10 +1,14 @@
 """W86：主力建仓 / 吸筹研判核心纯函数 + 报告字段推导测试。"""
+import os
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, "/home/ai/ai_runner/stock/czsc_mi")
+# 从测试文件位置推导仓库根（O1/O2 通用，禁止硬编码绝对路径）
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, os.fspath(_REPO_ROOT))
 
 from mystery.core.models import Bar
 from mystery.core import accumulation as acc
@@ -154,9 +158,8 @@ def test_core_has_no_io_imports():
     「不改 RULE_VER」文字（与 W83 同类守卫的教训一致）。
     """
     import pathlib
-    src = pathlib.Path(
-        "/home/ai/ai_runner/stock/czsc_mi/mystery/core/accumulation.py"
-    ).read_text(encoding="utf-8")
+    src = (_REPO_ROOT / "mystery/core/accumulation.py").read_text(
+        encoding="utf-8")
     code_lines = [ln for ln in src.splitlines()
                   if not ln.lstrip().startswith(("#", '"', "'"))]
     code = "\n".join(code_lines)

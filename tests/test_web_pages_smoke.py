@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -22,7 +23,9 @@ pytest.importorskip("streamlit.testing.v1")
 
 pytestmark = pytest.mark.integration
 
-APP = "/home/ai/ai_runner/stock/czsc_mi/mystery/apps/web/app.py"
+# 从测试文件位置推导仓库根：test_dir.parent = 仓库根（O1/O2 通用）
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+APP = str(_REPO_ROOT / "mystery/apps/web/app.py")
 
 
 def _app_mod():
@@ -34,8 +37,9 @@ def _app_mod():
 def _make(mtimeo=120):
     from streamlit.testing.v1 import AppTest
     if not os.environ.get("MYSTERY_DB_PATH"):
-        os.environ["MYSTERY_DB_PATH"] = (
-            "/home/ai/ai_runner/stock/data/db/mystery_cache.db")
+        # DB 位于仓库根的同级 stock/data/db 下（O1/O2 通用）
+        os.environ["MYSTERY_DB_PATH"] = str(
+            _REPO_ROOT.parent / "data/db/mystery_cache.db")
     at = AppTest.from_file(APP, default_timeout=mtimeo)
     # W42: 本机若已配置 web_auth（~/.config/czsc_mi/web_auth.json 存在），
     # 登录门会拦截渲染；冒烟测的是页面而非鉴权，预置已登录态。

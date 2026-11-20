@@ -20,7 +20,7 @@
 set -uo pipefail
 
 # ---------------- 默认参数（生产对齐，可全部覆盖） ----------------
-BASE_DIR="${BASE_DIR:-/home/ai/ai_runner}"
+BASE_DIR="${BASE_DIR:-$HOME}"
 RUN_USER="${RUN_USER:-ai_runner}"
 STOCK_DIR="${STOCK_DIR:-${BASE_DIR}/stock}"
 CZSC_MI_DIR="${CZSC_MI_DIR:-${STOCK_DIR}/czsc_mi}"
@@ -73,7 +73,7 @@ if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
     export "$k=$v"
   done < <(grep -vE '^\s*(#|$)' "$CONFIG_FILE")
   # 重新同步由配置覆盖的变量
-  BASE_DIR="${BASE_DIR:-/home/ai/ai_runner}"; STOCK_DIR="${STOCK_DIR:-${BASE_DIR}/stock}"
+  BASE_DIR="${BASE_DIR:-$HOME}"; STOCK_DIR="${STOCK_DIR:-${BASE_DIR}/stock}"
   CZSC_MI_DIR="${CZSC_MI_DIR:-${STOCK_DIR}/czsc_mi}"; VENV="${VENV:-${BASE_DIR}/venv}"
   DATA_DIR="${DATA_DIR:-${STOCK_DIR}/data}"; DB_PATH="${DB_PATH:-${DATA_DIR}/db/mystery_cache.db}"
   LOG_DIR_CZ="${LOG_DIR_CZ:-${CZSC_MI_DIR}/logs}"

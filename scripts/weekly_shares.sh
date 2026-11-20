@@ -16,10 +16,14 @@
 #     WEEKLY_SHARES_MARKET_MIN 可配（首铺后按实际量级上调趋近 5559×0.9）。
 # 状态文件 <output>/weekly_shares_status.json 供周一日报页脚展示。
 set -uo pipefail
-source /home/ai/ai_runner/.stockrc
-source "${VENV:-/home/ai/ai_runner/venv}/bin/activate"
-cd "${CZSC_MI_ROOT:-$(dirname "$0")/..}"
-export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-/home/ai/ai_runner/stock/data/db/mystery_cache.db}"
+# 路径从脚本自身位置推导，可用环境变量覆盖（O1/O2 通用，禁止硬编码绝对路径）
+ROOT="${CZSC_MI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+STOCK_DIR="$(dirname "$ROOT")"
+BASE_DIR="$(dirname "$STOCK_DIR")"
+source "${CZSC_MI_STOCKRC:-$BASE_DIR/.stockrc}"
+source "${VENV:-$BASE_DIR/venv}/bin/activate"
+cd "$ROOT"
+export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-$STOCK_DIR/data/db/mystery_cache.db}"
 
 LOG="${CZSC_MI_STATE_DIR:-$HOME/.local/state/czsc_mi}/weekly_shares.log"
 mkdir -p "$(dirname "$LOG")"
@@ -44,7 +48,7 @@ if [ "${RUN_DATA_AUDIT:-0}" = "1" ]; then
 fi
 
 # W28b：双口径 QA + 阈值判定 + 状态文件。python 退出码即脚本退出码。
-/home/ai/ai_runner/venv/bin/python - <<'PYEOF'
+"${VENV:-$BASE_DIR/venv}/bin/python" - <<'PYEOF'
 import json
 import os
 from datetime import date

@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-sys.path.insert(0, "/home/ai/ai_runner/stock/czsc_mi")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mystery.services import sector_analysis as sa
 from mystery.services import runtime_settings as rts

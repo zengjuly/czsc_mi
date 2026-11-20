@@ -11,8 +11,8 @@
 **本脚本只读，不写库、不进评分路径。** 生产路径永远不 import 本文件。
 
 用法（需真实库环境）:
-    source /home/ai/ai_runner/.stockrc
-    export MYSTERY_DB_PATH=... 
+    source $HOME/.stockrc          # 或你的运行用户 home 下的 .stockrc
+    export MYSTERY_DB_PATH=...
     python scripts/calibrate_chan.py [--n 30] [--out /tmp/chan_calib.json]
 """
 from __future__ import annotations

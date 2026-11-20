@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # daily_report.sh - 纯命令行：同步 → 生成日报到 stock/output → 输出 xlsx 路径供 agent 发送
 set -uo pipefail
-source /home/ai/ai_runner/.stockrc
-export VENV=/home/ai/ai_runner/venv
-export MYSTERY_DB_PATH=/home/ai/ai_runner/stock/data/db/mystery_cache.db
-export THS_FUYAO_SCRIPT=/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py
-export THS_MARKETDB_DIR=/home/ai/ai_runner/stock/Financial-API/data
-export MYSTERY_REPORT_DIR=/home/ai/ai_runner/stock/output
-export HITHINK_FINANCE_API_KEY=$(grep hithink_api_key /home/ai/ai_runner/stock/czsc_mi/config/config.yaml | awk '{print $2}')
+# 路径从脚本自身位置推导，可用环境变量覆盖（O1/O2 通用，禁止硬编码绝对路径）
+BASE="${CZSC_MI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+STOCK_DIR="$(dirname "$BASE")"
+BASE_DIR="$(dirname "$STOCK_DIR")"
+source "${CZSC_MI_STOCKRC:-$BASE_DIR/.stockrc}"
+export VENV="${VENV:-$BASE_DIR/venv}"
+export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-$STOCK_DIR/data/db/mystery_cache.db}"
+export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-$STOCK_DIR/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
+export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-$STOCK_DIR/Financial-API/data}"
+export MYSTERY_REPORT_DIR="${MYSTERY_REPORT_DIR:-$STOCK_DIR/output}"
+export HITHINK_FINANCE_API_KEY=$(grep hithink_api_key "$BASE/config/config.yaml" | awk '{print $2}')
 
-cd /home/ai/ai_runner/stock/czsc_mi
+cd "$BASE"
 source ${VENV}/bin/activate
 
 # 1) 同步行情
@@ -23,7 +27,7 @@ TODAY=$(date +%Y%m%d)
 XLSX="${MYSTERY_REPORT_DIR}/每日股票分析报告_${TODAY}.xlsx"
 HTML="${MYSTERY_REPORT_DIR}/每日股票分析报告_${TODAY}.html"
 
-cd /home/ai/ai_runner/stock/output
+cd "$STOCK_DIR/output"
 for f in "$XLSX" "$HTML"; do
   if [ -f "$f" ]; then
     git add "$f" || true

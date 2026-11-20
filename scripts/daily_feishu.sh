@@ -5,7 +5,7 @@
 #
 # 使用:
 #   crontab -e 添加（默认工作日 18:00）:
-#     0 18 * * 1-5 /home/ai/ai_runner/stock/czsc_mi/scripts/daily_feishu.sh
+#     0 18 * * 1-5 /path/to/czsc_mi/scripts/daily_feishu.sh
 #
 # 可覆盖:
 #   VENV / CZSC_MI_ROOT / MYSTERY_DB_PATH / MYSTERY_REPORT_DIR
@@ -15,7 +15,9 @@
 # 日志: ~/.local/state/czsc_mi/daily.log
 set -uo pipefail
 
-ROOT="${CZSC_MI_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+ROOT="${CZSC_MI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+STOCK_DIR="$(dirname "$ROOT")"
+BASE_DIR="$(dirname "$STOCK_DIR")"
 LOG_DIR="${HOME}/.local/state/czsc_mi"
 LOG="${LOG_DIR}/daily.log"
 mkdir -p "${LOG_DIR}"
@@ -28,20 +30,20 @@ if [ -s "${LOG}" ]; then
   fi
 fi
 
-export VENV="${VENV:-/home/ai/ai_runner/venv}"
-export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-/home/ai/ai_runner/stock/data/db/mystery_cache.db}"
+export VENV="${VENV:-$BASE_DIR/venv}"
+export MYSTERY_DB_PATH="${MYSTERY_DB_PATH:-$STOCK_DIR/data/db/mystery_cache.db}"
 # 两个缠论开关显式声明（W20）：结构展示默认开，混合分默认关（综合分=Mystery 1.22.30）
 export MYSTERY_CHAN_ENABLED="${MYSTERY_CHAN_ENABLED:-1}"
 export MYSTERY_CHAN_SCORE="${MYSTERY_CHAN_SCORE:-0}"
-export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-/home/ai/ai_runner/stock/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
-export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-/home/ai/ai_runner/stock/Financial-API/data}"
-export MYSTERY_REPORT_DIR="${MYSTERY_REPORT_DIR:-/home/ai/ai_runner/stock/output}"
+export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-$STOCK_DIR/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
+export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-$STOCK_DIR/Financial-API/data}"
+export MYSTERY_REPORT_DIR="${MYSTERY_REPORT_DIR:-$STOCK_DIR/output}"
 # API Key 不写入仓库：由 .stockrc / config.yaml 顶层 hithink_api_key 注入（ths.py 启动时读）
 
 
 {
   echo "===== $(date '+%F %T') 开始 ====="
-  source /home/ai/ai_runner/.stockrc
+  source "${CZSC_MI_STOCKRC:-$BASE_DIR/.stockrc}"
   cd "${ROOT}"
   bash scripts/daily_pipeline.sh
   rc=$?
