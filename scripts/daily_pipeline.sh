@@ -14,6 +14,9 @@
 #     生产库约 4 分钟，超时 DATA_AUDIT_TIMEOUT 秒可配，失败不阻塞主流程）
 #   RUN_CLEANUP（W101 默认 1：随管线定时清理历史数据；=0 关闭，
 #     超时 CLEANUP_TIMEOUT 秒可配，策略由 MYSTERY_CLEAN_* env 控制，失败不阻塞）
+#   SYNC_DAYS（W115 默认 30：日线同步回看天数。本地 DuckDB 已有 10 年历史、
+#     SQLite 已灌满，日常只需小天数增量；365 全量在 951M 小内存机上会 OOM。
+#     新系统首次建库后如需补历史，可临时设 SYNC_DAYS=365 单独手动跑一次）
 set -euo pipefail
 # W41：锁死北京时区——脚本用 date '+%F' 给 sync-turnover 传当日日期，
 # 机器 TZ 若是 UTC 会错一天。
@@ -37,11 +40,14 @@ export MYSTERY_CHAN_SCORE="${MYSTERY_CHAN_SCORE:-0}"
 export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-$STOCK_DIR/Financial-API/python/toolkit/fuyao/scripts/fuyao.py}"
 export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-$STOCK_DIR/Financial-API/data}"
 
-echo "[daily_pipeline] 1/5 同步行情（日线 365 天）..."
+SYNC_DAYS="${SYNC_DAYS:-30}"
+echo "[daily_pipeline] 1/5 同步行情（日线最近 ${SYNC_DAYS} 天，增量）..."
 # W49：sync 写库互斥——已有 sync 在跑（另一 cron/手动/Web 触发）时 CLI
 # 报「已有任务进行中」并以 exit 3 退出；此处给出管线级提示后同样退出，
 # 数据由在跑任务负责，不重复拉库。
-czsc-mi sync --period daily --days 365 || { rc=$?
+# W115：小内存机（951M）用 365 天全量会 OOM（RSS 626MB 被 kill），
+# 本地库已含历史，日常增量 30 天足够；nice 降低与 Web 服务的内存竞争。
+nice -n 5 czsc-mi sync --period daily --days "${SYNC_DAYS}" || { rc=$?
   if [ "$rc" -eq 3 ]; then
     echo "[daily_pipeline] 已有 sync 任务进行中（W49 写库互斥），本管线让路退出"
   fi
