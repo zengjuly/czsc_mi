@@ -535,3 +535,140 @@ def search_stock(keyword: str, limit: int = 10, cfg: Optional[Dict] = None) -> L
         if len(out) >= limit:
             break
     return out
+
+
+# ---------------- 自选股导入/导出（W112，支持服务器间同步） ----------------
+def export_watchlist(fmt: str = "json") -> str:
+    """导出自选股为文本。
+
+    fmt=json：完整对象列表（symbol/name/source/source_file/board/added_at），
+        与 data/watchlist.json 同构，可直接用于跨服务器同步（无损）。
+    fmt=csv ：列 代码,名称,来源,板块；Excel 可直接打开。
+    fmt=txt ：每行一个代码（600519.SH），最简格式。
+    """
+    items = _load_items()
+    fmt = (fmt or "json").lower()
+    if fmt in ("json", "jsonl"):
+        return json.dumps(items, ensure_ascii=False, indent=1)
+    if fmt == "csv":
+        import csv
+        import io
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["代码", "名称", "来源", "来源文件", "板块", "加入日期"])
+        for it in items:
+            w.writerow([it["symbol"], it.get("name", ""), it.get("source", ""),
+                        it.get("source_file", ""), "|".join(it.get("board", []) or []),
+                        it.get("added_at", "")])
+        return buf.getvalue()
+    if fmt in ("txt", "codes"):
+        return "\n".join(it["symbol"] for it in items) + ("\n" if items else "")
+    raise ValueError(f"不支持的导出格式: {fmt}（可选 json/csv/txt）")
+
+
+def import_watchlist(text: str, fmt: str = "auto", mode: str = "merge") -> Dict:
+    """从文本导入自选股（去重合并 / 覆盖）。
+
+    :param text: 文件内容（JSON 数组 / CSV / 每行一个代码 / 空白分隔代码）
+    :param fmt: auto|json|csv|txt，auto 自动按首字符判断（[ 或 { → json，含逗号 → csv，否则 txt）
+    :param mode: merge（默认，合并不覆盖已有）| replace（整体覆盖）
+    :return: {added, skipped, total, mode, fmt, symbols:[新增代码]}
+    """
+    text = (text or "").strip()
+    if not text:
+        return {"added": 0, "skipped": 0, "total": 0, "mode": mode,
+                "fmt": fmt, "symbols": []}
+    fmt = (fmt or "auto").lower()
+    if fmt == "auto":
+        if text[0] in "[{":
+            fmt = "json"
+        elif "\n" not in text and "," in text and not text.split(",")[0].strip().replace(".", "").isdigit():
+            fmt = "csv"
+        else:
+            fmt = "txt"
+
+    incoming: List[Dict] = []
+    if fmt == "json":
+        raw = json.loads(text)
+        if isinstance(raw, dict):
+            raw = raw.get("items") or raw.get("watchlist") or []
+        if not isinstance(raw, list):
+            raise ValueError("JSON 导入需为对象数组")
+        for it in raw:
+            if isinstance(it, str):
+                incoming.append({"symbol": it, "name": "", "source": "manual"})
+            elif isinstance(it, dict):
+                norm = _normalize_item(it)
+                if norm:
+                    incoming.append(norm)
+    elif fmt == "csv":
+        import csv
+        import io
+        reader = csv.reader(io.StringIO(text))
+        rows = list(reader)
+        if not rows:
+            rows = []
+        header = [c.strip() for c in rows[0]] if rows else []
+        # 有表头（首格非代码）→ 按列名映射；否则每行首列当代码
+        if header and not _looks_like_code(header[0]):
+            idx_code = next((i for i, c in enumerate(header) if c in ("代码", "code", "symbol")), 0)
+            idx_name = next((i for i, c in enumerate(header) if c in ("名称", "name")), None)
+            idx_src = next((i for i, c in enumerate(header) if c in ("来源", "source")), None)
+            idx_board = next((i for i, c in enumerate(header) if c in ("板块", "board")), None)
+            for r in rows[1:]:
+                if not r or not r[idx_code].strip():
+                    continue
+                d = {"symbol": r[idx_code].strip(),
+                     "name": r[idx_name].strip() if idx_name is not None and idx_name < len(r) else "",
+                     "source": r[idx_src].strip() if idx_src is not None and idx_src < len(r) else "manual",
+                     "board": [b for b in r[idx_board].split("|") if b] if idx_board is not None and idx_board < len(r) else []}
+                incoming.append(d)
+        else:
+            for r in rows:
+                if r and r[0].strip():
+                    incoming.append({"symbol": r[0].strip(),
+                                     "name": r[1].strip() if len(r) > 1 else "",
+                                     "source": "manual"})
+    else:  # txt：每行/空白分隔的代码
+        import re
+        tokens = re.split(r"[\s,;]+", text)
+        incoming = [{"symbol": t, "name": "", "source": "manual"}
+                    for t in tokens if t.strip()]
+
+    # 规范化 + 去重（保留首次）
+    seen: set = set()
+    norm_in: List[Dict] = []
+    for d in incoming:
+        try:
+            sym = normalize_symbol(str(d.get("symbol", "")))
+        except Exception:
+            continue
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        src = d.get("source") if d.get("source") in _SOURCES else "manual"
+        norm_in.append({"symbol": sym, "name": str(d.get("name") or ""),
+                        "source": src, "source_file": str(d.get("source_file") or ""),
+                        "board": d.get("board") if isinstance(d.get("board"), list) else [],
+                        "added_at": str(d.get("added_at") or _today())})
+
+    before = _load_items()
+    if mode == "replace":
+        final = norm_in
+        added_syms = [d["symbol"] for d in norm_in]
+    else:  # merge：已有保留，只加新的
+        have = {it["symbol"] for it in before}
+        added_items = [d for d in norm_in if d["symbol"] not in have]
+        final = before + added_items
+        added_syms = [d["symbol"] for d in added_items]
+    _write_items(final)
+    return {"added": len(added_syms),
+            "skipped": len(seen) - len(added_syms),
+            "total": len(final), "mode": mode, "fmt": fmt,
+            "symbols": added_syms}
+
+
+def _looks_like_code(s: str) -> bool:
+    """判断是否像股票代码（600519.SH / sh600519 / 600519）。"""
+    import re
+    return bool(re.match(r"^\s*(sh|sz)?\d{6}(\.(SH|SZ))?\s*$", s, re.I))

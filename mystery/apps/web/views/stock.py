@@ -321,6 +321,38 @@ def view_watchlist_subpage():
                        "TDX_BLOCKNEW_DIR，默认查 /mnt/c/new_tdx、/mnt/new_tdx 的 "
                        "T0002/blocknew）")
 
+    # W112：自选股导入/导出（支持服务器间同步，json 完整 / csv / txt）
+    st.divider()
+    st.subheader("自选股导入 / 导出")
+    st.caption("导出 JSON 含名称/来源/板块，可用于服务器间同步；导入自动去重合并。")
+    _exp_fmt = st.radio("导出格式", ["json", "csv", "txt"],
+                        horizontal=True, key="wl_export_fmt")
+    _exp_text = _wl.export_watchlist(_exp_fmt)
+    _mime = {"json": "application/json", "csv": "text/csv",
+             "txt": "text/plain"}[_exp_fmt]
+    _ext = "json" if _exp_fmt == "json" else _exp_fmt
+    st.download_button(f"⬇ 导出 {len(_wl.load_watchlist())} 只（{_exp_fmt}）",
+                       data=_exp_text,
+                       file_name=f"watchlist.{_ext}",
+                       mime=_mime, key="wl_export_btn")
+    _up = st.file_uploader("⬆ 导入自选股文件（json / csv / txt）",
+                           type=["json", "csv", "txt"], key="wl_import_file")
+    if _up is not None:
+        _mode = st.radio("导入方式", ["合并（去重）", "覆盖（替换全部）"],
+                         horizontal=True, key="wl_import_mode")
+        _imp_fmt = _exp_fmt if _up.name.endswith(_exp_fmt) else _up.name.rsplit('.', 1)[-1]
+        if st.button("确认导入", key="wl_import_go", type="primary"):
+            try:
+                _r = _wl.import_watchlist(
+                    _up.getvalue().decode("utf-8-sig"),
+                    fmt=_imp_fmt,
+                    mode="replace" if "覆盖" in _mode else "merge")
+                st.success(f"导入完成：新增 {_r['added']} 只，"
+                           f"跳过 {_r['skipped']} 只，现有共 {_r['total']} 只")
+                st.rerun()
+            except Exception as _ie:
+                st.error(f"导入失败：{_ie}")
+
     # 已同步板块总览 + 按板块扫描
     boards = _wl.list_tdx_boards()
     if boards:

@@ -797,6 +797,38 @@ def _cmd_watchlist_import_tdx(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_watchlist_export(args: argparse.Namespace) -> int:
+    """处理 `watchlist export`：导出自选股到 stdout 或 --out 文件。"""
+    from ..services import watchlist as _wl
+
+    text = _wl.export_watchlist(args.format)
+    if getattr(args, "out", None):
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(text)
+        print(f"已导出 {len(_wl.load_watchlist())} 只 → {args.out}（格式 {args.format}）")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+def _cmd_watchlist_import(args: argparse.Namespace) -> int:
+    """处理 `watchlist import`：从 --in 文件或 stdin 导入自选（去重合并/覆盖）。"""
+    from ..services import watchlist as _wl
+
+    if getattr(args, "infile", None):
+        with open(args.infile, encoding="utf-8") as f:
+            text = f.read()
+    else:
+        text = sys.stdin.read()
+    try:
+        r = _wl.import_watchlist(text, fmt=args.format, mode=args.mode)
+    except Exception as e:
+        print(f"导入失败: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(r, ensure_ascii=False))
+    return 0
+
+
 def _cmd_sync_tdx_boards(args: argparse.Namespace) -> int:
     """处理 `watchlist sync-boards`：同步 tdx_local 自选板块（增量合并/覆盖/dry-run）。"""
     from ..services import watchlist as _wl
@@ -1038,6 +1070,21 @@ def main(argv: Optional[list] = None) -> int:
     wsub = p.add_subparsers(dest="wl_cmd", required=True)
     wp = wsub.add_parser("import-tdx", help="从通达信本地自选 zxg.blk 导入（合并不覆盖）")
     wp.set_defaults(func=_cmd_watchlist_import_tdx)
+    wp = wsub.add_parser("export", help="导出自选股（json/csv/txt，默认 json 完整信息）")
+    wp.add_argument("--format", "-f", default="json", choices=["json", "csv", "txt"],
+                    help="导出格式：json 完整（跨机同步用）/csv 表格/txt 纯代码")
+    wp.add_argument("--out", "-o", default=None,
+                    help="输出文件；省略则打印到 stdout")
+    wp.set_defaults(func=_cmd_watchlist_export)
+    wp = wsub.add_parser("import", help="导入自选股（自动识别 json/csv/txt，去重合并）")
+    wp.add_argument("--infile", "-i", default=None,
+                    help="输入文件；省略则从 stdin 读取")
+    wp.add_argument("--format", "-f", default="auto",
+                    choices=["auto", "json", "csv", "txt"],
+                    help="导入格式：auto 自动识别（默认）")
+    wp.add_argument("--mode", default="merge", choices=["merge", "replace"],
+                    help="merge 合并去重（默认）/replace 整体覆盖")
+    wp.set_defaults(func=_cmd_watchlist_import)
     wp = wsub.add_parser("sync-boards",
                          help="同步 tdx_local 自选板块（默认增量合并；--boards 指定部分，省略则全部）")
     wp.add_argument("--boards", nargs="+", metavar="板块名", default=None,
