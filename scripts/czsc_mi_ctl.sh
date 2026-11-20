@@ -55,15 +55,20 @@ do_services() {
 
 # ---------------- docker 容器（tdx-api 等） ----------------
 do_docker() {
-  command -v docker >/dev/null 2>&1 || { [ "$ACTION" = status ] && log "  docker: 未安装（跳过）"; return 0; }
-  containers=$($SUDO docker ps -a --format '{{.Names}}' 2>/dev/null | grep -i "tdx" || true)
+  # 优先免 sudo（用户在 docker 组），不可用再退回 sudo
+  local DC=""
+  if command -v docker >/dev/null 2>&1 && docker ps >/dev/null 2>&1; then DC="docker"
+  elif command -v docker >/dev/null 2>&1; then DC="$SUDO docker"
+  else [ "$ACTION" = status ] && log "  docker: 未安装（跳过）"; return 0; fi
+  local containers
+  containers=$($DC ps -a --format '{{.Names}}' 2>/dev/null | grep -i "tdx" || true)
   [ -z "$containers" ] && { [ "$ACTION" = status ] && log "  docker: 无 tdx 相关容器"; return 0; }
   for c in $containers; do
     case "$ACTION" in
-      start)   $SUDO docker start "$c" >/dev/null 2>&1 && ok "容器启动 $c" || warn "容器启动失败 $c" ;;
-      stop)    $SUDO docker stop "$c"  >/dev/null 2>&1 && ok "容器停止 $c" || warn "容器停止失败 $c" ;;
-      restart) $SUDO docker restart "$c" >/dev/null 2>&1 && ok "容器重启 $c" || warn "容器重启失败 $c" ;;
-      status)  log "  容器 $c: $($SUDO docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo unknown)" ;;
+      start)   $DC start "$c" >/dev/null 2>&1 && ok "容器启动 $c" || warn "容器启动失败 $c" ;;
+      stop)    $DC stop "$c"  >/dev/null 2>&1 && ok "容器停止 $c" || warn "容器停止失败 $c" ;;
+      restart) $DC restart "$c" >/dev/null 2>&1 && ok "容器重启 $c" || warn "容器重启失败 $c" ;;
+      status)  log "  容器 $c: $($DC inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo unknown)" ;;
     esac
   done
 }
