@@ -5,7 +5,7 @@
 # 在干净的 Ubuntu/Debian 系统上安装 czsc_mi 及全部依赖：
 #   系统包 → 运行用户+linger → Python venv → 主仓库 → pip 库 → 外部组件
 #   → 环境配置 → 数据库初始化 → 定时任务 → Web 服务(systemd user)
-#   → 公网访问+鉴权(nginx Basic Auth) → 端到端校验
+#   → 公网访问+鉴权(nginx) + 可选HTTPS → 端到端校验
 #
 # 特点：幂等（可重复运行）、分步可跳过、dry-run 预演、失败不中断其它步骤。
 #
@@ -19,6 +19,31 @@
 #   - systemd user 服务常驻（enable-linger，不随 SSH 断开而停止）
 #   - Streamlit 仅监听 127.0.0.1，nginx 反代 + Basic Auth 暴露公网端口
 #   - iptables 放行公网端口并持久化（云平台安全组仍需自行放行）
+#   - 可选 HTTPS（WEB_TLS_DOMAIN=域名）：certbot HTTP-01 申请 Let's Encrypt 证书，
+#     18601 走 TLS，纯 HTTP 自动 302 跳 HTTPS；需先确保 80 端口公网可达并放行。
+#
+# Web 公网访问避坑清单（W112 实测，均已在本脚本中规避）：
+#   坑1 浏览器自动把 http 升级 https → 必须配 HTTPS，否则 TLS 握手失败页面打不开。
+#   坑2 80 端口被本机 iptables 末尾 REJECT 规则拦截（非云平台安全组）→ 需显式 ACCEPT 80。
+#   坑3 certbot webroot 必须是 nginx 默认 root /var/www/html，否则验证文件 404 申请失败。
+#   坑4 同端口同时支持 HTTP+HTTPS 不能写两条 listen（duplicate listen）→ 单 listen ssl + error_page 497。
+#   坑5 nginx 传 Host 必须用 $http_host（含端口）；用 $host（不含端口）会导致 Streamlit
+#       XSRF 校验 origin 与 host 不一致，WebSocket 被 403 拒绝，页面一直转圈加载。
+#   坑6 证书续期后需 reload nginx 才能加载新证书 → 已配 renewal deploy hook。
+#
+# 本地数据源避坑清单（W115 实测，均已在本脚本中规避）：
+#   坑A 只 clone Financial-API 源码不建本地 DuckDB 库 → 每票走「DuckDB无数据→ths在线→tdx」
+#       三级降级链，在线单票 25-56 秒 × 5199 只 = 日报拖到 2.5 小时。必须自动 build 本地库。
+#   坑B marketdb 需单独 pip install -e Financial-API/python + 运行依赖(typer/rich/dotenv/pyarrow)；
+#       clone 仓库不带这些，直接调 marketdb 会 command not found。
+#   坑C API key 在 Financial-API/.env 的 API_KEY（LEGACY），.stockrc 的
+#       HITHINK_FINANCE_API_KEY（canonical）常留空 → marketdb auto-sync/cron 拿不到 key。
+#       安装时从 .env 同步到 .stockrc canonical 变量，cron 再兜底 source .env。
+#   坑D market.duckdb 从 O1 经 IPv6 隧道 scp 极慢(30KB/s)；正解是用 marketdb auto-sync
+#       从同花顺官方 dump(presigned URL, 支持 Range 续传)在线重建，O2 IPv4 公网可达。
+#   坑E 装了 akshare 后 tool_trade_date_hist_sina() 在线日历单次 10-23 秒，且磁盘缓存
+#       未生成 → 每票新鲜度检查都付 20 秒，5000 票又是 2.5 小时。安装后用本地库 distinct
+#       date 预热 data/calendar-cache.json，get_latest_trade_date 从 23s 降到 0.001s。
 #
 # 配置：所有参数可用环境变量或 --config 文件覆盖，见同目录 install.env.example。
 # 敏感凭据（行情 API key / Web 密码）不硬编码进本脚本：
@@ -67,6 +92,8 @@ WEB_INTERNAL_PORT="${WEB_INTERNAL_PORT:-18602}" # Streamlit 内部端口（仅 1
 WEB_AUTH_USER="${WEB_AUTH_USER:-czscmi}"        # Basic Auth 用户名
 WEB_AUTH_PASSWORD="${WEB_AUTH_PASSWORD:-}"      # Basic Auth 密码；留空则安装时自动生成
 WEB_MEMORY_MAX="${WEB_MEMORY_MAX:-}"            # systemd MemoryMax，如 700M（小内存机器建议设置）
+WEB_TLS_DOMAIN="${WEB_TLS_DOMAIN:-}"            # HTTPS 域名（如 o2.example.com）；留空=纯 HTTP，填则用 certbot 申请证书
+WEB_TLS_EMAIL="${WEB_TLS_EMAIL:-admin@${WEB_TLS_DOMAIN:-localhost}}"  # Let's Encrypt 通知邮箱
 
 # 运行控制
 DRY_RUN=0
@@ -211,7 +238,13 @@ if should_skip pip; then warn "跳过"; else
     "czsc>=1.0.2,<2.0" streamlit plotly pypinyin \
     pandas PyYAML openpyxl numpy \
     mootdx baostock duckdb requests \
+    typer rich python-dotenv pyarrow akshare \
     || warn "部分依赖安装失败，请检查网络/镜像源"
+  # W115: 安装 Financial-API 的 marketdb CLI（editable，仓库内源码）
+  if [ -d "${STOCK_DIR}/Financial-API/python" ]; then
+    run "$PIP" install -q -e "${STOCK_DIR}/Financial-API/python" --no-deps \
+      || warn "marketdb 安装失败（本地 DuckDB 秒读不可用）"
+  fi
   ok "pip 依赖安装完成"
   # 版本快照
   "$VENV/bin/python" - <<'PY' 2>/dev/null || true
@@ -320,7 +353,17 @@ EOF
     chmod 600 "$RC_FILE"
     [ "$IS_ROOT" = "1" ] && chown "${RUN_USER}:${RUN_USER}" "$RC_FILE"
     ok "写入 ${RC_FILE}（600 权限）"
-    [ -z "$HITHINK_API_KEY" ] && warn "HITHINK_FINANCE_API_KEY 为空，请编辑 .stockrc 填入，否则同花顺数据源不可用"
+    # W115坑C: .stockrc canonical key 为空时，从 Financial-API/.env 的 LEGACY API_KEY 同步
+    _cur_key="$(grep '^export HITHINK_FINANCE_API_KEY=' "$RC_FILE" | sed 's/^export [^=]*=//; s/^"//; s/"$//')"
+    if [ -z "$_cur_key" ] && [ -f "${STOCK_DIR}/Financial-API/.env" ]; then
+      _env_key="$(grep '^API_KEY=' "${STOCK_DIR}/Financial-API/.env" | head -1 | sed 's/^API_KEY=//; s/^"//; s/"$//')"
+      if [ -n "$_env_key" ]; then
+        sed -i "s#^export HITHINK_FINANCE_API_KEY=.*#export HITHINK_FINANCE_API_KEY=\"${_env_key}\"#" "$RC_FILE"
+        ok "已从 Financial-API/.env 同步 API key 到 .stockrc"
+      fi
+    fi
+    grep -q '^export HITHINK_FINANCE_API_KEY="[^"]' "$RC_FILE" \
+      || warn "HITHINK_FINANCE_API_KEY 为空，请编辑 .stockrc 或 Financial-API/.env 填入"
   else
     echo "    [DRY-RUN] 写入 ${RC_FILE}"
   fi
@@ -341,15 +384,72 @@ print('  数据库初始化完成，股票数:', len(s.market.db.get_stock_list(
   fi
 fi
 
+# ---------------- 8.5 本地行情库 market.duckdb（W115 日报提速核心） ----------------
+step "8.5/12 初始化本地行情库 market.duckdb（避免日报在线降级 2.5 小时）"
+if should_skip db; then warn "跳过"; else
+  MD_DIR="${STOCK_DIR}/Financial-API/data"
+  MD_DB="${MD_DIR}/market.duckdb"
+  if [ "$DRY_RUN" != "1" ]; then
+    mkdir -p "$MD_DIR"
+    if [ -x "${VENV}/bin/marketdb" ]; then
+      [ -f "$MD_DB" ] || run env MARKETDB_DB_PATH="$MD_DB" "${VENV}/bin/marketdb" init
+      # 从同花顺官方 dump 在线重建（支持 Range 续传；首次全量约 10-20 分钟，取决于网速）
+      ROWS=$(env MARKETDB_DB_PATH="$MD_DB" "${VENV}/bin/marketdb" status 2>/dev/null | grep -oE 'raw_kline_daily.rows.*│ [0-9]+' | grep -oE '[0-9]+$' | head -1)
+      if [ -z "$ROWS" ] || [ "$ROWS" -lt 1000 ] 2>/dev/null; then
+        log "  本地库为空，正在从官方 dump 重建（首次较慢，可 Ctrl-C 后续跑自动续传）..."
+        set -a; source "${RC_FILE:-${BASE_DIR}/.stockrc}" 2>/dev/null || true; set +a
+        # 兼容 .env LEGACY key：显式 export 给 marketdb
+        [ -f "${STOCK_DIR}/Financial-API/.env" ] && { set -a; source "${STOCK_DIR}/Financial-API/.env" 2>/dev/null; set +a; }
+        run env MARKETDB_DB_PATH="$MD_DB" "${VENV}/bin/marketdb" auto-sync \
+          || warn "marketdb auto-sync 未完成（可稍后手动重跑续传），日报会暂时走在线降级"
+      else
+        ok "本地行情库已存在（raw_kline_daily 约 ${ROWS} 行）"
+      fi
+      # W115坑E: 用本地库交易日预热日历缓存，避免在线日历每票 20 秒
+      CAL_CACHE="${CZSC_MI_DIR}/data/calendar-cache.json"
+      if [ ! -f "$CAL_CACHE" ] || [ "$DRY_RUN" = "1" ]; then
+        ( cd "$CZSC_MI_DIR" && set -a && source "${RC_FILE:-${BASE_DIR}/.stockrc}" 2>/dev/null || true; set +a; \
+          "${VENV}/bin/python" -c "
+import json, sqlite3, os
+db=os.environ.get('MYSTERY_DB_PATH','')
+if not db or not os.path.exists(db): raise SystemExit(0)
+c=sqlite3.connect(db)
+try:
+    rows=c.execute(\"SELECT DISTINCT date FROM stock_kline_data WHERE period='daily' AND date>='2020-01-01' ORDER BY date\").fetchall()
+finally:
+    c.close()
+dates=sorted(str(r[0])[:10] for r in rows if r[0])
+if dates:
+    p='$CAL_CACHE'
+    os.makedirs(os.path.dirname(p),exist_ok=True)
+    json.dump(dates,open(p,'w',encoding='utf-8'),ensure_ascii=False)
+    print('  日历缓存预热',len(dates),'条')
+" ) || warn "日历缓存预热失败（不影响主流程，首次取数会慢）"
+      fi
+    else
+      warn "marketdb CLI 不可用，跳过本地库初始化（日报将走在线降级链，较慢）"
+    fi
+  else
+    echo "    [DRY-RUN] marketdb init + auto-sync 重建 ${MD_DB}"
+  fi
+fi
+
 # ---------------- 9. 定时任务 ----------------
 step "9/12 安装定时任务（分钟 MACD 盘中监控）"
 if should_skip cron; then warn "跳过"; else
   CRON_LINE="1,31 9-15 * * 1-5 /bin/bash ${CZSC_MI_DIR}/scripts/minute_macd_watch.sh >> ${CZSC_MI_DIR}/logs/minute_macd_cron.log 2>&1"
+  DAILY_LINE="0 18 * * 1-5 /bin/bash ${CZSC_MI_DIR}/scripts/daily_feishu.sh >> ${CZSC_MI_DIR}/logs/daily_feishu_cron.log 2>&1"
+  # W115坑C: marketdb auto-sync 需同时加载 .env 的 LEGACY API_KEY
+  MDB_LINE="30 17 * * 1-5 /bin/bash -c 'set -a; source ${BASE_DIR}/.stockrc; set -a; source ${STOCK_DIR}/Financial-API/.env; set +a; exec ${VENV}/bin/marketdb auto-sync' >> ${STOCK_DIR}/data/logs/marketdb_auto_sync.log 2>&1"
   if [ "$DRY_RUN" = "1" ]; then
     echo "    [DRY-RUN] 追加 crontab: $CRON_LINE"
+    echo "    [DRY-RUN] 追加 crontab: $DAILY_LINE"
+    echo "    [DRY-RUN] 追加 crontab: $MDB_LINE"
   else
-    ( crontab -l 2>/dev/null | grep -v "minute_macd_watch.sh" ; echo "$CRON_LINE" ) | crontab -
-    ok "分钟 MACD cron 已安装"
+    mkdir -p "${STOCK_DIR}/data/logs"
+    ( crontab -l 2>/dev/null | grep -vE "minute_macd_watch.sh|daily_feishu.sh|marketdb auto-sync" ; \
+      echo "$CRON_LINE"; echo "$DAILY_LINE"; echo "$MDB_LINE" ) | crontab -
+    ok "cron 已安装：分钟MACD + 18:00日报 + 17:30本地库同步"
   fi
 fi
 
@@ -404,6 +504,7 @@ elif should_skip publicweb; then warn "跳过"; else
     WEB_AUTH_PASSWORD="$(openssl rand -base64 15 | tr -d '/+=')"
     PW_AUTOGEN=1
   fi
+  TLS_ENABLED=0
   run $SUDO apt-get install -y -qq nginx apache2-utils 2>&1 | tail -2 || warn "nginx/apache2-utils 安装失败"
   if [ "$DRY_RUN" != "1" ]; then
     # 1) 凭据落盘（600）
@@ -411,8 +512,77 @@ elif should_skip publicweb; then warn "跳过"; else
     $SUDO htpasswd -bc /etc/nginx/czsc_mi.htpasswd "$WEB_AUTH_USER" "$WEB_AUTH_PASSWORD" \
       && $SUDO sh -c 'chmod 640 /etc/nginx/czsc_mi.htpasswd && chgrp www-data /etc/nginx/czsc_mi.htpasswd' \
       || warn "htpasswd 生成失败"
-    # 2) nginx 站点：公网端口 + Basic Auth → 127.0.0.1 内部端口（含 WebSocket 支持）
-    cat > /tmp/czsc-mi.nginx.conf <<EOF
+
+    # 2) HTTPS 证书（可选）：需域名解析到本机 + 80 端口公网可达
+    if [ -n "$WEB_TLS_DOMAIN" ]; then
+      if command -v certbot >/dev/null 2>&1 || run $SUDO apt-get install -y -qq certbot >/dev/null 2>&1; then
+        # 坑2：80 端口常被本机 iptables INPUT 链末尾 REJECT all 拦截（并非云平台安全组！）。
+        # 必须在 REJECT 之前插入 ACCEPT 80；用 -I INPUT 1 插到链首最稳妥。
+        if command -v iptables >/dev/null 2>&1; then
+          $SUDO iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null \
+            || $SUDO iptables -I INPUT 1 -p tcp --dport 80 -j ACCEPT
+          # 持久化：优先 netfilter-persistent（iptables-persistent 包），兜底 iptables-save
+          if command -v netfilter-persistent >/dev/null 2>&1; then
+            $SUDO netfilter-persistent save >/dev/null 2>&1
+          elif [ -d /etc/iptables ]; then
+            $SUDO sh -c "iptables-save > /etc/iptables/rules.v4"
+          fi
+        fi
+        # 坑3：certbot webroot 必须是 nginx 默认 root /var/www/html，否则验证文件返回 404
+        $SUDO mkdir -p /var/www/html
+        if $SUDO certbot certonly --webroot -w /var/www/html -d "$WEB_TLS_DOMAIN" \
+            --email "$WEB_TLS_EMAIL" --agree-tos --no-eff-email --non-interactive >/tmp/czsc-certbot.log 2>&1; then
+          TLS_ENABLED=1
+          ok "Let's Encrypt 证书已申请：${WEB_TLS_DOMAIN}"
+          # 续期后自动 reload nginx
+          $SUDO mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+          $SUDO sh -c 'printf "#!/bin/sh\nsystemctl reload nginx\n" > /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh'
+          $SUDO chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+        else
+          warn "证书申请失败（见 /tmp/czsc-certbot.log），回退为纯 HTTP；请确认 ${WEB_TLS_DOMAIN} 已解析到本机且 80 端口公网可达"
+        fi
+      else
+        warn "certbot 安装失败，回退为纯 HTTP"
+      fi
+    fi
+
+    # 3) nginx 站点：公网端口 + Basic Auth → 127.0.0.1 内部端口（含 WebSocket 支持）
+    if [ "$TLS_ENABLED" = "1" ]; then
+      # 同端口 HTTP+HTTPS：仅 listen ssl，纯 HTTP 由 497 自动跳 HTTPS
+      cat > /tmp/czsc-mi.nginx.conf <<EOF
+server {
+    listen ${WEB_PUBLIC_PORT} ssl;
+    server_name _;
+
+    ssl_certificate     /etc/letsencrypt/live/${WEB_TLS_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${WEB_TLS_DOMAIN}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:1m;
+    ssl_session_timeout 10m;
+    error_page 497 https://\$host:${WEB_PUBLIC_PORT}\$request_uri;
+
+    auth_basic "czsc_mi restricted";
+    auth_basic_user_file /etc/nginx/czsc_mi.htpasswd;
+
+    location / {
+        proxy_pass http://127.0.0.1:${WEB_INTERNAL_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        # \$http_host 含端口：否则 Streamlit XSRF 校验 origin(带端口) 与 host(不带端口) 不一致，WebSocket 被 403 拒绝导致页面一直加载
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 86400;
+        proxy_buffering off;
+        client_max_body_size 64m;
+    }
+}
+EOF
+    else
+      cat > /tmp/czsc-mi.nginx.conf <<EOF
 server {
     listen ${WEB_PUBLIC_PORT};
     server_name _;
@@ -425,7 +595,8 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
+        # \$http_host 含端口：否则 Streamlit XSRF 校验 origin(带端口) 与 host(不带端口) 不一致，WebSocket 被 403 拒绝导致页面一直加载
+        proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
@@ -435,22 +606,30 @@ server {
     }
 }
 EOF
+    fi
     $SUDO cp /tmp/czsc-mi.nginx.conf /etc/nginx/sites-available/czsc-mi \
       && $SUDO ln -sf /etc/nginx/sites-available/czsc-mi /etc/nginx/sites-enabled/czsc-mi \
       && if $SUDO nginx -t; then
         $SUDO systemctl enable --now nginx && $SUDO systemctl reload nginx \
-          && ok "nginx 鉴权反代已就绪（0.0.0.0:${WEB_PUBLIC_PORT} → 127.0.0.1:${WEB_INTERNAL_PORT}）"
+          && ok "nginx 反代已就绪（$( [ "$TLS_ENABLED" = "1" ] && echo HTTPS || echo HTTP ) 0.0.0.0:${WEB_PUBLIC_PORT} → 127.0.0.1:${WEB_INTERNAL_PORT}）"
       else warn "nginx 配置校验失败，请检查 /etc/nginx/sites-available/czsc-mi"; fi
-    # 3) 防火墙放行并持久化（仅系统级 iptables；ufw/云安全组请自行放行）
+
+    # 4) 防火墙放行并持久化（仅系统级 iptables；ufw/云安全组请自行放行）
     if command -v iptables >/dev/null 2>&1; then
       $SUDO iptables -C INPUT -p tcp --dport "$WEB_PUBLIC_PORT" -j ACCEPT 2>/dev/null \
         || $SUDO iptables -I INPUT -p tcp --dport "$WEB_PUBLIC_PORT" -j ACCEPT
       [ -d /etc/iptables ] && $SUDO sh -c "iptables-save > /etc/iptables/rules.v4"
       ok "iptables 已放行 ${WEB_PUBLIC_PORT}（已持久化）"
     fi
-    warn "云平台安全组（如 OCI/AWS）需另行放行 ${WEB_PUBLIC_PORT}/tcp"
-    # 4) 汇报入口与凭据
-    log "  公网入口: http://<服务器IP或域名>:${WEB_PUBLIC_PORT}"
+    warn "云平台安全组（如 OCI/AWS）需另行放行 ${WEB_PUBLIC_PORT}/tcp$([ "$TLS_ENABLED" = "1" ] && echo ' 及 80/tcp（证书续期）')"
+
+    # 5) 汇报入口与凭据
+    if [ "$TLS_ENABLED" = "1" ]; then
+      log "  公网入口: https://<服务器IP或域名>:${WEB_PUBLIC_PORT}（http 自动跳 https）"
+      log "  HTTPS 域名: ${WEB_TLS_DOMAIN}（证书自动续期）"
+    else
+      log "  公网入口: http://<服务器IP或域名>:${WEB_PUBLIC_PORT}"
+    fi
     log "  鉴权账号: ${WEB_AUTH_USER}"
     if [ "$PW_AUTOGEN" = "1" ]; then
       log "  自动生成密码: ${WEB_AUTH_PASSWORD}"
@@ -459,7 +638,7 @@ EOF
       log "  密码由 WEB_AUTH_PASSWORD 提供，备份存于 ${STOCK_DIR}/.web_password"
     fi
   else
-    echo "    [DRY-RUN] 配置 nginx(${WEB_PUBLIC_PORT}→127.0.0.1:${WEB_INTERNAL_PORT}) + htpasswd(${WEB_AUTH_USER}) + iptables 放行"
+    echo "    [DRY-RUN] 配置 nginx(${WEB_PUBLIC_PORT}→127.0.0.1:${WEB_INTERNAL_PORT}) + 可选HTTPS(${WEB_TLS_DOMAIN:-无}) + htpasswd(${WEB_AUTH_USER}) + iptables 放行"
   fi
 fi
 
@@ -477,8 +656,25 @@ if should_skip verify; then warn "跳过"; else
       [ "$HC" = "ok" ] && ok "Web 内部健康检查 ok（127.0.0.1:${WEB_INTERNAL_PORT}）" || warn "Web 内部健康检查未就绪（可能仍在启动）"
     fi
     if [ "$WEB_PUBLIC" = "1" ] && $SUDO systemctl is-active --quiet nginx 2>/dev/null; then
-      CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${WEB_PUBLIC_PORT}/" 2>/dev/null || true)
-      [ "$CODE" = "401" ] && ok "公网入口鉴权生效（无凭据返回 401）" || warn "公网入口未返回 401（当前 $CODE），请检查 nginx 配置"
+      # 坑1/坑4：HTTPS 启用后 http 访问会 302 跳 https，不再返回 401，按模式分别校验
+      if [ "$TLS_ENABLED" = "1" ]; then
+        CODE=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 "https://127.0.0.1:${WEB_PUBLIC_PORT}/" 2>/dev/null || true)
+        [ "$CODE" = "401" ] && ok "HTTPS 公网入口鉴权生效（无凭据返回 401）" || warn "HTTPS 入口未返回 401（当前 $CODE），请检查 nginx 配置"
+        REDIR=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${WEB_PUBLIC_PORT}/" 2>/dev/null || true)
+        [ "$REDIR" = "302" ] && ok "纯 HTTP 自动跳转 HTTPS（302）" || warn "纯 HTTP 未跳转（当前 $REDIR）"
+      else
+        CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${WEB_PUBLIC_PORT}/" 2>/dev/null || true)
+        [ "$CODE" = "401" ] && ok "公网入口鉴权生效（无凭据返回 401）" || warn "公网入口未返回 401（当前 $CODE），请检查 nginx 配置"
+      fi
+      # 坑5：校验 WebSocket 握手；带浏览器 Origin，若 nginx 用 \$host 会被 Streamlit 403 拒绝。
+      # 这里用 -k 忽略自签/本地证书名差异，101=握手成功（curl 超时属正常，取响应头即可）。
+      WS_SCHEME="http"; [ "$TLS_ENABLED" = "1" ] && WS_SCHEME="https"
+      WS_CODE=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 4 --http1.1 \
+        -H "Origin: ${WS_SCHEME}://${WEB_TLS_DOMAIN:-localhost}:${WEB_PUBLIC_PORT}" \
+        -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" \
+        -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+        "${WS_SCHEME}://127.0.0.1:${WEB_PUBLIC_PORT}/_stcore/stream" 2>/dev/null || true)
+      [ "$WS_CODE" = "101" ] && ok "WebSocket 握手正常（101，Host 头含端口）" || warn "WebSocket 握手异常（当前 $WS_CODE）→ 检查 nginx 是否用 \$http_host，否则页面会一直加载"
     fi
   fi
 fi
@@ -510,6 +706,12 @@ log "   6) 拼音首字母搜索需 pypinyin（已装），重启 Web 后生效"
 #     任意机器直接可用；守卫测试 tests/test_no_hardcoded_paths.py 防回归。
 #  7. 网络代理：GitHub clone 不通时用 https://gh-proxy.org/ 前缀代理。
 #  8. 新 Python：源码/PPA 安装后需 apt install python3.x-venv，否则 venv 创建失败。
+#  9. HTTPS 避坑（W112）：浏览器会把 http 自动升 https，务必设 WEB_TLS_DOMAIN 配证书；
+#     80 端口被本机 iptables 末尾 REJECT 拦截需显式 ACCEPT（不是云平台安全组！）；
+#     certbot webroot 用 /var/www/html；同端口 HTTP+HTTPS 用单 listen ssl + error_page 497。
+# 10. WebSocket 403 坑：nginx 必须 proxy_set_header Host \$http_host（含端口）。
+#     用 \$host（不含端口）会导致 Streamlit XSRF origin/host 不匹配，WebSocket 被 403，
+#     页面一直转圈加载。证书续期还需 renewal hook reload nginx。
 #
 # 详细说明见同目录 INSTALL.md「实战安装记录」章节。
 # ============================================================================
