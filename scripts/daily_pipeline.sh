@@ -41,12 +41,16 @@ export THS_FUYAO_SCRIPT="${THS_FUYAO_SCRIPT:-$STOCK_DIR/Financial-API/python/too
 export THS_MARKETDB_DIR="${THS_MARKETDB_DIR:-$STOCK_DIR/Financial-API/data}"
 
 SYNC_DAYS="${SYNC_DAYS:-30}"
-echo "[daily_pipeline] 1/5 同步行情（日线最近 ${SYNC_DAYS} 天，分批增量）..."
+echo "[daily_pipeline] 1/5 同步行情（日线最近 ${SYNC_DAYS} 天，W116 快速通道单次增量）..."
 # W115：小内存机（951M）单次全量 sync 逐股累积到 666MB，叠加常驻 Web 服务
 # 会触发 OOM killer（rc=137），日报中断。改用分批脚本：每批独立进程跑完释放
 # 内存，借助 sync_checkpoint 断点续跑。6 批 × 1000 只 ≈ 9 分钟，零 OOM。
 # 老系统若无 sync_batched.sh，回退到单次 nice 运行。
-if [ -x "${ROOT}/scripts/sync_batched.sh" ]; then
+# W116：快速通道已把逐股循环降到近乎 0（单次 sync 实测 55s、无 OOM），
+# 默认改用单次 sync，避免 6 批各自重复 presync（每批 30s）。
+# SYNC_USE_BATCHED=1 强制回退分批（老机器/异常场景）。
+if [ "${SYNC_USE_BATCHED:-0}" = "1" ] && [ -x "${ROOT}/scripts/sync_batched.sh" ]; then
+  echo "[daily_pipeline] （分批模式 SYNC_USE_BATCHED=1）"
   SYNC_DAYS="${SYNC_DAYS}" SYNC_BATCH_SIZE="${SYNC_BATCH_SIZE:-1000}" \
     bash "${ROOT}/scripts/sync_batched.sh" || { rc=$?; exit "$rc"; }
 else

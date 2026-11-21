@@ -23,6 +23,53 @@ from .task_lock import clear_progress, hold_task_lock, report_progress
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------- W116 提速：可单测的纯判断函数 ----------------
+def _pick_incremental_baseline(lasts, fallback_days=7):
+    """从各票最新日挑 DuckDB 增量基准；忽略 None/空值。
+
+    关键：若把 None（完全无数据票）当作 '1900-01-01' 参与 min()，会把
+    WHERE date > 基准 拉成全表扫描（1041 万行 → 9 分钟 + OOM）。
+    全是空值时返回 None，调用方应跳过增量。
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    valid = [str(v).strip()[:10] for v in lasts if v and str(v).strip()]
+    if not valid:
+        return None
+    return min(valid)
+
+
+def fresh_codes_by_latest(codes, last_map, db_code_of, is_bj,
+                          latest, stale_days=3):
+    """返回数据充足（最新日 >= latest - stale_days）的非北交所代码集合。
+
+    last_map: {db_code: 'YYYY-MM-DD' 或 None}。轻微 stale（数据源缺最新日）
+    也视为充足——在线重试只会空等超时，且会在下次 presync 自然补上。
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    if not latest:
+        return set()
+    thr = (_dt.strptime(latest, '%Y-%m-%d') - _td(days=stale_days)).strftime('%Y-%m-%d')
+    out = set()
+    for c in codes:
+        if is_bj(c):
+            continue
+        last = last_map.get(db_code_of(c), '')
+        if last and str(last)[:10] >= thr:
+            out.add(c)
+    return out
+
+
+def fresh_sectors_by_latest(sec_codes, last_dates, latest, base_of=None):
+    """返回已最新（库内最新日 >= latest）的板块代码集合。"""
+    if not latest:
+        return set()
+    if base_of is None:
+        base_of = lambda sc: sc if str(sc).startswith('ths_') else f'ths_{str(sc).split(".")[0]}'
+    return {sc for sc in sec_codes
+            if (last_dates.get(base_of(sc)) or '') >= latest}
+
+
 _PERIOD_FREQ = {'daily': '1d', 'weekly': '1w', 'monthly': '1M'}
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -99,25 +146,52 @@ def _batch_presync_from_duckdb(svc: AnalysisService, codes: List[str]) -> int:
     # W12b：逐股查 DuckDB 49ms×5200 ≈ 4 分钟也是大头，改为一次全市场
     # 增量查询（WHERE date > 全局基准）+ pandas 分组写入；SQLite 写入
     # 从每票一事务改为 upsert_kline_many 单大事务 executemany。
+    # W116: 原逐票 db.kline_last_date()（5582 次单查询，约 2-3 分钟）改为
+    # 一次 GROUP BY 全量取每票最新日，Python 侧查字典，语义等价、耗时降到毫秒级。
     n_checked = 0
     per_code_last: Dict[str, Optional[str]] = {}
+    try:
+        _conn = db._connect()
+        try:
+            _rows = _conn.execute(
+                "SELECT code, MAX(date) FROM stock_kline_data "
+                "WHERE period='daily' GROUP BY code").fetchall()
+        finally:
+            _conn.close()
+        _cache_last_map = {str(r[0]): (str(r[1]) if r[1] else None) for r in _rows}
+    except Exception as e:
+        logger.debug(f"[sync] 批量查最新日失败，回退逐票: {str(e)[:60]}")
+        _cache_last_map = None
     for code in codes:
         if is_bj_stock(code):
             continue
         db_code = db_code_of(code)
         ths_code = normalize_symbol(code)
-        try:
-            cache_last = db.kline_last_date(db_code, 'daily')
-            if cache_last and cache_last >= latest:
-                continue  # SQLite 已是最新，跳过
-        except Exception:
-            cache_last = None
+        if _cache_last_map is not None:
+            cache_last = _cache_last_map.get(db_code)
+        else:
+            try:
+                cache_last = db.kline_last_date(db_code, 'daily')
+            except Exception:
+                cache_last = None
+        if cache_last and cache_last >= latest:
+            continue  # SQLite 已是最新，跳过
         per_code_last[ths_code] = cache_last
     n_checked = len(per_code_last)
 
     synced = 0
     if per_code_last:
-        min_last = min((v or '1900-01-01') for v in per_code_last.values())
+        # W116: 忽略 None（无数据票），否则 min_last 被拉到 1900 →
+        # WHERE date>'1900' 拉出 1041 万行全表扫描，是 9 分钟+OOM 真凶。
+        _valid_count = sum(1 for v in per_code_last.values() if v)
+        min_last = _pick_incremental_baseline(per_code_last.values())
+        if not min_last:
+            # 无任何有数据票：无需增量，直接返回（避免全表扫描）
+            duck_conn.close()
+            logger.info("[sync] 无可增量基准票，跳过批量预同步")
+            return 0
+        logger.info(f"[sync] 增量基准 min_last={min_last} "
+                    f"(有效票 {_valid_count}/{len(per_code_last)})")
         try:
             duck_df = duck_conn.execute(
                 "SELECT thscode, date, open, high, low, close, volume, turnover "
@@ -227,7 +301,53 @@ def _sync_market_impl(db_path: str,
     if not force:
         _batch_presync_from_duckdb(svc, codes)
 
-    synced, failed, updated_rows = 0, 0, 0
+    # W116 新鲜度快速通道：presync 已把 DuckDB 增量灌进 SQLite，若绝大多数
+    # 票已是最新交易日，逐股「读出又写回」纯属重复劳动（日报 9 分钟 + OOM
+    # 根源）。这里一次性统计各票最新日，fresh 票直接跳过，仅 stale 票走在线。
+    # 开关 SYNC_FRESH_SKIP=0 关闭；阈值 SYNC_FRESH_MIN_RATIO 默认 0.9。
+    _fresh_skip = os.environ.get('SYNC_FRESH_SKIP', '1') != '0'
+    _min_ratio = float(os.environ.get('SYNC_FRESH_MIN_RATIO', '0.9'))
+    _stale_days = int(os.environ.get('SYNC_FRESH_STALE_DAYS', '3'))
+    _fresh_codes = 0
+    if _fresh_skip and not force and 'daily' in periods:
+        try:
+            from ..adapters.codes import db_code_of as _db_code_of, is_bj_stock as _is_bj
+            from ..adapters.calendar import get_latest_trade_date as _gltd
+            _latest = _gltd()
+            if _latest:
+                _conn = svc.market.db._connect()
+                try:
+                    # 一次聚合查询替代逐票 MAX：GROUP BY 拿每票最新日
+                    _rows = _conn.execute(
+                        "SELECT code, MAX(date) FROM stock_kline_data "
+                        "WHERE period='daily' GROUP BY code").fetchall()
+                finally:
+                    _conn.close()
+                _last_map = {str(r[0]): str(r[1] or '') for r in _rows}
+                _non_bj = [c for c in codes if not _is_bj(c)]
+                _fresh_set = fresh_codes_by_latest(
+                    _non_bj, _last_map, _db_code_of, _is_bj,
+                    _latest, stale_days=_stale_days)
+                _fresh_codes = len(_fresh_set)
+                _ratio = (_fresh_codes / len(_non_bj)) if _non_bj else 0.0
+                if _ratio >= _min_ratio:
+                    # 只保留严重落后/无数据票 + 北交所（北交所本就跳过）
+                    codes = [c for c in codes if c not in _fresh_set]
+                    logger.info(
+                        f"[sync] 新鲜度快速通道：{_fresh_codes}/{len(_non_bj)} "
+                        f"票数据充足(>={_latest} 前{_stale_days}天, {_ratio:.0%})，跳过逐股；"
+                        f"仅同步剩余 {len(codes)} 只")
+                else:
+                    logger.info(
+                        f"[sync] 新鲜度快速通道未启用：充足 {_ratio:.0%} < "
+                        f"{_min_ratio:.0%}，回退全量逐股同步")
+                    _fresh_codes = 0
+        except Exception as e:
+            logger.debug(f"[sync] 新鲜度快速通道检查失败，回退全量: {str(e)[:80]}")
+            _fresh_codes = 0
+
+    synced = _fresh_codes  # fresh 票已由 presync 落库，计入成功
+    failed, updated_rows = 0, 0
     skipped = 0
     errors: List[str] = []
     # W49 进度心跳：total=票数×周期数；每票处理完上报一次（内部节流）
@@ -375,6 +495,40 @@ def _sync_sector_kline_impl(cfg: Optional[Dict] = None,
         db.clear_sector_kline()
         last_dates = {}
     today = datetime.now()
+
+    # W116 板块新鲜度快速通道：已最新到交易日的板块无需每天重拉 15 天。
+    # 实测 687/688 板块已最新，逐个 fuyao 在线重拉是日报 5 分钟瓶颈。
+    # 开关 SECTOR_FRESH_SKIP=0 关闭；阈值 SECTOR_FRESH_MIN_RATIO 默认 0.9。
+    # full_since 重建不走快速通道，保证全量覆盖。
+    _sec_fresh_skip = (os.environ.get('SECTOR_FRESH_SKIP', '1') != '0'
+                       and not full_since)
+    if _sec_fresh_skip and codes:
+        try:
+            from ..adapters.calendar import get_latest_trade_date as _gltd
+            _latest = _gltd()
+            if _latest:
+                _fresh = fresh_sectors_by_latest(codes, last_dates, _latest)
+                _ratio = len(_fresh) / len(codes)
+                _min = float(os.environ.get('SECTOR_FRESH_MIN_RATIO', '0.9'))
+                if _ratio >= _min:
+                    _skip_n = len(_fresh)
+                    codes = [sc for sc in codes if sc not in _fresh]
+                    logger.info(
+                        f"[sync-sector-kline] 新鲜度快速通道：{_skip_n}/{_skip_n + len(codes)} "
+                        f"板块已最新(≥{_latest}, {_ratio:.0%})，跳过；"
+                        f"仅补 {len(codes)} 只 stale 板块")
+                else:
+                    logger.info(
+                        f"[sync-sector-kline] 快速通道未启用：fresh {_ratio:.0%} < "
+                        f"{_min:.0%}，回退全量")
+        except Exception as e:
+            logger.debug(f"[sync-sector-kline] 新鲜度检查失败，回退全量: {str(e)[:80]}")
+    if not codes:
+        # 全部板块已最新：跳过在线拉取，返回成功（rows=0）
+        return {'sectors': 0, 'skipped_fresh': True,
+                'synced': 0, 'failed': 0, 'rows': 0,
+                'max_date': today.strftime('%Y-%m-%d'),
+                'note': '所有板块已最新，跳过在线拉取'}
     synced, failed, rows_total = 0, 0, 0
     errors: List[str] = []
     total_steps = len(codes)
