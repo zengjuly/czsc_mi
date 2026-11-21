@@ -431,11 +431,11 @@ def _ensure_scan_data(codes: List[str], svc: AnalysisService,
                 "SELECT "
                 "(SELECT MAX(date) FROM stock_kline_data WHERE period='daily') "
                 "AS db_latest, "
-                "COUNT(DISTINCT CASE WHEN date = "
-                "(SELECT MAX(date) FROM stock_kline_data WHERE period='daily') "
-                "THEN code END) AS cov_n, "
-                "COUNT(DISTINCT code) AS cov_all "
-                "FROM stock_kline_data WHERE period='daily'"
+                "(SELECT COUNT(DISTINCT code) FROM stock_kline_data "
+                " WHERE period='daily' AND date=(SELECT MAX(date) "
+                " FROM stock_kline_data WHERE period='daily')) AS cov_n, "
+                "(SELECT COUNT(DISTINCT code) FROM stock_kline_data "
+                " WHERE period='daily') AS cov_all"
             ).fetchone()
             db_latest = str(row[0]) if row and row[0] else ""
             cov_n = int(row[1] or 0)

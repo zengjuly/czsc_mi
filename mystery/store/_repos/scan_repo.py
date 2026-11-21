@@ -15,7 +15,7 @@ class ScanRepoMixin(BaseRepoMixin):
                            codes: Optional[List[str]] = None) -> List[Dict]:
             """指定交易日 turn IS NULL 且 volume 有效的日K行 [{code,date,volume}]。"""
             sql = ("SELECT code, substr(date,1,10) d, volume FROM stock_kline_data "
-                   "WHERE period='daily' AND substr(date,1,10)=? "
+                   "WHERE period='daily' AND date=? "
                    "AND turn IS NULL AND volume > 0")
             args: List = [trade_date]
             if codes:
@@ -35,8 +35,8 @@ class ScanRepoMixin(BaseRepoMixin):
             W26b 策略 B 回填用；右开（不含 end_date，当日由主路径处理，不重复计）。
             """
             sql = ("SELECT code, substr(date,1,10) d, volume FROM stock_kline_data "
-                   "WHERE period='daily' AND substr(date,1,10)>=? "
-                   "AND substr(date,1,10)<? "
+                   "WHERE period='daily' AND date>=? "
+                   "AND date<? "
                    "AND turn IS NULL AND volume > 0 ")
             args: List = [start_date, end_date]
             if codes:
@@ -58,7 +58,7 @@ class ScanRepoMixin(BaseRepoMixin):
                 try:
                     conn.execute(
                         "UPDATE stock_kline_data SET turn=?, turn_source=? "
-                        "WHERE code=? AND period='daily' AND substr(date,1,10)=? "
+                        "WHERE code=? AND period='daily' AND date=? "
                         "AND turn IS NULL",
                         (turn, source, code, date))
                     conn.commit()
@@ -76,7 +76,7 @@ class ScanRepoMixin(BaseRepoMixin):
                         args = list(codes)
                     # 以库内最新日期为锚回退 30 天窗口（覆盖 ~20 交易日）
                     anchor = conn.execute(
-                        f"SELECT MAX(substr(date,1,10)) FROM stock_kline_data "
+                        f"SELECT MAX(date) FROM stock_kline_data "
                         f"WHERE {where}", args).fetchone()[0]
                     if not anchor:
                         return {'anchor': None, 'rows': 0, 'with_turn': 0,
@@ -88,7 +88,7 @@ class ScanRepoMixin(BaseRepoMixin):
                         f"SELECT COALESCE(turn_source,'null'), COUNT(*), "
                         f"SUM(CASE WHEN turn > 0 AND turn < 80 THEN 1 ELSE 0 END) "
                         f"FROM stock_kline_data WHERE {where} "
-                        f"AND substr(date,1,10)>=? AND substr(date,1,10)<=? "
+                        f"AND date>=? AND date<=? "
                         f"GROUP BY 1", args + [start, anchor]).fetchall()
                     total = sum(r[1] for r in rows)
                     # 覆盖以 turn 有效值为准（W43：假 0/越界不算覆盖；

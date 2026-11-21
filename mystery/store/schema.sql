@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS stock_kline_data (
 );
 CREATE INDEX IF NOT EXISTS idx_kline_fast_query
     ON stock_kline_data (code, period, date);
+-- W117：按日/按票的全市场聚合索引（换手率回算、scan auto_sync 覆盖检查）。
+-- date 列均为标准10位 YYYY-MM-DD，可直接比较；无此索引时 COUNT(DISTINCT code)
+-- 全表扫描 555万行需 70-150s，加索引后 1.8s。
+CREATE INDEX IF NOT EXISTS idx_kline_period_date
+    ON stock_kline_data (period, date);
+CREATE INDEX IF NOT EXISTS idx_kline_period_code
+    ON stock_kline_data (period, code);
 
 -- 3. 基本面快照表
 CREATE TABLE IF NOT EXISTS stock_financial_data (

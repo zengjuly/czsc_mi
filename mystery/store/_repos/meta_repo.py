@@ -99,7 +99,7 @@ class MetaRepoMixin(BaseRepoMixin):
                     conn = self._connect()
                     try:
                         r = conn.execute(
-                            "SELECT MAX(substr(date,1,10)) FROM stock_kline_data "
+                            "SELECT MAX(date) FROM stock_kline_data "
                             "WHERE period='daily'").fetchone()
                         out['kline_max'] = r[0] if r and r[0] else None
                         r = conn.execute(
@@ -167,8 +167,8 @@ class MetaRepoMixin(BaseRepoMixin):
             with self._lock:
                 conn = self._connect()
                 try:
-                    where = ("period='daily' AND substr(date,1,10)>=? "
-                             "AND substr(date,1,10)<=?")
+                    where = ("period='daily' AND date>=? "
+                             "AND date<=?")
                     args: List = [start, trade_date]
                     if codes:
                         where += f" AND code IN ({','.join('?' * len(codes))})"

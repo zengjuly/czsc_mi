@@ -144,8 +144,8 @@ def _ffill_recent_gaps(db: MysteryDB, trade_date: str,
     with db._lock:
         conn = db._connect()
         try:
-            where = "period='daily' AND substr(date,1,10)<=? " \
-                    "AND substr(date,1,10)>=date(?, '-{} day')".format(FFILL_WINDOW_DAYS)
+            where = "period='daily' AND date<=? " \
+                    "AND date>=date(?, '-{} day')".format(FFILL_WINDOW_DAYS)
             args: List = [trade_date, trade_date]
             if codes:
                 where += f" AND code IN ({','.join('?' * len(codes))})"
